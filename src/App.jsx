@@ -115,7 +115,79 @@ function App() {
       })
       .subscribe();
 
-    return () => {
+  
+  const handleOpenInGoogleMaps = () => {
+    if (!selectedGeoJSON || !selectedGeoJSON.features) return;
+    
+    // Extract all coordinates from LineStrings
+    let coords = [];
+    selectedGeoJSON.features.forEach(feature => {
+      if (feature.geometry && feature.geometry.type === 'LineString') {
+        coords.push(...feature.geometry.coordinates);
+      }
+    });
+
+    if (coords.length === 0) return;
+
+    // Pick origin, destination, and up to 8 waypoints
+    const maxWaypoints = 8;
+    const origin = coords[0];
+    const destination = coords[coords.length - 1];
+    
+    let waypoints = [];
+    if (coords.length > 2) {
+      const step = Math.max(1, Math.floor((coords.length - 2) / (maxWaypoints + 1)));
+      for (let i = 1; i <= maxWaypoints && (i * step) < coords.length - 1; i++) {
+        waypoints.push(coords[i * step]);
+      }
+    }
+
+    // Convert [lng, lat] to lat,lng
+    const formatCoord = (c) => `${c[1]},${c[0]}`;
+
+    let url = `https://www.google.com/maps/dir/?api=1&origin=${formatCoord(origin)}&destination=${formatCoord(destination)}`;
+    if (waypoints.length > 0) {
+      const wpStr = waypoints.map(formatCoord).join('|');
+      url += `&waypoints=${wpStr}`;
+    }
+
+    window.open(url, '_blank');
+  };
+
+  const handleDownloadGPX = () => {
+    if (!selectedGeoJSON || !selectedGeoJSON.features) return;
+
+    let trkpts = '';
+    selectedGeoJSON.features.forEach(feature => {
+      if (feature.geometry && feature.geometry.type === 'LineString') {
+        feature.geometry.coordinates.forEach(coord => {
+          trkpts += `      <trkpt lat="${coord[1]}" lon="${coord[0]}"></trkpt>\n`;
+        });
+      }
+    });
+
+    const gpxData = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="TwistyRoute">
+  <trk>
+    <name>${selectedRoute?.title || 'Route'}</name>
+    <trkseg>
+${trkpts}    </trkseg>
+  </trk>
+</gpx>`;
+
+    const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(selectedRoute?.title || 'route').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.gpx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+) => {
       supabase.removeChannel(channel);
       subscription.unsubscribe();
     };
@@ -484,6 +556,22 @@ function App() {
               <p className="right-time">⏱️ {selectedRoute.duration_str} • 🛣️ {selectedRoute.distance_mi} miles</p>
             )}
             <div className="right-desc">{selectedRoute.desc}</div>
+            
+            <div className="flex gap-2 mb-5 flex-wrap">
+              <button 
+                onClick={handleOpenInGoogleMaps}
+                className="bg-blue-500 hover:bg-blue-600 text-white border-none rounded px-3 py-2 cursor-pointer flex items-center justify-center gap-1 flex-1 text-sm font-bold transition-colors"
+              >
+                🗺️ Open in Google Maps
+              </button>
+              <button 
+                onClick={handleDownloadGPX}
+                className="bg-green-500 hover:bg-green-600 text-white border-none rounded px-3 py-2 cursor-pointer flex items-center justify-center gap-1 flex-1 text-sm font-bold transition-colors"
+              >
+                ⬇️ Download GPX
+              </button>
+            </div>
+
             
             <div className="right-leg" style={{borderLeftColor: '#e74c3c'}}>
               <div className="leg-title">⚡ City / Highway</div>
