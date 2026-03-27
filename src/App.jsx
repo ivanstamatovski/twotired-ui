@@ -116,6 +116,28 @@ function App() {
       .subscribe();
 
   
+
+    return () => {
+      supabase.removeChannel(channel);
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth <= 768 || window.innerHeight <= 500;
+      setIsMobile(mobile);
+      if (!mobile) {
+        setShowLeftSidebar(true);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const selectedRoute = routesDb.find(r => r.id === selectedRouteId);
+  const selectedGeoJSON = selectedRoute ? selectedRoute.geojson : null;
+
   const handleOpenInGoogleMaps = () => {
     if (!selectedGeoJSON || !selectedGeoJSON.features) return;
     
@@ -185,28 +207,6 @@ ${trkpts}    </trkseg>
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
-
-  return (
-) => {
-      supabase.removeChannel(channel);
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => {
-      const mobile = window.innerWidth <= 768 || window.innerHeight <= 500;
-      setIsMobile(mobile);
-      if (!mobile) {
-        setShowLeftSidebar(true);
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  const selectedRoute = routesDb.find(r => r.id === selectedRouteId);
-  const selectedGeoJSON = selectedRoute ? selectedRoute.geojson : null;
 
   const handleSelectRoute = (id) => {
     setSelectedRouteId(id);
