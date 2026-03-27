@@ -390,35 +390,40 @@ ${trkpts}    </trkseg>
 
   return (
     <div className="app-container">
-      {/* Mobile Header */}
-      {isMobile && (
-        <div className="mobile-header">
-          <button className="menu-btn" onClick={() => setShowLeftSidebar(!showLeftSidebar)}>
-            {showLeftSidebar ? <X size={24} /> : <Menu size={24} />}
-          </button>
-          <h1 className="mobile-title">🏍️ TwistyRoute</h1>
-          <button className="menu-btn" onClick={() => setShowRightSidebar(!showRightSidebar)} disabled={!selectedRoute}>
-            {showRightSidebar ? <X size={24} /> : <MapIcon size={24} />}
-          </button>
+      {/* Floating Header */}
+      <div className="absolute top-0 left-0 w-full z-[2000] p-4 flex justify-between items-center pointer-events-none">
+        <div className="flex items-center gap-2 pointer-events-auto">
+          {isMobile && (
+            <button className="bg-white p-2 rounded-md shadow-md" onClick={() => setShowLeftSidebar(!showLeftSidebar)}>
+              {showLeftSidebar ? <X size={24} /> : <Menu size={24} />}
+            </button>
+          )}
+          <h1 className="m-0 text-xl font-bold bg-white/90 px-3 py-1 rounded-md shadow-md backdrop-blur-sm text-gray-800">🏍️ TwistyRoute</h1>
         </div>
-      )}
+        
+        <div className="flex items-center gap-2 pointer-events-auto">
+          {isMobile && selectedRoute && (
+            <button className="bg-white p-2 rounded-md shadow-md" onClick={() => setShowRightSidebar(!showRightSidebar)}>
+              {showRightSidebar ? <X size={24} /> : <MapIcon size={24} />}
+            </button>
+          )}
+          {user ? (
+            <button onClick={handleLogout} className="bg-white p-2 rounded-md shadow-md flex items-center justify-center text-gray-800" title="Logout">
+              <LogOut size={20} />
+            </button>
+          ) : (
+            <button onClick={() => setIsAuthModalOpen(true)} className="bg-white p-2 rounded-md shadow-md flex items-center justify-center text-gray-800" title="Login">
+              <LogIn size={20} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      
 
       {/* Left Sidebar - Route List */}
-      <div className={`left-sidebar ${showLeftSidebar ? 'open' : ''} ${isMobile ? 'mobile-drawer' : ''}`}>
-        {!isMobile && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h1>🏍️ TwistyRoute</h1>
-            {user ? (
-              <button onClick={handleLogout} className="zoom-fit-btn" style={{ padding: '8px', background: 'transparent', border: '1px solid #ccc', color: '#333' }} title="Logout">
-                <LogOut size={18} />
-              </button>
-            ) : (
-              <button onClick={() => setIsAuthModalOpen(true)} className="zoom-fit-btn" style={{ padding: '8px', background: 'transparent', border: '1px solid #ccc', color: '#333' }} title="Login">
-                <LogIn size={18} />
-              </button>
-            )}
-          </div>
-        )}
+      <div className={`left-sidebar absolute z-[1000] transition-all duration-300 ${isMobile ? `bottom-0 left-0 w-full max-h-[50vh] overflow-y-auto rounded-t-2xl shadow-xl bg-white ${showLeftSidebar ? 'translate-y-0' : 'translate-y-full'}` : `top-0 left-0 w-80 h-full shadow-lg bg-white/95 backdrop-blur-sm pt-20 ${showLeftSidebar ? 'translate-x-0' : '-translate-x-full'}`}`}>
+        
         
         {/* Where to? Search Bar */}
         <div className="search-section" style={{ padding: '15px', background: '#f9f9f9', borderRadius: '8px', border: '1px solid #ddd', display: 'flex', flexDirection: 'column', marginBottom: '20px' }}>
@@ -535,7 +540,7 @@ ${trkpts}    </trkseg>
 
       {/* Right Sidebar - Route Details */}
       {selectedRoute && (
-        <div className={`right-sidebar ${showRightSidebar ? 'open' : ''} ${isMobile ? 'mobile-drawer bottom-sheet' : ''}`}>
+        <div className={`right-sidebar absolute z-[1000] transition-all duration-300 ${isMobile ? `bottom-0 left-0 w-full max-h-[50vh] overflow-y-auto rounded-t-2xl shadow-xl bg-white ${showRightSidebar ? 'translate-y-0' : 'translate-y-full'}` : `top-0 right-0 w-80 h-full shadow-lg bg-white/95 backdrop-blur-sm pt-20 ${showRightSidebar ? 'translate-x-0' : 'translate-x-full'}`}`}>
           {isMobile && (
             <div className="bottom-sheet-handle" onClick={() => setShowRightSidebar(false)}>
               <div className="handle-bar"></div>
@@ -544,12 +549,7 @@ ${trkpts}    </trkseg>
           <div className="right-content">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div className="right-title">{selectedRoute.title}</div>
-              <button 
-                onClick={handleSaveRoute}
-                style={{ background: '#f39c12', color: '#fff', border: 'none', borderRadius: '4px', padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px' }}
-              >
-                <BookmarkPlus size={16} /> Save
-              </button>
+
             </div>
             
             {selectedRoute.duration_str && (
@@ -558,6 +558,12 @@ ${trkpts}    </trkseg>
             <div className="right-desc">{selectedRoute.desc}</div>
             
             <div className="flex gap-2 mb-5 flex-wrap">
+              <button 
+                onClick={handleSaveRoute}
+                className="bg-yellow-500 hover:bg-yellow-600 text-white border-none rounded px-3 py-2 cursor-pointer flex items-center justify-center gap-1 flex-1 text-sm font-bold transition-colors"
+              >
+                <BookmarkPlus size={16} /> Save
+              </button>
               <button 
                 onClick={handleOpenInGoogleMaps}
                 className="bg-blue-500 hover:bg-blue-600 text-white border-none rounded px-3 py-2 cursor-pointer flex items-center justify-center gap-1 flex-1 text-sm font-bold transition-colors"
