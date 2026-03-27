@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, GeoJSON, useMap, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { createClient } from '@supabase/supabase-js';
@@ -397,29 +397,29 @@ ${trkpts}    </trkseg>
 
   return (
     <div className="app-container">
-      {/* Floating Header */}
-      <div className="absolute top-0 left-0 w-full z-[2000] p-4 flex justify-between items-center pointer-events-none">
-        <div className="flex items-center gap-2 pointer-events-auto">
+      {/* Fixed Modern Navbar */}
+      <div className="absolute top-0 left-0 w-full z-[3000] p-3 flex justify-between items-center bg-white/90 backdrop-blur-md shadow-sm border-b border-gray-200">
+        <div className="flex items-center gap-3">
           {isMobile && (
-            <button className="bg-white p-2 rounded-md shadow-md" onClick={() => setShowLeftSidebar(!showLeftSidebar)}>
-              {showLeftSidebar ? <X size={24} /> : <Menu size={24} />}
+            <button className="p-1 text-gray-700 hover:bg-gray-100 rounded-md transition-colors" onClick={() => setShowLeftSidebar(!showLeftSidebar)}>
+              {showLeftSidebar ? <X size={28} /> : <Menu size={28} />}
             </button>
           )}
-          <h1 className="m-0 text-xl font-bold bg-white/90 px-3 py-1 rounded-md shadow-md backdrop-blur-sm text-gray-800">🏍️ TwistyRoute</h1>
+          <h1 className="m-0 text-xl font-extrabold text-gray-800 flex items-center gap-2"><span style={{fontSize:'1.2rem'}}>🏍️</span> TwistyRoute</h1>
         </div>
         
-        <div className="flex items-center gap-2 pointer-events-auto">
+        <div className="flex items-center gap-3">
           {isMobile && selectedRoute && (
-            <button className="bg-white p-2 rounded-md shadow-md" onClick={() => setShowRightSidebar(!showRightSidebar)}>
+            <button className="p-1 text-gray-700 hover:bg-gray-100 rounded-md transition-colors" onClick={() => setShowRightSidebar(!showRightSidebar)}>
               {showRightSidebar ? <X size={24} /> : <MapIcon size={24} />}
             </button>
           )}
           {user ? (
-            <button onClick={handleLogout} className="bg-white p-2 rounded-md shadow-md flex items-center justify-center text-gray-800" title="Logout">
+            <button onClick={handleLogout} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full text-gray-700 transition-colors" title="Logout">
               <LogOut size={20} />
             </button>
           ) : (
-            <button onClick={() => setIsAuthModalOpen(true)} className="bg-white p-2 rounded-md shadow-md flex items-center justify-center text-gray-800" title="Login">
+            <button onClick={() => setIsAuthModalOpen(true)} className="p-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-full transition-colors font-bold" title="Login">
               <LogIn size={20} />
             </button>
           )}
@@ -429,7 +429,7 @@ ${trkpts}    </trkseg>
       
 
       {/* Left Sidebar - Route List */}
-      <div className={`left-sidebar absolute z-[1000] transition-all duration-300 ${isMobile ? `bottom-0 left-0 w-full max-h-[50vh] overflow-y-auto rounded-t-2xl shadow-xl bg-white ${showLeftSidebar ? 'translate-y-0' : 'translate-y-full'}` : `top-0 left-0 w-80 h-full shadow-lg bg-white/95 backdrop-blur-sm pt-20 ${showLeftSidebar ? 'translate-x-0' : '-translate-x-full'}`}`}>
+      <div className={`left-sidebar absolute z-[2000] transition-all duration-300 ${isMobile ? `bottom-0 left-0 w-full max-h-[50vh] overflow-y-auto rounded-t-2xl shadow-xl bg-white ${showLeftSidebar ? 'translate-y-0' : 'translate-y-full'}` : `top-0 left-0 w-80 h-full shadow-lg bg-white/95 backdrop-blur-sm pt-20 ${showLeftSidebar ? 'translate-x-0' : '-translate-x-full'}`}`}>
         
         
         {/* Where to? Search Bar */}
@@ -513,7 +513,7 @@ ${trkpts}    </trkseg>
 
       {/* Map Container */}
       <div className="map-container">
-        <MapContainer 
+        <MapContainer zoomControl={false} 
           center={[41.05, -74.0]} 
           zoom={10} 
           zoomSnap={0.1} 
@@ -533,6 +533,7 @@ ${trkpts}    </trkseg>
             />
           )}
           {selectedGeoJSON && <FitBounds geojson={selectedGeoJSON} />}
+          <ZoomControl position="topright" />
         </MapContainer>
         
         <div style={{ position: 'absolute', bottom: '30px', right: '20px', zIndex: 1000, display: 'flex', gap: '10px' }}>
@@ -547,7 +548,7 @@ ${trkpts}    </trkseg>
 
       {/* Right Sidebar - Route Details */}
       {selectedRoute && (
-        <div className={`right-sidebar absolute z-[1000] transition-all duration-300 ${isMobile ? `bottom-0 left-0 w-full max-h-[50vh] overflow-y-auto rounded-t-2xl shadow-xl bg-white ${showRightSidebar ? 'translate-y-0' : 'translate-y-full'}` : `top-0 right-0 w-80 h-full shadow-lg bg-white/95 backdrop-blur-sm pt-20 ${showRightSidebar ? 'translate-x-0' : 'translate-x-full'}`}`}>
+        <div className={`right-sidebar absolute z-[2000] transition-all duration-300 ${isMobile ? `bottom-0 left-0 w-full max-h-[50vh] overflow-y-auto rounded-t-2xl shadow-xl bg-white ${showRightSidebar ? 'translate-y-0' : 'translate-y-full'}` : `top-0 right-0 w-80 h-full shadow-lg bg-white/95 backdrop-blur-sm pt-20 ${showRightSidebar ? 'translate-x-0' : 'translate-x-full'}`}`}>
           {isMobile && (
             <div className="bottom-sheet-handle" onClick={() => setShowRightSidebar(false)}>
               <div className="handle-bar"></div>
