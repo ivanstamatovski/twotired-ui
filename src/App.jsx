@@ -302,17 +302,23 @@ ${trkpts}    </trkseg>
     }
 
     // No matches -> Trigger AI custom route generation logic via Supabase insert
+    if (!user) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+
     setIsRequestingRoute(true);
     setRouteRequestSuccess('');
     try {
       const { error } = await supabase.from('route_requests').insert({
         request_text: startLocation ? `Start: ${startLocation}. Request: ${routeRequestText}` : routeRequestText,
-        user_id: user ? user.id : null
+        user_id: user.id,
+        email: user.email
       });
 
       if (!error) {
         setRouteRequestText('');
-        setRouteRequestSuccess('Route requested! Check back later.');
+        setRouteRequestSuccess(`Your request is in! We will email you at ${user.email} when our AI agents finish creating your custom route.`);
       } else {
         alert('Error submitting route request: ' + error.message);
       }
@@ -450,7 +456,7 @@ ${trkpts}    </trkseg>
             disabled={isRequestingRoute || !routeRequestText.trim()}
             style={{ width: '100%', padding: '10px', background: isRequestingRoute ? '#555' : '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: isRequestingRoute || !routeRequestText.trim() ? 'not-allowed' : 'pointer', fontWeight: 'bold', transition: 'background 0.2s ease' }}
           >
-            {isRequestingRoute ? 'Generating...' : 'Generate'}
+            {!user ? 'Sign up or Log in to Generate' : (isRequestingRoute ? 'Generating...' : 'Generate')}
           </button>
         </div>
 
