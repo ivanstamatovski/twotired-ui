@@ -389,57 +389,125 @@ ${trkpts}    </trkseg>
   };
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-gray-100">
-      {/* Floating Top Header */}
-      <div className="absolute top-0 left-0 right-0 z-[2000] bg-white/85 backdrop-blur-md shadow-sm flex justify-between items-center px-4 py-3">
-        <div className="flex items-center gap-3">
-          {isMobile && (
-            <button 
-              className="text-gray-800 p-1 hover:bg-gray-100 rounded-md transition-colors" 
-              onClick={() => {
-                if(showRightSidebar) {
-                  setShowRightSidebar(false);
-                  setShowLeftSidebar(true);
-                } else {
-                  setShowLeftSidebar(!showLeftSidebar);
-                }
-              }}
-            >
-              {(showLeftSidebar || showRightSidebar) ? <X size={24} /> : <Menu size={24} />}
-            </button>
-          )}
-          <h1 className="text-xl sm:text-2xl font-bold m-0 text-gray-800 flex items-center gap-2">🏍️ TwistyRoute</h1>
+    <div className="app-container">
+      {/* Mobile Header */}
+      {isMobile && (
+        <div className="mobile-header">
+          <button className="menu-btn" onClick={() => setShowLeftSidebar(!showLeftSidebar)}>
+            {showLeftSidebar ? <X size={24} /> : <Menu size={24} />}
+          </button>
+          <h1 className="mobile-title">🏍️ TwistyRoute</h1>
+          <button className="menu-btn" onClick={() => setShowRightSidebar(!showRightSidebar)} disabled={!selectedRoute}>
+            {showRightSidebar ? <X size={24} /> : <MapIcon size={24} />}
+          </button>
         </div>
-        <div className="flex items-center gap-2 sm:gap-4">
-          {user ? (
-            <button onClick={handleLogout} className="flex items-center gap-2 px-3 py-1.5 sm:px-4 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-md transition-colors font-semibold text-sm">
-              <LogOut size={16} /> <span className="hidden sm:inline">Logout</span>
-            </button>
-          ) : (
-            <button onClick={() => setIsAuthModalOpen(true)} className="flex items-center gap-2 px-3 py-1.5 sm:px-4 sm:py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md transition-colors font-semibold text-sm">
-              <LogIn size={16} /> <span className="hidden sm:inline">Login</span>
-            </button>
-          )}
-          {isMobile && selectedRoute && !showRightSidebar && (
-            <button 
-              className="text-blue-500 p-1 bg-blue-50 rounded-md ml-2" 
-              onClick={() => { setShowRightSidebar(true); setShowLeftSidebar(false); }}
-            >
-              <MapIcon size={24} />
-            </button>
-          )}
+      )}
+
+      {/* Left Sidebar - Route List */}
+      <div className={`left-sidebar ${showLeftSidebar ? 'open' : ''} ${isMobile ? 'mobile-drawer' : ''}`}>
+        {!isMobile && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h1>🏍️ TwistyRoute</h1>
+            {user ? (
+              <button onClick={handleLogout} className="zoom-fit-btn" style={{ padding: '8px', background: 'transparent', border: '1px solid #ccc', color: '#333' }} title="Logout">
+                <LogOut size={18} />
+              </button>
+            ) : (
+              <button onClick={() => setIsAuthModalOpen(true)} className="zoom-fit-btn" style={{ padding: '8px', background: 'transparent', border: '1px solid #ccc', color: '#333' }} title="Login">
+                <LogIn size={18} />
+              </button>
+            )}
+          </div>
+        )}
+        
+        {/* Where to? Search Bar */}
+        <div className="search-section" style={{ padding: '15px', background: '#f9f9f9', borderRadius: '8px', border: '1px solid #ddd', display: 'flex', flexDirection: 'column', marginBottom: '20px' }}>
+          
+          <label style={{ margin: '0 0 5px 0', fontSize: '0.85rem', color: '#555', fontWeight: 'bold' }}>Start location</label>
+          <input 
+            type="text" 
+            value={startLocation}
+            onChange={(e) => setStartLocation(e.target.value)}
+            style={{ width: '100%', padding: '10px', marginBottom: '15px', border: '1px solid #ccc', borderRadius: '6px', boxSizing: 'border-box', background: '#fff', color: '#333' }}
+          />
+
+          <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem', color: '#333', fontWeight: 'bold' }}>Where to?</h3>
+          <input 
+            type="text" 
+            placeholder="e.g., Bear Mountain, Hawk's Nest..."
+            value={routeRequestText}
+            onChange={(e) => setRouteRequestText(e.target.value)}
+            onKeyDown={(e) => { if(e.key === 'Enter') handleRouteRequest(); }}
+            style={{ width: '100%', padding: '10px', marginBottom: '10px', border: '2px solid #3498db', borderRadius: '6px', boxSizing: 'border-box', background: '#fff', color: '#333', outline: 'none' }}
+          />
+          <button 
+            onClick={handleRouteRequest}
+            disabled={isRequestingRoute || !routeRequestText.trim()}
+            style={{ width: '100%', padding: '10px', background: isRequestingRoute ? '#555' : '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: isRequestingRoute || !routeRequestText.trim() ? 'not-allowed' : 'pointer', fontWeight: 'bold', transition: 'background 0.2s ease' }}
+          >
+            {isRequestingRoute ? 'Generating...' : 'Generate'}
+          </button>
         </div>
+
+        {/* Selected Route Display */}
+        {selectedRoute && !isRequestingRoute && (
+          <div style={{ marginBottom: '20px', padding: '15px', background: 'rgba(52, 152, 219, 0.1)', borderRadius: '8px', border: '1px solid #3498db' }}>
+            <h4 style={{ margin: '0 0 10px 0', color: '#3498db', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
+              Selected Route
+            </h4>
+            <div style={{ color: '#333', fontSize: '1.05rem', fontWeight: 'bold' }}>
+              {selectedRoute.title}
+            </div>
+          </div>
+        )}
+
+        {/* Search Results or Placeholder */}
+        {hasSearched && (
+          <div className="search-results-section">
+            {searchResults && searchResults.length > 0 ? (
+              <div className="route-options">
+                <h3 className="options-title" style={{ margin: '0 0 15px 0', color: '#555', fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '1px' }}>Matching Routes</h3>
+                {searchResults.map(r => (
+                  <div 
+                    key={r.id} 
+                    className={`route-card ${selectedRouteId === r.id ? 'active' : ''}`}
+                    onClick={() => handleSelectRoute(r.id)}
+                    style={{ padding: '12px', background: '#f9f9f9', borderRadius: '6px', marginBottom: '8px', cursor: 'pointer', border: selectedRouteId === r.id ? '1px solid #3498db' : '1px solid #e0e0e0', transition: 'all 0.2s ease' }}
+                  >
+                    <div className="route-title" style={{ fontSize: '1rem', fontWeight: '500', color: '#333' }}>{r.title}</div>
+                    {r.group && <div style={{ fontSize: '0.8rem', color: '#777', marginTop: '4px' }}>{r.group}</div>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="generating-placeholder" style={{ marginTop: '10px', padding: '25px 20px', background: '#fff', border: '2px dashed #3498db', borderRadius: '8px', textAlign: 'center', boxShadow: '0 4px 12px rgba(52, 152, 219, 0.1)' }}>
+                <div className="spinner-container" style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
+                  <div className="custom-spinner" style={{ width: '45px', height: '45px', border: '4px solid rgba(52, 152, 219, 0.2)', borderTopColor: '#3498db', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+                </div>
+                <h4 style={{ margin: '0 0 12px 0', color: '#333', fontSize: '1.15rem', fontWeight: 'bold' }}>Generating Custom Route...</h4>
+                <p style={{ margin: 0, color: '#666', fontSize: '0.95rem', lineHeight: '1.5' }}>
+                  AI is analyzing twisty roads and building the perfect ride for <strong>"{lastSearchedQuery}"</strong>.
+                </p>
+                {routeRequestSuccess && (
+                  <div style={{ marginTop: '20px', padding: '10px', background: 'rgba(46, 204, 113, 0.1)', color: '#2ecc71', borderRadius: '6px', fontSize: '0.9rem', fontWeight: 'bold', animation: 'pulse 2s infinite' }}>
+                    {routeRequestSuccess}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Map Background (z-0 to sit behind panels) */}
-      <div className="absolute inset-0 z-0">
+      {/* Map Container */}
+      <div className="map-container">
         <MapContainer 
           center={[41.05, -74.0]} 
           zoom={10} 
           zoomSnap={0.1} 
           wheelPxPerZoomLevel={150} 
           ref={mapRef}
-          style={{ width: '100%', height: '100%' }}
+          style={{ width: '100%', height: '100%', zIndex: 1 }}
         >
           <TileLayer
             attribution='&copy; OpenStreetMap &copy; CARTO'
@@ -455,215 +523,131 @@ ${trkpts}    </trkseg>
           {selectedGeoJSON && <FitBounds geojson={selectedGeoJSON} />}
         </MapContainer>
         
-        <div className="absolute bottom-[20px] right-[20px] z-[1000] flex flex-col sm:flex-row gap-2">
-          <button className="bg-white p-3 rounded-full sm:rounded-md sm:py-2 sm:px-4 shadow-md border border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center justify-center gap-2 font-bold transition-colors" onClick={handleReportBug} title="Report Bug">
-            <Bug size={18} /> <span className="hidden sm:inline">{reportStatus}</span>
+        <div style={{ position: 'absolute', bottom: '30px', right: '20px', zIndex: 1000, display: 'flex', gap: '10px' }}>
+          <button className="zoom-fit-btn" style={{ position: 'relative', bottom: 'auto', right: 'auto' }} onClick={handleReportBug} title="Report Bug">
+            <Bug size={18} /> <span className="btn-text">{reportStatus}</span>
           </button>
-          <button className="bg-white p-3 rounded-full sm:rounded-md sm:py-2 sm:px-4 shadow-md border border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center justify-center gap-2 font-bold transition-colors" onClick={fitRoute} title="Fit Route">
-            <Maximize size={18} /> <span className="hidden sm:inline">Fit Route</span>
+          <button className="zoom-fit-btn" style={{ position: 'relative', bottom: 'auto', right: 'auto' }} onClick={fitRoute} title="Fit Route">
+            <Maximize size={18} /> <span className="btn-text">Fit Route</span>
           </button>
         </div>
       </div>
 
-      {/* Left Panel (Route List / Search) */}
-      <div className={`
-        ${isMobile 
-          ? `absolute bottom-0 w-full bg-white rounded-t-2xl shadow-[0_-4px_15px_rgba(0,0,0,0.1)] max-h-[50vh] overflow-y-auto z-[1500] transition-transform duration-300 ${showLeftSidebar ? 'translate-y-0' : 'translate-y-full'}` 
-          : `absolute top-20 left-4 w-96 max-h-[calc(100vh-6rem)] bg-white rounded-xl shadow-xl overflow-y-auto z-[1000] ${showLeftSidebar ? 'block' : 'hidden'}`
-        }
-      `}>
-        {isMobile && (
-          <div className="w-full flex justify-center py-3 sticky top-0 bg-white z-10 cursor-pointer" onClick={() => setShowLeftSidebar(false)}>
-            <div className="w-12 h-1.5 bg-gray-300 rounded-full"></div>
-          </div>
-        )}
-        <div className="p-5 pt-0 sm:pt-5">
-          {/* Where to? Search Bar */}
-          <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 flex flex-col mb-5">
-            <label className="mb-1 text-sm font-bold text-gray-600">Start location</label>
-            <input 
-              type="text" 
-              value={startLocation}
-              onChange={(e) => setStartLocation(e.target.value)}
-              className="w-full p-2.5 mb-3 border border-gray-300 rounded-md bg-white text-gray-800"
-            />
-
-            <h3 className="mb-2 text-base font-bold text-gray-800">Where to?</h3>
-            <input 
-              type="text" 
-              placeholder="e.g., Bear Mountain, Hawk's Nest..."
-              value={routeRequestText}
-              onChange={(e) => setRouteRequestText(e.target.value)}
-              onKeyDown={(e) => { if(e.key === 'Enter') handleRouteRequest(); }}
-              className="w-full p-2.5 mb-2 border-2 border-blue-500 rounded-md bg-white text-gray-800 outline-none"
-            />
-            <button 
-              onClick={handleRouteRequest}
-              disabled={isRequestingRoute || !routeRequestText.trim()}
-              className={`w-full p-2.5 text-white font-bold rounded-md transition-colors ${isRequestingRoute ? 'bg-gray-500 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600 cursor-pointer'}`}
-            >
-              {isRequestingRoute ? 'Generating...' : 'Generate'}
-            </button>
-          </div>
-
-          {/* Selected Route Display */}
-          {selectedRoute && !isRequestingRoute && (
-            <div className="mb-5 p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <h4 className="m-0 mb-2 text-blue-500 text-xs font-bold uppercase tracking-wider">
-                Selected Route
-              </h4>
-              <div className="text-gray-800 text-lg font-bold">
-                {selectedRoute.title}
-              </div>
-            </div>
-          )}
-
-          {/* Search Results or Placeholder */}
-          {hasSearched && (
-            <div className="mt-2">
-              {searchResults && searchResults.length > 0 ? (
-                <div>
-                  <h3 className="m-0 mb-3 text-gray-600 text-sm font-bold uppercase tracking-wider">Matching Routes</h3>
-                  {searchResults.map(r => (
-                    <div 
-                      key={r.id} 
-                      className={`p-3 bg-gray-50 rounded-md mb-2 cursor-pointer border transition-all ${selectedRouteId === r.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-orange-500 hover:bg-orange-50'}`}
-                      onClick={() => handleSelectRoute(r.id)}
-                    >
-                      <div className="text-base font-bold text-gray-800">{r.title}</div>
-                      {r.group && <div className="text-xs text-gray-500 mt-1">{r.group}</div>}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="mt-3 p-6 bg-white border-2 border-dashed border-blue-400 rounded-lg text-center shadow-[0_4px_12px_rgba(52,152,219,0.1)]">
-                  <div className="flex justify-center mb-5">
-                    <div className="w-11 h-11 border-4 border-blue-100 border-t-blue-500 rounded-full animate-spin"></div>
-                  </div>
-                  <h4 className="m-0 mb-3 text-gray-800 text-lg font-bold">Generating Custom Route...</h4>
-                  <p className="m-0 text-gray-600 text-sm leading-relaxed">
-                    AI is analyzing twisty roads and building the perfect ride for <strong className="text-gray-800">"{lastSearchedQuery}"</strong>.
-                  </p>
-                  {routeRequestSuccess && (
-                    <div className="mt-5 p-2 bg-green-50 text-green-600 rounded-md text-sm font-bold animate-pulse">
-                      {routeRequestSuccess}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Right Panel (Route Details) */}
+      {/* Right Sidebar - Route Details */}
       {selectedRoute && (
-        <div className={`
-          ${isMobile 
-            ? `absolute bottom-0 w-full bg-white rounded-t-2xl shadow-[0_-4px_15px_rgba(0,0,0,0.1)] max-h-[50vh] overflow-y-auto z-[1500] transition-transform duration-300 ${showRightSidebar ? 'translate-y-0' : 'translate-y-full'}` 
-            : `absolute top-20 right-4 w-96 max-h-[calc(100vh-6rem)] bg-white rounded-xl shadow-xl overflow-y-auto z-[1000] ${showRightSidebar ? 'block' : 'hidden'}`
-          }
-        `}>
+        <div className={`right-sidebar ${showRightSidebar ? 'open' : ''} ${isMobile ? 'mobile-drawer bottom-sheet' : ''}`}>
           {isMobile && (
-            <div className="w-full flex justify-center py-3 sticky top-0 bg-white z-10 cursor-pointer" onClick={() => setShowRightSidebar(false)}>
-              <div className="w-12 h-1.5 bg-gray-300 rounded-full"></div>
+            <div className="bottom-sheet-handle" onClick={() => setShowRightSidebar(false)}>
+              <div className="handle-bar"></div>
             </div>
           )}
-          <div className="p-5 pt-0 sm:pt-5">
-            <div className="flex justify-between items-start mb-4 gap-2">
-              <div className="text-xl font-bold text-gray-800 leading-tight">{selectedRoute.title}</div>
+          <div className="right-content">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div className="right-title">{selectedRoute.title}</div>
               <button 
                 onClick={handleSaveRoute}
-                className="bg-orange-500 hover:bg-orange-600 text-white border-none rounded-md px-3 py-1.5 cursor-pointer flex items-center gap-1.5 font-bold text-sm shrink-0 transition-colors"
+                style={{ background: '#f39c12', color: '#fff', border: 'none', borderRadius: '4px', padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px' }}
               >
                 <BookmarkPlus size={16} /> Save
               </button>
             </div>
             
             {selectedRoute.duration_str && (
-              <p className="text-orange-600 font-bold mt-[-5px] mb-4 text-sm">⏱️ {selectedRoute.duration_str} • 🛣️ {selectedRoute.distance_mi} miles</p>
+              <p className="right-time">⏱️ {selectedRoute.duration_str} • 🛣️ {selectedRoute.distance_mi} miles</p>
             )}
-            <div className="text-gray-600 text-sm leading-relaxed mb-6">{selectedRoute.desc}</div>
+            <div className="right-desc">{selectedRoute.desc}</div>
             
-            <div className="flex flex-col sm:flex-row gap-3 mb-6">
+            <div className="flex gap-2 mb-5 flex-wrap">
               <button 
                 onClick={handleOpenInGoogleMaps}
-                className="bg-blue-500 hover:bg-blue-600 text-white border-none rounded-md px-4 py-2.5 cursor-pointer flex items-center justify-center gap-2 flex-1 text-sm font-bold shadow-sm transition-colors"
+                className="bg-blue-500 hover:bg-blue-600 text-white border-none rounded px-3 py-2 cursor-pointer flex items-center justify-center gap-1 flex-1 text-sm font-bold transition-colors"
               >
-                🗺️ Google Maps
+                🗺️ Open in Google Maps
               </button>
               <button 
                 onClick={handleDownloadGPX}
-                className="bg-green-500 hover:bg-green-600 text-white border-none rounded-md px-4 py-2.5 cursor-pointer flex items-center justify-center gap-2 flex-1 text-sm font-bold shadow-sm transition-colors"
+                className="bg-green-500 hover:bg-green-600 text-white border-none rounded px-3 py-2 cursor-pointer flex items-center justify-center gap-1 flex-1 text-sm font-bold transition-colors"
               >
                 ⬇️ Download GPX
               </button>
             </div>
+
             
-            <div className="mb-4 p-3 rounded-md bg-gray-50 border-l-4 border-l-red-500">
-              <div className="font-bold text-sm mb-2 text-gray-800">⚡ City / Highway</div>
-              <div className="text-xs text-gray-600 leading-relaxed">{selectedRoute.highway_desc}</div>
+            <div className="right-leg" style={{borderLeftColor: '#e74c3c'}}>
+              <div className="leg-title">⚡ City / Highway</div>
+              <div className="leg-details">{selectedRoute.highway_desc}</div>
             </div>
             
             {selectedRoute.parkway_desc !== "No parkway on this route." && (
-              <div className="mb-4 p-3 rounded-md bg-gray-50 border-l-4 border-l-purple-500">
-                <div className="font-bold text-sm mb-2 text-gray-800">🛣️ Parkway</div>
-                <div className="text-xs text-gray-600 leading-relaxed">{selectedRoute.parkway_desc}</div>
+              <div className="right-leg" style={{borderLeftColor: '#9b59b6'}}>
+                <div className="leg-title">🛣️ Parkway</div>
+                <div className="leg-details">{selectedRoute.parkway_desc}</div>
               </div>
             )}
             
-            <div className="mb-4 p-3 rounded-md bg-gray-50 border-l-4 border-l-green-500">
-              <div className="font-bold text-sm mb-2 text-gray-800">🌲 The Ride</div>
-              <div className="text-xs text-gray-600 leading-relaxed">{selectedRoute.twisty_desc}</div>
+            <div className="right-leg" style={{borderLeftColor: '#2ecc71'}}>
+              <div className="leg-title">🌲 The Ride</div>
+              <div className="leg-details">{selectedRoute.twisty_desc}</div>
             </div>
           </div>
         </div>
       )}
       
-      {/* Mobile Backdrops (disabled since bottom sheets don't block interaction behind, but added logic if user expects it) */}
-      {/* 
+      {/* Mobile Backdrop for Left Drawer */}
       {isMobile && showLeftSidebar && (
         <div className="mobile-backdrop" onClick={() => setShowLeftSidebar(false)}></div>
       )}
+      {/* Mobile Backdrop for Right Sheet */}
       {isMobile && showRightSidebar && (
         <div className="mobile-backdrop" onClick={() => setShowRightSidebar(false)}></div>
       )}
-      */}
 
       {/* Bug Report Modal */}
       {isBugModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-5">
-          <div className="bg-white rounded-xl p-5 max-h-[90vh] overflow-y-auto w-full max-w-lg flex flex-col gap-4 shadow-xl text-gray-800">
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px'
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: '12px', padding: '20px', maxHeight: '90vh', overflowY: 'auto', boxSizing: 'border-box',
+            width: '100%', maxWidth: '500px', display: 'flex', flexDirection: 'column', gap: '16px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)', color: '#333'
+          }}>
             {bugSubmitSuccess ? (
-              <div className="text-center py-10">
-                <h2 className="text-green-500 m-0 font-bold text-xl">Thanks for reporting!</h2>
+              <div style={{ textAlign: 'center', padding: '40px 0' }}>
+                <h2 style={{ color: '#2ecc71', margin: 0 }}>Thanks for reporting!</h2>
               </div>
             ) : (
               <>
-                <h2 className="m-0 text-xl font-bold">Report a Bug</h2>
+                <h2 style={{ margin: 0, fontSize: '1.25rem' }}>Report a Bug</h2>
                 {bugScreenshot && (
-                  <div className="border border-gray-300 rounded-md overflow-hidden w-full max-h-[250px] flex justify-center bg-gray-100">
-                    <img src={bugScreenshot} alt="Screenshot preview" className="w-full h-auto object-contain" />
+                  <div style={{ border: '1px solid #ddd', borderRadius: '4px', overflow: 'hidden', width: '100%', maxHeight: '250px', display: 'flex', justifyContent: 'center', backgroundColor: '#f0f0f0' }}>
+                    <img src={bugScreenshot} alt="Screenshot preview" style={{ width: '100%', height: 'auto', objectFit: 'contain' }} />
                   </div>
                 )}
                 <textarea
                   placeholder="Add a comment..."
                   value={bugComment}
                   onChange={(e) => setBugComment(e.target.value)}
-                  className="w-full min-h-[100px] p-3 border border-gray-300 rounded-md font-sans text-gray-800 bg-white box-border resize-y"
+                  style={{
+                    width: '100%', minHeight: '100px', padding: '12px',
+                    border: '1px solid #ccc', borderRadius: '4px', resize: 'vertical',
+                    fontFamily: 'inherit', color: '#333', backgroundColor: '#fff', boxSizing: 'border-box'
+                  }}
                 />
-                <div className="flex flex-col gap-2 mt-3">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' }}>
                   <button 
                     onClick={closeBugModal}
                     disabled={isSubmittingBug}
-                    className="w-full p-3 bg-gray-100 border border-gray-300 rounded-md cursor-pointer text-gray-800 text-base font-semibold hover:bg-gray-200 transition-colors"
+                    style={{ width: '100%', padding: '12px 16px', background: '#f1f1f1', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', color: '#333', fontSize: '16px', fontWeight: '500' }}
                   >
                     Cancel
                   </button>
                   <button 
                     onClick={submitBugReport}
                     disabled={isSubmittingBug}
-                    className="w-full p-3 bg-red-500 border-none rounded-md cursor-pointer text-white text-base font-bold hover:bg-red-600 transition-colors"
+                    style={{ width: '100%', padding: '12px 16px', background: '#e74c3c', border: 'none', borderRadius: '6px', cursor: 'pointer', color: '#333', fontSize: '16px', fontWeight: 'bold' }}
                   >
                     {isSubmittingBug ? 'Submitting...' : 'Submit Bug'}
                   </button>
@@ -676,13 +660,21 @@ ${trkpts}    </trkseg>
 
       {/* Auth Modal */}
       {isAuthModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-5">
-          <div className="bg-white rounded-xl p-5 w-full max-w-md flex flex-col gap-4 shadow-xl text-gray-800">
-            <h2 className="m-0 text-xl font-bold text-center">
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px'
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: '12px', padding: '20px', 
+            width: '100%', maxWidth: '400px', display: 'flex', flexDirection: 'column', gap: '16px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)', color: '#333'
+          }}>
+            <h2 style={{ margin: 0, fontSize: '1.25rem', textAlign: 'center' }}>
               {authMode === 'login' ? 'Login' : 'Sign Up'}
             </h2>
             {authError && (
-              <div className="bg-red-100 text-red-800 p-3 rounded-md text-sm font-medium">
+              <div style={{ background: '#f8d7da', color: '#721c24', padding: '10px', borderRadius: '4px', fontSize: '0.9rem' }}>
                 {authError}
               </div>
             )}
@@ -691,25 +683,25 @@ ${trkpts}    </trkseg>
               placeholder="Email"
               value={authEmail}
               onChange={(e) => setAuthEmail(e.target.value)}
-              className="p-3 border border-gray-300 rounded-md w-full box-border text-gray-800 bg-white focus:outline-none focus:border-blue-500"
+              style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '4px', width: '100%', boxSizing: 'border-box', color: '#333', background: '#fff' }}
             />
             <input
               type="password"
               placeholder="Password"
               value={authPassword}
               onChange={(e) => setAuthPassword(e.target.value)}
-              className="p-3 border border-gray-300 rounded-md w-full box-border text-gray-800 bg-white focus:outline-none focus:border-blue-500"
+              style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '4px', width: '100%', boxSizing: 'border-box', color: '#333', background: '#fff' }}
             />
             <button 
               onClick={handleAuth}
-              className="p-3 bg-blue-500 text-white border-none rounded-md cursor-pointer font-bold hover:bg-blue-600 transition-colors"
+              style={{ padding: '12px', background: '#3498db', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
             >
               {authMode === 'login' ? 'Login' : 'Sign Up'}
             </button>
-            <div className="text-center text-sm text-gray-600">
+            <div style={{ textAlign: 'center', fontSize: '0.9rem', color: '#555' }}>
               {authMode === 'login' ? "Don't have an account? " : "Already have an account? "}
               <span 
-                className="text-blue-500 cursor-pointer underline font-medium hover:text-blue-700"
+                style={{ color: '#3498db', cursor: 'pointer', textDecoration: 'underline' }}
                 onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
               >
                 {authMode === 'login' ? 'Sign Up' : 'Login'}
@@ -717,7 +709,7 @@ ${trkpts}    </trkseg>
             </div>
             <button 
               onClick={() => setIsAuthModalOpen(false)}
-              className="p-2.5 bg-gray-100 border border-gray-300 rounded-md cursor-pointer mt-2 text-gray-800 font-medium hover:bg-gray-200 transition-colors"
+              style={{ padding: '10px', background: '#f1f1f1', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', marginTop: '10px', color: '#333' }}
             >
               Cancel
             </button>
