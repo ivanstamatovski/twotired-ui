@@ -178,7 +178,7 @@ function App() {
     setIsSubmittingBug(true);
     try {
       const { error } = await supabase.from('bug_reports').insert({
-        image: bugScreenshot,
+        image_data: bugScreenshot,
         route_id: selectedRouteId,
         comment: bugComment,
         user_id: user ? user.id : null
@@ -234,8 +234,7 @@ function App() {
     setRouteRequestSuccess('');
     try {
       const { error } = await supabase.from('route_requests').insert({
-        request: routeRequestText,
-        start_location: startLocation,
+        request_text: startLocation ? `Start: ${startLocation}. Request: ${routeRequestText}` : routeRequestText,
         user_id: user ? user.id : null
       });
 
