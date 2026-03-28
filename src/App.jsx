@@ -386,32 +386,5 @@ ${trkpts} </trkseg>
  }
  };
 
- const handleLogout = async () => {
- await supabase.auth.signOut();
- };
-
- const handleSaveRoute = async () => {
- if (!user) {
- setIsAuthModalOpen(true);
- return;
- }
- const { error } = await supabase
- .from('user_saved_routes')
- .insert({ user_id: user.id, route_id: selectedRouteId });
- 
- if (error) {
- if (error.code === '23505') {
- alert('You have already saved this route!');
- } else {
- alert('Error saving route: ' + error.message);
- }
- } else {
- alert('Route saved successfully!');
- }
- };
-
- return (
- <div className="app-container">
- {/* Fixed Modern Navbar */}
- <div className="absolute top-0 left-0 w-full z-[3000] p-3 flex justify-between it
+ const handleLogout = async 
 ...(truncated)...
