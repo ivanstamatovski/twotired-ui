@@ -102,8 +102,21 @@ function App() {
  .on('postgres_changes', { event: '*', schema: 'public', table: 'routes' }, (payload) => {
  if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
  const mappedNew = { ...payload.new, group: payload.new.group_name };
+ 
+ // Force selection and clear generation states
  setSelectedRouteId(mappedNew.id);
+ setIsRequestingRoute(false);
  setRouteRequestSuccess('');
+ setHasSearched(false);
+ setRouteRequestText('');
+ setSearchResults(null);
+ 
+ // Pop open the route details side panel
+ setShowRightSidebar(true);
+ if (window.innerWidth <= 768 || window.innerHeight <= 500) {
+ setShowLeftSidebar(false);
+ }
+
  setRoutesDb(prev => {
  const existingIndex = prev.findIndex(r => r.id === mappedNew.id);
  if (existingIndex >= 0) {
@@ -400,5 +413,5 @@ ${trkpts} </trkseg>
  return (
  <div className="app-container">
  {/* Fixed Modern Navbar */}
- <div className="absolute top-0 left-0 w-full z-[3000] p-3 fl
+ <div className="absolute top-0 left-0 w-full z-[3000] p-3 flex justify-between it
 ...(truncated)...
