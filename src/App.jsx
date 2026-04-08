@@ -2,14 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, GeoJSON, useMap, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from './lib/supabase';
 import { Menu, X, Map as MapIcon, Maximize, Bug, LogIn, LogOut, BookmarkPlus } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import './App.css';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
+import { getRoutes, submitBugReport, saveRoute } from './lib/routeService';
 
 // Inject CSS for spinner and pulse
 const styles = `
@@ -87,15 +87,30 @@ function App() {
  setUser(session?.user ?? null);
  });
 
- const fetchRoutes = async () => {
- const { data, error } = await supabase.from('routes').select('*');
- if (data) {
- setRoutesDb(data.map(r => ({ ...r, group: r.group_name })));
- } else {
- console.error('Error fetching routes:', error);
- }
- };
+const fetchRoutes = async () => {
+  try {
+    const { routes } = await getRoutes(destination);
+    setRoutes(routes);
+  } catch (err) {
+    console.error('Route fetch error:', err);
+  }
+};
 
+  const [generating, setGenerating] = useState(false);
+
+const handleGenerate = async () => {
+  if (!destination) return;
+  setGenerating(true);
+  try {
+    const { routes } = await getRoutes(destination);
+    setRoutes(routes);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    setGenerating(false);
+  }
+};
+  
  fetchRoutes();
 
  const channel = supabase.channel('public:routes')
