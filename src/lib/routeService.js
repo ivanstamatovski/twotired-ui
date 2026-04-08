@@ -3,48 +3,60 @@ import { supabase } from './supabase';
 const EDGE_FN = import.meta.env.VITE_SUPABASE_URL + '/functions/v1/generate-route';
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+export async function loadAllRoutes() {
+    const { data, error } = await supabase
+      .from('routes')
+      .select('*')
+      .eq('is_stale', false)
+      .order('community_score', { ascending: false });
+    if (error) throw error;
+    return data || [];
+}
+
 export async function getRoutes(destination) {
-  // 1. Cache hit — check Supabase first
+    if (!destination || destination.trim() === '') {
+          return { routes: [], source: 'empty' };
+    }
+
   const { data: cached, error } = await supabase
-    .from('routes')
-    .select('*')
-    .ilike('destination', '%' + destination + '%')
-    .eq('is_stale', false)
-    .order('community_score', { ascending: false });
+      .from('routes')
+      .select('*')
+      .ilike('destination', '%' + destination + '%')
+      .eq('is_stale', false)
+      .order('community_score', { ascending: false });
 
   if (!error && cached && cached.length > 0) {
-    return { routes: cached, source: 'cache' };
+        return { routes: cached, source: 'cache' };
   }
 
-  // 2. Cache miss — call AI Edge Function
   const res = await fetch(EDGE_FN, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + ANON_KEY
-    },
-    body: JSON.stringify({ start: 'Balancero Astoria', destination })
+        method: 'POST',
+        headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + ANON_KEY
+        },
+        body: JSON.stringify({ start: 'Balancero Astoria', destination })
   });
 
   if (!res.ok) throw new Error('Route generation failed: ' + res.statusText);
-  const { routes } = await res.json();
-  return { routes, source: 'generated' };
+    const { routes } = await res.json();
+    return { routes, source: 'generated' };
 }
 
 export async function saveRoute(routeId, userId) {
-  return supabase
-    .from('user_saved_routes')
-    .insert({ route_id: routeId, user_id: userId });
+    return supabase
+      .from('user_saved_routes')
+      .insert({ route_id: routeId, user_id: userId });
 }
 
 export async function submitBugReport({ userId, routeId, comment, imageData }) {
-  return supabase
-    .from('bug_reports')
-    .insert({ user_id: userId, route_id: routeId, comment, image_data: imageData });
+    return supabase
+      .from('bug_reports')
+      .insert({ user_id: userId, route_id: routeId, comment, image_data: imageData });
 }
 
 export async function logRouteRequest(requestText, email) {
-  return supabase
-    .from('route_requests')
-    .insert({ request_text: requestText, email, status: 'pending' });
+    return supabase
+      .from('route_requests')
+      .insert({ request_text: requestText, email, status: 'pending' });
 }
