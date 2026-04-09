@@ -1,3 +1,4 @@
+console.log('APP MODULE LOADING');
 import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, GeoJSON, useMap, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
@@ -404,6 +405,7 @@ ${trkpts} </trkseg>
  const handleLogout = async () => {
     await supabase.auth.signOut();
   };
+ console.log('APP RENDERING');
 
   return (
     <div>
