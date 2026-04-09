@@ -406,11 +406,6 @@ ${trkpts} </trkseg>
   };
 
   return (
-      const handleLogout = async () => {
-    await supabase.auth.signOut();
-  };
-
-  return (
     <div>
       <p>Loading TwistyRoute...</p>
     </div>
