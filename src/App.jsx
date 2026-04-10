@@ -100,21 +100,22 @@ function App() {
           setSelectedRouteId(mapped.id);
           setIsRequestingRoute(false);
           setRouteRequestSuccess('');
-          setHasSearched(false);
-          setRouteRequestText('');
-          setSearchResults(null);
           setShowRightSidebar(true);
           if (window.innerWidth <= 768 || window.innerHeight <= 500) {
             setShowLeftSidebar(false);
           }
+          // Add to DB cache
           setRoutesDb(prev => {
             const idx = prev.findIndex(r => r.id === mapped.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = mapped;
-              return next;
-            }
+            if (idx >= 0) { const next = [...prev]; next[idx] = mapped; return next; }
             return [...prev, mapped];
+          });
+          // Accumulate into searchResults so only generated routes show in the list
+          setSearchResults(prev => {
+            const list = prev ?? [];
+            const idx = list.findIndex(r => r.id === mapped.id);
+            if (idx >= 0) { const next = [...list]; next[idx] = mapped; return next; }
+            return [...list, mapped];
           });
         }
       })
@@ -153,8 +154,7 @@ function App() {
     }
   }, [routesDb, isRequestingRoute, routeRequestText]);
 
-  // ── Derived values ─────────────────────────────────────────────────────────
-  const selectedRoute = routesDb.find(r => r.id === selectedRouteId);
+  // ── OSRM route fetching (for routes without stored geojson) ───────────────
   const [computedGeoJSON, setComputedGeoJSON] = useState(null);
 
   useEffect(() => {
@@ -162,9 +162,11 @@ function App() {
     if (!selectedRouteId) return;
     const route = routesDb.find(r => r.id === selectedRouteId);
     if (!route) return;
-    if (route.geojson) return;
+    if (route.geojson) return; // already has geojson, no need to fetch
+
     const waypoints = route.waypoints;
     if (!waypoints || waypoints.length < 2) return;
+
     const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
     fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`)
       .then(r => r.json())
@@ -177,6 +179,7 @@ function App() {
         }
       })
       .catch(() => {
+        // Fallback: straight line between waypoints
         setComputedGeoJSON({
           type: 'FeatureCollection',
           features: [{ type: 'Feature', geometry: {
@@ -187,8 +190,11 @@ function App() {
       });
   }, [selectedRouteId, routesDb]);
 
+  // ── Derived values ─────────────────────────────────────────────────────────
+  const selectedRoute = routesDb.find(r => r.id === selectedRouteId);
   const selectedGeoJSON = selectedRoute?.geojson ?? computedGeoJSON;
-  const displayRoutes = searchResults !== null ? searchResults : routesDb;
+  // Only show search results — never show the full historical DB list
+  const displayRoutes = searchResults !== null ? searchResults : [];
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -199,43 +205,67 @@ function App() {
     setLastSearchedQuery(query);
     setGenerating(true);
     setRouteRequestSuccess('');
+    setSearchResults(null);
 
     try {
-      const { routes } = await getRoutes(query);
-
-      if (routes && routes.length > 0) {
-        const mapped = routes.map(r => ({ ...r, group: r.group_name }));
+      // Step 1: Check DB for existing cached routes
+      const { routes: cachedRoutes } = await getRoutes(query);
+      if (cachedRoutes && cachedRoutes.length > 0) {
+        const mapped = cachedRoutes.map(r => ({ ...r, group: r.group_name }));
         setSearchResults(mapped);
         setHasSearched(true);
-        // Merge into routesDb
         setRoutesDb(prev => {
           const merged = [...prev];
-          mapped.forEach(r => {
-            if (!merged.find(e => e.id === r.id)) merged.push(r);
-          });
+          mapped.forEach(r => { if (!merged.find(e => e.id === r.id)) merged.push(r); });
           return merged;
         });
         return;
       }
 
-      // No cached routes — trigger AI generation via route_requests
-      if (!user) {
-        setIsAuthModalOpen(true);
-        return;
+      // Step 2: Geocode the destination in the browser (no rate-limit issues)
+      let destLat = 0, destLng = 0;
+      try {
+        const geoRes = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=us`,
+          { headers: { 'User-Agent': 'TwoTired/1.0' } }
+        );
+        const geoData = await geoRes.json();
+        if (geoData && geoData[0]) {
+          destLat = parseFloat(geoData[0].lat);
+          destLng = parseFloat(geoData[0].lon);
+        }
+      } catch (geoErr) {
+        console.warn('Geocoding failed, proceeding without coords', geoErr);
       }
 
+      // Step 3: Call edge function directly with geocoded coords
       setIsRequestingRoute(true);
-      await logRouteRequest(
-        `Start: ${startLocation}. Request: ${query}`,
-        user.email
-      );
-      setRouteRequestSuccess(`Your request is in! We'll email you at ${user.email} when your custom route is ready.`);
-      setRouteRequestText('');
+      const { data, error } = await supabase.functions.invoke('generate-route', {
+        body: { start: startLocation, destination: query, destLat, destLng }
+      });
+
+      if (error) throw new Error(error.message || 'Edge function error');
+
+      const routes = Array.isArray(data) ? data : [];
+      if (routes.length > 0) {
+        const mapped = routes.map(r => ({ ...r, group: r.group_name }));
+        setSearchResults(mapped);
+        setHasSearched(true);
+        setRoutesDb(prev => {
+          const merged = [...prev];
+          mapped.forEach(r => { if (!merged.find(e => e.id === r.id)) merged.push(r); });
+          return merged;
+        });
+        setSelectedRouteId(mapped[0].id);
+        setShowRightSidebar(true);
+        if (isMobile) setShowLeftSidebar(false);
+      }
     } catch (err) {
       console.error(err);
       alert('Error generating route. Please try again.');
     } finally {
       setGenerating(false);
+      setIsRequestingRoute(false);
     }
   };
 
@@ -561,37 +591,64 @@ ${trkpts}    </trkseg>
           position: isMobile ? 'absolute' : 'relative',
           top: 0, right: 0, height: '100%'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-            <div>
-              <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: '15px' }}>{selectedRoute.title}</p>
-              <p style={{ margin: 0, fontSize: '13px', color: '#f97316', fontWeight: 600 }}>
-                {selectedRoute.duration_str && `⏱ ${selectedRoute.duration_str}`}
-                {selectedRoute.distance_mi && ` · 🛣️ ${selectedRoute.distance_mi} mi`}
-              </p>
-            </div>
-            {isMobile && (
-              <button onClick={() => setShowRightSidebar(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
-                <X size={18} />
-              </button>
-            )}
-          </div>
+          {(() => {
+            // Support both AI-generated routes (segments array) and old DB routes (flat fields)
+            const segs = selectedRoute.segments
+              ? selectedRoute.segments.map(s => ({ color: s.color, label: s.label, desc: s.description, duration: s.duration, miles: s.miles }))
+              : [
+                  { color: '#e74c3c', label: '⚡ City / Highway', desc: selectedRoute.highway_desc },
+                  { color: '#9b59b6', label: '🛣️ Parkway',        desc: selectedRoute.parkway_desc },
+                  { color: '#2ecc71', label: '🌲 The Ride',       desc: selectedRoute.twisty_desc },
+                ].filter(s => s.desc);
 
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-            <button onClick={handleSaveRoute} style={{ flex: 1, padding: '8px', background: '#eab308', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Save</button>
-            <button onClick={handleOpenInGoogleMaps} style={{ flex: 1, padding: '8px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Maps</button>
-            <button onClick={handleDownloadGPX} style={{ flex: 1, padding: '8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>GPX</button>
-          </div>
+            const totalDuration = selectedRoute.duration_str
+              || segs.map(s => s.duration).filter(Boolean).join(' + ');
+            const totalMiles = selectedRoute.distance_mi
+              ? `${selectedRoute.distance_mi} mi`
+              : segs.map(s => s.miles).filter(Boolean).join(' + ');
 
-          {[
-            { color: '#e74c3c', label: '⚡ City / Highway', desc: selectedRoute.highway_desc },
-            { color: '#9b59b6', label: '🛣️ Parkway',        desc: selectedRoute.parkway_desc },
-            { color: '#2ecc71', label: '🌲 The Ride',       desc: selectedRoute.twisty_desc },
-          ].filter(s => s.desc).map((seg, i) => (
-            <div key={i} style={{ borderLeft: `4px solid ${seg.color}`, paddingLeft: '12px', marginBottom: '12px' }}>
-              <p style={{ fontWeight: 600, margin: '0 0 4px', fontSize: '14px' }}>{seg.label}</p>
-              <p style={{ margin: 0, fontSize: '13px', color: '#6b7280', lineHeight: 1.5 }}>{seg.desc}</p>
-            </div>
-          ))}
+            return (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                  <div>
+                    <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: '15px' }}>{selectedRoute.title}</p>
+                    <p style={{ margin: 0, fontSize: '13px', color: '#f97316', fontWeight: 600 }}>
+                      {totalDuration && `⏱ ${totalDuration}`}
+                      {totalMiles && ` · 🛣️ ${totalMiles}`}
+                    </p>
+                    {selectedRoute.destination && (
+                      <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#9ca3af' }}>→ {selectedRoute.destination}</p>
+                    )}
+                  </div>
+                  {isMobile && (
+                    <button onClick={() => setShowRightSidebar(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+                      <X size={18} />
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                  <button onClick={handleSaveRoute} style={{ flex: 1, padding: '8px', background: '#eab308', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Save</button>
+                  <button onClick={handleOpenInGoogleMaps} style={{ flex: 1, padding: '8px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Maps</button>
+                  <button onClick={handleDownloadGPX} style={{ flex: 1, padding: '8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>GPX</button>
+                </div>
+
+                {segs.map((seg, i) => (
+                  <div key={i} style={{ borderLeft: `4px solid ${seg.color}`, paddingLeft: '12px', marginBottom: '14px' }}>
+                    <p style={{ fontWeight: 600, margin: '0 0 2px', fontSize: '14px' }}>{seg.label}</p>
+                    {(seg.duration || seg.miles) && (
+                      <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#f97316', fontWeight: 600 }}>
+                        {[seg.duration, seg.miles].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                    {seg.desc && (
+                      <p style={{ margin: 0, fontSize: '13px', color: '#6b7280', lineHeight: 1.5 }}>{seg.desc}</p>
+                    )}
+                  </div>
+                ))}
+              </>
+            );
+          })()}
         </div>
       )}
 
