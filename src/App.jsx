@@ -124,7 +124,7 @@ function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'routes' }, (payload) => {
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const mapped = { ...payload.new, group: payload.new.group_name };
-          setSelectedRouteId(mapped.id);
+          setSelectedRouteId(prev => prev ?? mapped.id);
           setIsRequestingRoute(false);
           setRouteRequestSuccess('');
           setShowRightSidebar(true);
@@ -195,7 +195,8 @@ function App() {
   useEffect(() => {
     setComputedGeoJSON(null);
     if (!selectedRouteId) return;
-    const route = routesDb.find(r => r.id === selectedRouteId);
+    const route = (searchResults || []).find(r => r.id === selectedRouteId)
+      || routesDb.find(r => r.id === selectedRouteId);
     if (!route) return;
     if (route.geojson) return; // already has geojson, no need to fetch
 
@@ -203,7 +204,8 @@ function App() {
     if (!waypoints || waypoints.length < 2) return;
 
     const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
-    fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`)
+    const radii = waypoints.map(() => 'unlimited').join(';');
+    fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&radiuses=${radii}`)
       .then(r => r.json())
       .then(data => {
         if (data.routes && data.routes[0]) {
@@ -223,10 +225,11 @@ function App() {
           }, properties: {} }]
         });
       });
-  }, [selectedRouteId, routesDb]);
+  }, [selectedRouteId, routesDb, searchResults]);
 
   // ── Derived values ─────────────────────────────────────────────────────────
-  const selectedRoute = routesDb.find(r => r.id === selectedRouteId);
+  const selectedRoute = (searchResults || []).find(r => r.id === selectedRouteId)
+    || routesDb.find(r => r.id === selectedRouteId);
   const selectedGeoJSON = selectedRoute?.geojson ?? computedGeoJSON;
   // Only show search results — never show the full historical DB list
   const displayRoutes = searchResults !== null ? searchResults : [];
