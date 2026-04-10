@@ -44,10 +44,15 @@ For each route return EXACTLY this JSON structure:
   ],
   "waypoints": [
     {"lat":40.762283,"lng":-73.918380,"label":"Balancero Caffe"},
+    {"lat":40.8500,"lng":-73.9400,"label":"GW Bridge approach"},
+    {"lat":41.0534,"lng":-74.0070,"label":"Palisades Pkwy North"},
+    {"lat":41.2000,"lng":-74.0500,"label":"Scenic midpoint"},
     {"lat":41.3112,"lng":-74.0039,"label":"${destination}"}
   ],
   "colors": {"city":"#E24B4A","parkway":"#7F77DD","scenic":"#34A853"}
 }
+
+CRITICAL waypoints requirement: Include 5-8 waypoints with REAL, ACCURATE lat/lng coordinates tracing the actual road route from start to destination. The waypoints must follow real roads and highways - they will be used by a mapping API to draw the route on a map. Include the start point, major turns or landmarks along the way (bridges, parkway entries, notable roads), and the destination. Use your knowledge of real road geography to place accurate coordinates.
 
 Use real road names, exit numbers, and insider rider knowledge.
 Prioritize fast city escape, scenic parkways, and community-recommended twisty roads.
@@ -60,11 +65,9 @@ IMPORTANT: Return ONLY a raw JSON array. No markdown, no code fences, no backtic
     });
 
     let rawText = message.content[0].type === 'text' ? message.content[0].text : '[]';
-    // Strip markdown code fences if Claude wraps the response anyway
     rawText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
     const routes = JSON.parse(rawText);
 
-    // Save to Supabase cache
     for (const route of routes) {
       await supabase.from('routes').upsert(route, { onConflict: 'id', ignoreDuplicates: false });
     }
