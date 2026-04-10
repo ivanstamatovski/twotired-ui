@@ -124,7 +124,8 @@ function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'routes' }, (payload) => {
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const mapped = { ...payload.new, group: payload.new.group_name };
-          setSelectedRouteId(mapped.id);
+          // Only auto-select from realtime if nothing is selected yet (edge function response takes priority)
+          setSelectedRouteId(prev => prev ?? mapped.id);
           setIsRequestingRoute(false);
           setRouteRequestSuccess('');
           setShowRightSidebar(true);
@@ -195,38 +196,54 @@ function App() {
   useEffect(() => {
     setComputedGeoJSON(null);
     if (!selectedRouteId) return;
-    const route = routesDb.find(r => r.id === selectedRouteId);
+    // Search searchResults first (has fresh AI data with waypoints), then fall back to routesDb
+    const route = (searchResults || []).find(r => r.id === selectedRouteId)
+      || routesDb.find(r => r.id === selectedRouteId);
     if (!route) return;
     if (route.geojson) return; // already has geojson, no need to fetch
 
     const waypoints = route.waypoints;
     if (!waypoints || waypoints.length < 2) return;
 
-    const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
-    fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`)
+    // OSRM public server has a ~25 coordinate limit; trim if needed
+    const trimmed = waypoints.length > 25 ? waypoints.filter((_, i) => i % Math.ceil(waypoints.length / 25) === 0) : waypoints;
+    const coords = trimmed.map(w => `${w.lng},${w.lat}`).join(';');
+    const radii = trimmed.map(() => 'unlimited').join(';');
+    console.log('[OSRM] fetching route with', trimmed.length, 'waypoints, selectedRouteId:', selectedRouteId);
+    const straightLineFallback = () => {
+      console.warn('[OSRM] falling back to straight-line geometry');
+      setComputedGeoJSON({
+        type: 'FeatureCollection',
+        features: [{ type: 'Feature', geometry: {
+          type: 'LineString',
+          coordinates: waypoints.map(w => [w.lng, w.lat])
+        }, properties: {} }]
+      });
+    };
+    fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&radiuses=${radii}`)
       .then(r => r.json())
       .then(data => {
+        console.log('[OSRM] response code:', data.code, 'routes:', data.routes?.length);
         if (data.routes && data.routes[0]) {
           setComputedGeoJSON({
             type: 'FeatureCollection',
             features: [{ type: 'Feature', geometry: data.routes[0].geometry, properties: {} }]
           });
+        } else {
+          // OSRM returned an error code (NoRoute, InvalidUrl, etc.) — use straight-line fallback
+          straightLineFallback();
         }
       })
-      .catch(() => {
-        // Fallback: straight line between waypoints
-        setComputedGeoJSON({
-          type: 'FeatureCollection',
-          features: [{ type: 'Feature', geometry: {
-            type: 'LineString',
-            coordinates: waypoints.map(w => [w.lng, w.lat])
-          }, properties: {} }]
-        });
+      .catch(err => {
+        console.error('[OSRM] network error:', err);
+        straightLineFallback();
       });
-  }, [selectedRouteId, routesDb]);
+  }, [selectedRouteId, routesDb, searchResults]);
 
   // ── Derived values ─────────────────────────────────────────────────────────
-  const selectedRoute = routesDb.find(r => r.id === selectedRouteId);
+  // Search searchResults first (has fresh AI data), then fall back to routesDb
+  const selectedRoute = (searchResults || []).find(r => r.id === selectedRouteId)
+    || routesDb.find(r => r.id === selectedRouteId);
   const selectedGeoJSON = selectedRoute?.geojson ?? computedGeoJSON;
   // Only show search results — never show the full historical DB list
   const displayRoutes = searchResults !== null ? searchResults : [];
