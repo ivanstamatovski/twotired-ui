@@ -155,7 +155,39 @@ function App() {
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const selectedRoute = routesDb.find(r => r.id === selectedRouteId);
-  const selectedGeoJSON = selectedRoute?.geojson ?? null;
+  const [computedGeoJSON, setComputedGeoJSON] = useState(null);
+
+  useEffect(() => {
+    setComputedGeoJSON(null);
+    if (!selectedRouteId) return;
+    const route = routesDb.find(r => r.id === selectedRouteId);
+    if (!route) return;
+    if (route.geojson) return;
+    const waypoints = route.waypoints;
+    if (!waypoints || waypoints.length < 2) return;
+    const coords = waypoints.map(w => `${w.lng},${w.lat}`).join(';');
+    fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.routes && data.routes[0]) {
+          setComputedGeoJSON({
+            type: 'FeatureCollection',
+            features: [{ type: 'Feature', geometry: data.routes[0].geometry, properties: {} }]
+          });
+        }
+      })
+      .catch(() => {
+        setComputedGeoJSON({
+          type: 'FeatureCollection',
+          features: [{ type: 'Feature', geometry: {
+            type: 'LineString',
+            coordinates: waypoints.map(w => [w.lng, w.lat])
+          }, properties: {} }]
+        });
+      });
+  }, [selectedRouteId, routesDb]);
+
+  const selectedGeoJSON = selectedRoute?.geojson ?? computedGeoJSON;
   const displayRoutes = searchResults !== null ? searchResults : routesDb;
 
   // ── Handlers ───────────────────────────────────────────────────────────────
