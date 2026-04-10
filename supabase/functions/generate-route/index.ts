@@ -51,7 +51,7 @@ For each route return EXACTLY this JSON structure:
 
 Use real road names, exit numbers, and insider rider knowledge.
 Prioritize fast city escape, scenic parkways, and community-recommended twisty roads.
-Return ONLY a valid JSON array. No markdown, no explanation.`;
+IMPORTANT: Return ONLY a raw JSON array. No markdown, no code fences, no backticks, no explanation. Start with [ and end with ].`;
 
     const message = await anthropic.messages.create({
       model: 'claude-sonnet-4-5',
@@ -59,7 +59,9 @@ Return ONLY a valid JSON array. No markdown, no explanation.`;
       messages: [{ role: 'user', content: prompt }]
     });
 
-    const rawText = message.content[0].type === 'text' ? message.content[0].text : '[]';
+    let rawText = message.content[0].type === 'text' ? message.content[0].text : '[]';
+    // Strip markdown code fences if Claude wraps the response anyway
+    rawText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
     const routes = JSON.parse(rawText);
 
     // Save to Supabase cache
