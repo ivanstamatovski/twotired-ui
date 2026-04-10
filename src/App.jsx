@@ -19,6 +19,24 @@ if (typeof document !== 'undefined') {
   document.head.appendChild(styleSheet);
 }
 
+// ── Duration helpers ───────────────────────────────────────────────────────
+const parseMins = (str) => {
+  if (!str) return 0;
+  const h = str.match(/(\d+)\s*h/);
+  const m = str.match(/(\d+)\s*min/);
+  return (h ? parseInt(h[1]) * 60 : 0) + (m ? parseInt(m[1]) : 0);
+};
+const formatMins = (total) => {
+  if (!total || total <= 0) return '';
+  if (total < 60) return `${total} min`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m > 0 ? `${h}h ${m}min` : `${h}h`;
+};
+const sumDurations = (segs) => formatMins(segs.reduce((acc, s) => acc + parseMins(s.duration), 0));
+
+const RECENT_KEY = 'twistyroute_recent';
+
 // Sub-component to auto-fit the map to the selected route
 function FitBounds({ geojson }) {
   const map = useMap();
@@ -50,6 +68,15 @@ function App() {
   // ── Input state ────────────────────────────────────────────────────────────
   const [startLocation] = useState('Balancero Astoria');
   const [routeRequestText, setRouteRequestText] = useState('');
+
+  // ── Recent routes (localStorage) ──────────────────────────────────────────
+  const [recentRoutes, setRecentRoutes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
+  });
+
+  // ── Cycling loading message ────────────────────────────────────────────────
+  const loadingMessages = ['Researching routes...', 'Connecting to destination...', 'Drawing your path...', 'Finding twisty roads...'];
+  const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
 
   // ── Bug report state ───────────────────────────────────────────────────────
   const [reportStatus, setReportStatus] = useState('Report Bug');
@@ -137,6 +164,14 @@ function App() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // ── Cycle loading message while generating ─────────────────────────────────
+  useEffect(() => {
+    if (!generating && !isRequestingRoute) return;
+    setLoadingMsgIdx(0);
+    const id = setInterval(() => setLoadingMsgIdx(i => (i + 1) % loadingMessages.length), 1800);
+    return () => clearInterval(id);
+  }, [generating, isRequestingRoute]);
 
   // ── Auto-resolve loading when new route arrives via websocket ──────────────
   useEffect(() => {
@@ -259,6 +294,12 @@ function App() {
         setSelectedRouteId(mapped[0].id);
         setShowRightSidebar(true);
         if (isMobile) setShowLeftSidebar(false);
+        // Save to recent routes
+        setRecentRoutes(prev => {
+          const merged = [...mapped, ...prev.filter(r => !mapped.find(nr => nr.id === r.id))].slice(0, 5);
+          try { localStorage.setItem(RECENT_KEY, JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
     } catch (err) {
       console.error(err);
@@ -487,7 +528,7 @@ ${trkpts}    </trkseg>
               marginBottom: '16px'
             }}
           >
-            {generating ? 'Searching...' : isRequestingRoute ? 'Generating...' : 'Generate'}
+            {(generating || isRequestingRoute) ? loadingMessages[loadingMsgIdx] : 'Generate'}
           </button>
 
           {/* AI generation loading state */}
@@ -515,29 +556,63 @@ ${trkpts}    </trkseg>
             </div>
           )}
 
-          {/* Route list */}
+          {/* Current results */}
           {displayRoutes.length > 0 && (
+            <div style={{ marginBottom: '16px' }}>
+              <p style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
+                {`Results for "${lastSearchedQuery}"`}
+              </p>
+              {displayRoutes.map(route => {
+                const segs = route.segments || [];
+                const total = segs.length > 0 ? sumDurations(segs) : (route.duration_str || '');
+                return (
+                  <div
+                    key={route.id}
+                    onClick={() => handleSelectRoute(route.id)}
+                    style={{
+                      padding: '10px 12px', borderRadius: '8px', marginBottom: '8px', cursor: 'pointer',
+                      border: selectedRouteId === route.id ? '2px solid #3b82f6' : '1px solid #e5e7eb',
+                      background: selectedRouteId === route.id ? '#eff6ff' : '#fff'
+                    }}
+                  >
+                    <p style={{ margin: '0 0 2px', fontWeight: 600, fontSize: '14px' }}>{route.title}</p>
+                    <p style={{ margin: 0, fontSize: '12px', color: '#6b7280' }}>
+                      {total && `⏱ ${total}`}{route.destination ? ` · ${route.destination}` : ''}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Recent Results */}
+          {recentRoutes.length > 0 && (
             <div>
               <p style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
-                {searchResults !== null ? `Results for "${lastSearchedQuery}"` : 'Available Routes'}
+                Recent Results
               </p>
-              {displayRoutes.map(route => (
-                <div
-                  key={route.id}
-                  onClick={() => handleSelectRoute(route.id)}
-                  style={{
-                    padding: '10px 12px', borderRadius: '8px', marginBottom: '8px', cursor: 'pointer',
-                    border: selectedRouteId === route.id ? '2px solid #3b82f6' : '1px solid #e5e7eb',
-                    background: selectedRouteId === route.id ? '#eff6ff' : '#fff'
-                  }}
-                >
-                  <p style={{ margin: '0 0 2px', fontWeight: 600, fontSize: '14px' }}>{route.title}</p>
-                  <p style={{ margin: 0, fontSize: '12px', color: '#6b7280' }}>
-                    {route.distance_mi ? `${route.distance_mi} mi · ` : ''}
-                    {route.duration_str || route.destination || route.group}
-                  </p>
-                </div>
-              ))}
+              <div style={{ maxHeight: '240px', overflowY: 'auto' }}>
+                {recentRoutes.map(route => {
+                  const segs = route.segments || [];
+                  const total = segs.length > 0 ? sumDurations(segs) : (route.duration_str || '');
+                  return (
+                    <div
+                      key={route.id}
+                      onClick={() => handleSelectRoute(route.id)}
+                      style={{
+                        padding: '10px 12px', borderRadius: '8px', marginBottom: '6px', cursor: 'pointer',
+                        border: selectedRouteId === route.id ? '2px solid #3b82f6' : '1px solid #e5e7eb',
+                        background: selectedRouteId === route.id ? '#eff6ff' : '#fafafa'
+                      }}
+                    >
+                      <p style={{ margin: '0 0 2px', fontWeight: 600, fontSize: '13px' }}>{route.title}</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#9ca3af' }}>
+                        {total && `⏱ ${total}`}{route.destination ? ` · ${route.destination}` : ''}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -601,8 +676,7 @@ ${trkpts}    </trkseg>
                   { color: '#2ecc71', label: '🌲 The Ride',       desc: selectedRoute.twisty_desc },
                 ].filter(s => s.desc);
 
-            const totalDuration = selectedRoute.duration_str
-              || segs.map(s => s.duration).filter(Boolean).join(' + ');
+            const totalDuration = selectedRoute.duration_str || sumDurations(segs);
             const totalMiles = selectedRoute.distance_mi
               ? `${selectedRoute.distance_mi} mi`
               : segs.map(s => s.miles).filter(Boolean).join(' + ');
