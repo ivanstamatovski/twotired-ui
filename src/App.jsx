@@ -434,28 +434,24 @@ ${trkpts}    </trkseg>
         video: { displaySurface: 'browser' },
         preferCurrentTab: true,
       });
-      const track = stream.getVideoTracks()[0];
 
-      let canvas;
-      if (typeof ImageCapture !== 'undefined') {
-        // Preferred: grab a single frame without a video element
-        const imageCapture = new ImageCapture(track);
-        const bitmap = await imageCapture.grabFrame();
-        canvas = document.createElement('canvas');
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        canvas.getContext('2d').drawImage(bitmap, 0, 0);
-      } else {
-        // Fallback: draw via a hidden video element
-        const video = document.createElement('video');
-        video.srcObject = stream;
-        await new Promise(r => { video.onloadedmetadata = r; });
-        await video.play();
-        canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-      }
+      // Wait for the browser to repaint the tab after the share dialog dismisses.
+      // Without this the map tiles haven't re-rendered and show as white.
+      await new Promise(r => setTimeout(r, 400));
+
+      const track = stream.getVideoTracks()[0];
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      await new Promise(r => { video.onloadedmetadata = r; });
+      await video.play();
+      // One extra frame to guarantee tiles are painted
+      await new Promise(r => requestAnimationFrame(r));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
 
       setBugScreenshot(canvas.toDataURL('image/jpeg', 0.85));
       setIsBugModalOpen(true);
