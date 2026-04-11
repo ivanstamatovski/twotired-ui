@@ -126,6 +126,7 @@ function App() {
           const mapped = { ...payload.new, group: payload.new.group_name };
           setSelectedRouteId(prev => prev ?? mapped.id);
           setIsRequestingRoute(false);
+          setGenerating(false); // background generation complete
           setRouteRequestSuccess('');
           setShowRightSidebar(true);
           if (window.innerWidth <= 768 || window.innerHeight <= 500) {
@@ -289,37 +290,41 @@ function App() {
       });
 
       if (error) {
-        // Edge function errored — log for diagnostics but don't alert.
-        // The background DB insert (EdgeRuntime.waitUntil) may still succeed
-        // and deliver routes via the realtime subscription.
         console.error('[generate-route] Edge function error:', error.message, error);
-        return;
-      }
-
-      const routes = Array.isArray(data) ? data : [];
-      console.log('[generate-route] Response:', routes.length, 'routes');
-      if (routes.length > 0) {
-        const mapped = routes.map(r => ({ ...r, group: r.group_name }));
-        setSearchResults(mapped);
-        setHasSearched(true);
-        setRoutesDb(prev => {
-          const merged = [...prev];
-          mapped.forEach(r => { if (!merged.find(e => e.id === r.id)) merged.push(r); });
-          return merged;
-        });
-        setSelectedRouteId(mapped[0].id);
-        setShowRightSidebar(true);
-        if (isMobile) setShowLeftSidebar(false);
-        // Save to recent routes
-        setRecentRoutes(prev => {
-          const merged = [...mapped, ...prev.filter(r => !mapped.find(nr => nr.id === r.id))].slice(0, 5);
-          try { localStorage.setItem(RECENT_KEY, JSON.stringify(merged)); } catch {}
-          return merged;
-        });
+        // fall through to finally — clear loading state
+      } else if (data?.status === 'generating') {
+        // Edge function returned immediately — all work is running in background.
+        // Realtime subscription will deliver routes + geojson when DB insert fires.
+        // Keep generating=true and isRequestingRoute=true so the spinner stays up.
+        // The realtime handler clears both when the first route arrives.
+        // Failsafe: clear after 90s in case realtime never fires.
+        setTimeout(() => { setGenerating(false); setIsRequestingRoute(false); }, 90000);
+        return; // skip finally — don't clear loading state yet
+      } else {
+        // Edge function returned routes directly (future fast path)
+        const routes = Array.isArray(data) ? data : [];
+        console.log('[generate-route] Direct response:', routes.length, 'routes');
+        if (routes.length > 0) {
+          const mapped = routes.map(r => ({ ...r, group: r.group_name }));
+          setSearchResults(mapped);
+          setHasSearched(true);
+          setRoutesDb(prev => {
+            const merged = [...prev];
+            mapped.forEach(r => { if (!merged.find(e => e.id === r.id)) merged.push(r); });
+            return merged;
+          });
+          setSelectedRouteId(mapped[0].id);
+          setShowRightSidebar(true);
+          if (isMobile) setShowLeftSidebar(false);
+          setRecentRoutes(prev => {
+            const merged = [...mapped, ...prev.filter(r => !mapped.find(nr => nr.id === r.id))].slice(0, 5);
+            try { localStorage.setItem(RECENT_KEY, JSON.stringify(merged)); } catch {}
+            return merged;
+          });
+        }
       }
     } catch (err) {
       console.error('[generate-route] Exception:', err);
-      // No alert — keep UI clean, realtime may still deliver routes
     } finally {
       setGenerating(false);
       setIsRequestingRoute(false);
