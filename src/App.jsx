@@ -288,9 +288,16 @@ function App() {
         body: { start: startLocation, destination: query, destLat, destLng }
       });
 
-      if (error) throw new Error(error.message || 'Edge function error');
+      if (error) {
+        // Edge function errored — log for diagnostics but don't alert.
+        // The background DB insert (EdgeRuntime.waitUntil) may still succeed
+        // and deliver routes via the realtime subscription.
+        console.error('[generate-route] Edge function error:', error.message, error);
+        return;
+      }
 
       const routes = Array.isArray(data) ? data : [];
+      console.log('[generate-route] Response:', routes.length, 'routes');
       if (routes.length > 0) {
         const mapped = routes.map(r => ({ ...r, group: r.group_name }));
         setSearchResults(mapped);
@@ -311,8 +318,8 @@ function App() {
         });
       }
     } catch (err) {
-      console.error(err);
-      alert('Error generating route. Please try again.');
+      console.error('[generate-route] Exception:', err);
+      // No alert — keep UI clean, realtime may still deliver routes
     } finally {
       setGenerating(false);
       setIsRequestingRoute(false);
