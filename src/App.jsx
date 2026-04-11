@@ -252,6 +252,7 @@ function App() {
     setRouteRequestSuccess('');
     setSearchResults(null);
 
+    let backgroundMode = false;
     try {
       // Step 1: Check DB for existing cached routes
       const { routes: cachedRoutes } = await getRoutes(query);
@@ -298,8 +299,8 @@ function App() {
         // Keep generating=true and isRequestingRoute=true so the spinner stays up.
         // The realtime handler clears both when the first route arrives.
         // Failsafe: clear after 90s in case realtime never fires.
+        backgroundMode = true;
         setTimeout(() => { setGenerating(false); setIsRequestingRoute(false); }, 90000);
-        return; // skip finally — don't clear loading state yet
       } else {
         // Edge function returned routes directly (future fast path)
         const routes = Array.isArray(data) ? data : [];
@@ -326,8 +327,10 @@ function App() {
     } catch (err) {
       console.error('[generate-route] Exception:', err);
     } finally {
-      setGenerating(false);
-      setIsRequestingRoute(false);
+      if (!backgroundMode) {
+        setGenerating(false);
+        setIsRequestingRoute(false);
+      }
     }
   };
 
