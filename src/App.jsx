@@ -137,11 +137,17 @@ function App() {
             if (idx >= 0) { const next = [...prev]; next[idx] = mapped; return next; }
             return [...prev, mapped];
           });
-          // Accumulate into searchResults so only generated routes show in the list
+          // Accumulate into searchResults — but never overwrite a route that already
+          // has waypoints (edge function response) with a DB version that lacks them
           setSearchResults(prev => {
             const list = prev ?? [];
             const idx = list.findIndex(r => r.id === mapped.id);
-            if (idx >= 0) { const next = [...list]; next[idx] = mapped; return next; }
+            if (idx >= 0) {
+              const existing = list[idx];
+              // Keep whichever version has waypoints
+              const merged = { ...mapped, ...(existing.waypoints ? { waypoints: existing.waypoints } : {}), ...(existing.segments ? { segments: existing.segments } : {}) };
+              const next = [...list]; next[idx] = merged; return next;
+            }
             return [...list, mapped];
           });
         }
