@@ -427,7 +427,13 @@ ${trkpts}    </trkseg>
   const handleReportBug = async () => {
     setReportStatus('Capturing...');
     try {
-      const canvas = await html2canvas(document.body, { useCORS: true, allowTaint: true, logging: false });
+      const canvas = await html2canvas(document.body, {
+        useCORS: true,
+        logging: false,
+        // Skip the cross-origin tile layer to avoid canvas taint,
+        // but the SVG polyline overlay (route line) is same-origin and gets captured
+        ignoreElements: el => el.classList?.contains('leaflet-tile-pane'),
+      });
       setBugScreenshot(canvas.toDataURL('image/png'));
       setIsBugModalOpen(true);
       setReportStatus('Report Bug');
