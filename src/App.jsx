@@ -251,6 +251,7 @@ function App() {
     setGenerating(true);
     setRouteRequestSuccess('');
     setSearchResults(null);
+    setSelectedRouteId(null); // reset so realtime auto-selects the first new route
 
     let backgroundMode = false;
     try {
