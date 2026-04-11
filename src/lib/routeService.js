@@ -20,15 +20,7 @@ export async function getRoutes(destination) {
     return { routes: cached, source: 'cache' };
   }
 
-  const res = await fetch(EDGE_FN, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + supabaseAnonKey },
-    body: JSON.stringify({ start: 'Balancero Astoria', destination })
-  });
-
-  if (!res.ok) throw new Error('Route generation failed');
-  const { routes } = await res.json();
-  return { routes, source: 'generated' };
+  return { routes: [], source: 'none' };
 }
 
 export async function saveRoute(routeId, userId) {

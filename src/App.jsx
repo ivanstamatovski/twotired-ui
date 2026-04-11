@@ -286,13 +286,21 @@ function App() {
       }
 
       // Step 3: Call edge function directly with geocoded coords
+      // Use fetch with explicit anon key — avoids supabase.functions.invoke sending an
+      // expired session JWT which results in 401 from the Supabase gateway.
       setIsRequestingRoute(true);
-      const { data, error } = await supabase.functions.invoke('generate-route', {
-        body: { start: startLocation, destination: query, destLat, destLng }
+      const edgeFnUrl = import.meta.env.VITE_SUPABASE_URL + '/functions/v1/generate-route';
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      const res = await fetch(edgeFnUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + anonKey },
+        body: JSON.stringify({ start: startLocation, destination: query, destLat, destLng })
       });
+      const data = res.ok ? await res.json() : null;
+      const error = res.ok ? null : { message: `HTTP ${res.status}` };
 
       if (error) {
-        console.error('[generate-route] Edge function error:', error.message, error);
+        console.error('[generate-route] Edge function error:', error.message);
         // fall through to finally — clear loading state
       } else if (data?.status === 'generating') {
         // Edge function returned immediately — all work is running in background.
