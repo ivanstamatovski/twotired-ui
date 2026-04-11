@@ -57,12 +57,13 @@ export async function submitBugReport({ userId, routeId, comment, imageData, pag
     }
   }
 
-  return supabase.from('bug_reports').insert({
-    user_id: userId,
-    route_id: routeId,
-    comment,
-    screenshot_url: screenshotUrl,
-    page_context: pageContext ?? null,
+  // Use RPC function to bypass RLS (SECURITY DEFINER runs as postgres owner)
+  return supabase.rpc('insert_bug_report', {
+    p_comment: comment,
+    p_screenshot_url: screenshotUrl,
+    p_page_context: pageContext ?? null,
+    p_user_id: userId ?? null,
+    p_route_id: routeId ?? null,
   });
 }
 
