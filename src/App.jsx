@@ -426,21 +426,35 @@ ${trkpts}    </trkseg>
 
   const handleReportBug = async () => {
     setReportStatus('Capturing...');
+
+    // Hide tiles before capture to avoid CORS canvas taint; the SVG route
+    // polyline (same-origin) stays visible on a white map background.
+    const tilePane = document.querySelector('.leaflet-tile-pane');
+    const mapContainer = document.querySelector('.leaflet-container');
+    const prevTileVis = tilePane?.style.visibility;
+    const prevMapBg = mapContainer?.style.background;
+    if (tilePane) tilePane.style.visibility = 'hidden';
+    if (mapContainer) mapContainer.style.background = '#ffffff';
+
+    let captured = false;
     try {
       const canvas = await html2canvas(document.body, {
         useCORS: true,
         logging: false,
-        // Skip the cross-origin tile layer to avoid canvas taint,
-        // but the SVG polyline overlay (route line) is same-origin and gets captured
-        ignoreElements: el => el.classList?.contains('leaflet-tile-pane'),
       });
+      captured = true;
       setBugScreenshot(canvas.toDataURL('image/png'));
       setIsBugModalOpen(true);
       setReportStatus('Report Bug');
     } catch (err) {
       console.error(err);
-      setReportStatus('Error');
-      setTimeout(() => setReportStatus('Report Bug'), 3000);
+    } finally {
+      if (tilePane) tilePane.style.visibility = prevTileVis ?? '';
+      if (mapContainer) mapContainer.style.background = prevMapBg ?? '';
+      if (!captured) {
+        setReportStatus('Error');
+        setTimeout(() => setReportStatus('Report Bug'), 3000);
+      }
     }
   };
 
