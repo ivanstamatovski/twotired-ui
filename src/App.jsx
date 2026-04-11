@@ -427,16 +427,12 @@ ${trkpts}    </trkseg>
     setReportStatus('Capturing...');
     let stream = null;
     try {
-      // Use the Screen Capture API for a pixel-perfect tab screenshot —
-      // avoids all CORS issues that plagued html2canvas with map tiles.
-      // preferCurrentTab pre-selects this tab in the share dialog.
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: { displaySurface: 'browser' },
         preferCurrentTab: true,
       });
 
-      // Wait for the browser to repaint the tab after the share dialog dismisses.
-      // Without this the map tiles haven't re-rendered and show as white.
+      // Let the browser repaint the tab fully after the share dialog closes
       await new Promise(r => setTimeout(r, 400));
 
       const track = stream.getVideoTracks()[0];
@@ -445,20 +441,64 @@ ${trkpts}    </trkseg>
       video.muted = true;
       await new Promise(r => { video.onloadedmetadata = r; });
       await video.play();
-      // One extra frame to guarantee tiles are painted
       await new Promise(r => requestAnimationFrame(r));
 
       const canvas = document.createElement('canvas');
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-      canvas.getContext('2d').drawImage(video, 0, 0);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+
+      // The Leaflet SVG overlay lives on a GPU compositor layer that
+      // getDisplayMedia routinely misses. Re-draw the route line ourselves
+      // using Leaflet's coordinate conversion so it's always visible.
+      if (selectedGeoJSON && mapRef.current) {
+        const map = mapRef.current;
+        const mapEl = document.querySelector('.leaflet-container');
+        if (mapEl) {
+          const rect = mapEl.getBoundingClientRect();
+          const scaleX = canvas.width / window.innerWidth;
+          const scaleY = canvas.height / window.innerHeight;
+
+          const legColor = (leg) => {
+            if (leg === 'highway') return { color: '#e74c3c', width: 5 };
+            if (leg === 'parkway') return { color: '#9b59b6', width: 5 };
+            return { color: '#2ecc71', width: 6 };
+          };
+
+          const features = selectedGeoJSON.type === 'FeatureCollection'
+            ? selectedGeoJSON.features : [selectedGeoJSON];
+
+          for (const f of features) {
+            const g = f.geometry || f;
+            const { color, width } = legColor(f.properties?.leg);
+            const segs = g.type === 'LineString' ? [g.coordinates]
+              : g.type === 'MultiLineString' ? g.coordinates : [];
+
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width * scaleX;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+
+            for (const seg of segs) {
+              ctx.beginPath();
+              seg.forEach(([lng, lat], i) => {
+                const pt = map.latLngToContainerPoint([lat, lng]);
+                const x = (rect.left + pt.x) * scaleX;
+                const y = (rect.top + pt.y) * scaleY;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+              });
+              ctx.stroke();
+            }
+          }
+        }
+      }
 
       setBugScreenshot(canvas.toDataURL('image/jpeg', 0.85));
       setIsBugModalOpen(true);
       setReportStatus('Report Bug');
     } catch (err) {
       console.error('Screen capture failed:', err);
-      // User cancelled the share dialog — silently reset
       setReportStatus('Report Bug');
     } finally {
       if (stream) stream.getTracks().forEach(t => t.stop());
