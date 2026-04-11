@@ -4,7 +4,6 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { supabase } from './lib/supabase';
 import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
-import html2canvas from 'html2canvas';
 import './App.css';
 import { getRoutes, submitBugReport, saveRoute, logRouteRequest } from './lib/routeService';
 
@@ -426,35 +425,47 @@ ${trkpts}    </trkseg>
 
   const handleReportBug = async () => {
     setReportStatus('Capturing...');
-
-    // Hide tiles before capture to avoid CORS canvas taint; the SVG route
-    // polyline (same-origin) stays visible on a white map background.
-    const tilePane = document.querySelector('.leaflet-tile-pane');
-    const mapContainer = document.querySelector('.leaflet-container');
-    const prevTileVis = tilePane?.style.visibility;
-    const prevMapBg = mapContainer?.style.background;
-    if (tilePane) tilePane.style.visibility = 'hidden';
-    if (mapContainer) mapContainer.style.background = '#ffffff';
-
-    let captured = false;
+    let stream = null;
     try {
-      const canvas = await html2canvas(document.body, {
-        useCORS: true,
-        logging: false,
+      // Use the Screen Capture API for a pixel-perfect tab screenshot —
+      // avoids all CORS issues that plagued html2canvas with map tiles.
+      // preferCurrentTab pre-selects this tab in the share dialog.
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: 'browser' },
+        preferCurrentTab: true,
       });
-      captured = true;
-      setBugScreenshot(canvas.toDataURL('image/png'));
+      const track = stream.getVideoTracks()[0];
+
+      let canvas;
+      if (typeof ImageCapture !== 'undefined') {
+        // Preferred: grab a single frame without a video element
+        const imageCapture = new ImageCapture(track);
+        const bitmap = await imageCapture.grabFrame();
+        canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+      } else {
+        // Fallback: draw via a hidden video element
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        await new Promise(r => { video.onloadedmetadata = r; });
+        await video.play();
+        canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+      }
+
+      setBugScreenshot(canvas.toDataURL('image/jpeg', 0.85));
       setIsBugModalOpen(true);
       setReportStatus('Report Bug');
     } catch (err) {
-      console.error(err);
+      console.error('Screen capture failed:', err);
+      // User cancelled the share dialog — silently reset
+      setReportStatus('Report Bug');
     } finally {
-      if (tilePane) tilePane.style.visibility = prevTileVis ?? '';
-      if (mapContainer) mapContainer.style.background = prevMapBg ?? '';
-      if (!captured) {
-        setReportStatus('Error');
-        setTimeout(() => setReportStatus('Report Bug'), 3000);
-      }
+      if (stream) stream.getTracks().forEach(t => t.stop());
     }
   };
 
