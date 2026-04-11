@@ -7,8 +7,9 @@ const corsHeaders = {
 };
 
 // ── OpenRouteService routing ────────────────────────────────────────────────
-// Takes Claude-generated lat/lng waypoints, returns a road-following GeoJSON
-// FeatureCollection using ORS with highway/tollway avoidance.
+// Takes Claude-generated lat/lng waypoints, returns a road-following GeoJSON.
+// No avoid_features: scenic character comes from Claude's waypoints themselves.
+// Large radiuses let ORS snap slightly off-road points to the nearest road.
 async function computeORSRoute(
   waypoints: Array<{ lat: number; lng: number }>
 ): Promise<object | null> {
@@ -17,6 +18,8 @@ async function computeORSRoute(
 
   // ORS expects [lng, lat] pairs (GeoJSON order)
   const coordinates = waypoints.map(wp => [wp.lng, wp.lat]);
+  // 5 km snap radius per waypoint — handles points slightly off-road
+  const radiuses = waypoints.map(() => 5000);
 
   try {
     const res = await fetch(
@@ -28,12 +31,7 @@ async function computeORSRoute(
           'Content-Type': 'application/json',
           Accept: 'application/json, application/geo+json',
         },
-        body: JSON.stringify({
-          coordinates,
-          options: {
-            avoid_features: ['highways', 'tollways'],
-          },
-        }),
+        body: JSON.stringify({ coordinates, radiuses }),
       }
     );
 
@@ -105,38 +103,31 @@ For each route return EXACTLY this JSON structure:
     {"type":"ride","color":"#34A853","label":"The Ride","description":"...","duration":"42 min","miles":"20 mi"}
   ],
   "waypoints": [
-    {"lat":40.762283,"lng":-73.918380,"label":"Start / Balancero Caffe"},
-    {"lat":40.8480,"lng":-73.9320,"label":"GW Bridge toll plaza"},
-    {"lat":40.8645,"lng":-73.9520,"label":"Palisades Pkwy entrance"},
-    {"lat":40.9320,"lng":-73.9640,"label":"Palisades Pkwy mile 10"},
-    {"lat":40.9990,"lng":-74.0010,"label":"Rockland County line"},
-    {"lat":41.0850,"lng":-74.0320,"label":"Palisades Pkwy mile 25"},
-    {"lat":41.1770,"lng":-74.0510,"label":"Bear Mountain junction"},
+    {"lat":40.762283,"lng":-73.918380,"label":"Start"},
+    {"lat":40.8480,"lng":-73.9320,"label":"GW Bridge approach"},
+    {"lat":40.8780,"lng":-73.9120,"label":"Palisades Pkwy entrance"},
+    {"lat":40.9320,"lng":-73.9440,"label":"Palisades Pkwy N mile 10"},
+    {"lat":41.0100,"lng":-73.9650,"label":"Rockland County"},
+    {"lat":41.0850,"lng":-74.0120,"label":"Harriman area"},
+    {"lat":41.1500,"lng":-73.9800,"label":"Tuxedo"},
+    {"lat":41.2200,"lng":-73.9500,"label":"Sloatsburg"},
     {"lat":41.3112,"lng":-74.0039,"label":"Destination"}
   ],
   "colors": {"city":"#E24B4A","parkway":"#7F77DD","scenic":"#34A853"}
 }
 
-CRITICAL waypoints requirement — READ CAREFULLY:
-- Include 10–15 waypoints that trace the EXACT road geometry from start to destination.
-- Place points every 2–4 miles along the ACTUAL route — do NOT skip large gaps.
-- For winding scenic roads (Storm King Hwy, 9W, Snake Hill Rd, etc.) add a point every 2–3 miles to capture the curves accurately.
-- Every waypoint must sit ON a real road. Use your knowledge of exact road geometry for:
-  • NY-9W, Palisades Interstate Pkwy, Bear Mountain State Pkwy
-  • Storm King Highway (US-9W past Cornwall)
-  • Route 17, Route 202, Route 206 in NJ
-  • CT scenic routes: Rte 7, Rte 37, Rte 39
-  • Any NJ/CT/NY county roads known to motorcyclists
-- Include start point and destination as first and last waypoints.
-- waypoints will be fed into a routing API (OpenRouteService) that snaps to the nearest road — so accuracy within ~500m is fine, but direction must be correct.
-- DO NOT list just 4–5 major landmarks far apart. Trace the road.
+CRITICAL waypoints requirement:
+- Include 10-15 waypoints tracing the EXACT road path, placed every 2-4 miles.
+- Points must be ON real roads — use coordinates you are confident sit on the actual pavement of named roads (9W, Palisades Pkwy, Merritt Pkwy, Route 35, Storm King Hwy, etc.).
+- Avoid placing points in parks, forests, water, or off the road surface — ORS will try to snap nearby but accuracy matters.
+- Include start and destination as first and last points.
+- For curvy roads add a point every 2-3 miles to capture the bends.
+- The two routes must take meaningfully different roads.
 
-Use real road names, exit numbers, and insider rider knowledge.
-Prioritize fast city escape, scenic parkways, and community-recommended twisty roads.
-Make the two routes meaningfully different (e.g. one via 9W/Palisades, one via NJ backroads).
-IMPORTANT: Return ONLY a raw JSON array. No markdown, no code fences, no backticks, no explanation. Start with [ and end with ].`;
+Use real road names and insider rider knowledge. Prioritize scenic parkways and twisty back roads.
+IMPORTANT: Return ONLY a raw JSON array. No markdown, no code fences, no backticks. Start with [ and end with ].`;
 
-    // Return immediately — all heavy work runs in background via waitUntil
+    // Return immediately — route computation runs in background
     const backgroundWork = (async () => {
       try {
         const message = await anthropic.messages.create({
@@ -150,12 +141,10 @@ IMPORTANT: Return ONLY a raw JSON array. No markdown, no code fences, no backtic
         const routes = JSON.parse(rawText);
 
         for (const route of routes) {
-          // Compute ORS road-following GeoJSON from Claude's dense waypoints
           let geojson: object | null = null;
           if (Array.isArray(route.waypoints) && route.waypoints.length >= 2) {
             geojson = await computeORSRoute(route.waypoints);
             if (!geojson) {
-              // ORS unavailable — fall back to straight lines between waypoints
               console.warn(`ORS failed for ${route.id}, using straight-line fallback`);
               geojson = straightLineGeoJSON(route.waypoints);
             }
@@ -175,7 +164,6 @@ IMPORTANT: Return ONLY a raw JSON array. No markdown, no code fences, no backtic
       }
     })();
 
-    // Keep edge function alive until background work completes
     EdgeRuntime.waitUntil(backgroundWork);
 
     return new Response(JSON.stringify({ status: 'generating' }), {
