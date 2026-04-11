@@ -427,7 +427,7 @@ ${trkpts}    </trkseg>
   const handleReportBug = async () => {
     setReportStatus('Capturing...');
     try {
-      const canvas = await html2canvas(document.body, { useCORS: true });
+      const canvas = await html2canvas(document.body, { useCORS: true, allowTaint: true, logging: false });
       setBugScreenshot(canvas.toDataURL('image/png'));
       setIsBugModalOpen(true);
       setReportStatus('Report Bug');
