@@ -18,8 +18,9 @@ async function computeORSRoute(
 
   // ORS expects [lng, lat] pairs (GeoJSON order)
   const coordinates = waypoints.map(wp => [wp.lng, wp.lat]);
-  // 5 km snap radius per waypoint — handles points slightly off-road
-  const radiuses = waypoints.map(() => 5000);
+  // 500m snap radius — tight enough to prevent snapping across a river to the
+  // wrong bank, loose enough to handle waypoints slightly off the road surface.
+  const radiuses = waypoints.map(() => 500);
 
   try {
     const res = await fetch(
@@ -31,7 +32,11 @@ async function computeORSRoute(
           'Content-Type': 'application/json',
           Accept: 'application/json, application/geo+json',
         },
-        body: JSON.stringify({ coordinates, radiuses }),
+        body: JSON.stringify({
+          coordinates,
+          radiuses,
+          continue_straight: true,  // prevent U-turns and backtracking at junctions
+        }),
       }
     );
 
@@ -119,7 +124,9 @@ For each route return EXACTLY this JSON structure:
 CRITICAL waypoints requirement:
 - Include 10-15 waypoints tracing the EXACT road path, placed every 2-4 miles.
 - Points must be ON real roads — use coordinates you are confident sit on the actual pavement of named roads (9W, Palisades Pkwy, Merritt Pkwy, Route 35, Storm King Hwy, etc.).
-- Avoid placing points in parks, forests, water, or off the road surface — ORS will try to snap nearby but accuracy matters.
+- NEVER place points in water, parks, forests, medians, or off the road surface. Snap radius is only 500m — if a point is off-road it will cause an error.
+- RIVER CROSSINGS: If the route crosses the Hudson River, it must cross at exactly ONE named bridge (e.g. GW Bridge, Bear Mountain Bridge, Newburgh-Beacon Bridge). Place one waypoint on the approach road and one on the exit road immediately after the bridge. Never zigzag back across.
+- Stay on one side of any river per leg — if you cross to the NJ/west side, all subsequent waypoints must remain on the west side until you intentionally cross back.
 - Include start and destination as first and last points.
 - For curvy roads add a point every 2-3 miles to capture the bends.
 - The two routes must take meaningfully different roads.
