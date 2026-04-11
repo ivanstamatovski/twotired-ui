@@ -124,7 +124,10 @@ function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'routes' }, (payload) => {
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const mapped = { ...payload.new, group: payload.new.group_name };
-          setSelectedRouteId(prev => prev ?? mapped.id);
+          // Prefer routes with geojson (drawable line). If this route has geojson,
+          // always upgrade the selection — even if another route was auto-selected first.
+          // Only keeps prev if it already had geojson or this one doesn't.
+          setSelectedRouteId(prev => mapped.geojson ? mapped.id : (prev ?? mapped.id));
           setIsRequestingRoute(false);
           setGenerating(false); // background generation complete
           setRouteRequestSuccess('');
