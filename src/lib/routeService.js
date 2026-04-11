@@ -27,8 +27,43 @@ export async function saveRoute(routeId, userId) {
   return supabase.from('user_saved_routes').insert({ route_id: routeId, user_id: userId });
 }
 
-export async function submitBugReport({ userId, routeId, comment, imageData }) {
-  return supabase.from('bug_reports').insert({ user_id: userId, route_id: routeId, comment, image_data: imageData });
+export async function submitBugReport({ userId, routeId, comment, imageData, pageContext }) {
+  // Convert base64 PNG → Blob and upload to Storage, then store the public URL
+  let screenshotUrl = null;
+
+  if (imageData) {
+    try {
+      // Convert dataURL to Blob
+      const res = await fetch(imageData);
+      const blob = await res.blob();
+
+      // Unique filename: timestamp + random suffix
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('bug-screenshots')
+        .upload(filename, blob, { contentType: 'image/jpeg', upsert: false });
+
+      if (uploadError) {
+        console.error('Screenshot upload failed:', uploadError.message);
+      } else {
+        const { data: { publicUrl } } = supabase.storage
+          .from('bug-screenshots')
+          .getPublicUrl(filename);
+        screenshotUrl = publicUrl;
+      }
+    } catch (err) {
+      console.error('Screenshot processing failed:', err.message);
+    }
+  }
+
+  return supabase.from('bug_reports').insert({
+    user_id: userId,
+    route_id: routeId,
+    comment,
+    screenshot_url: screenshotUrl,
+    page_context: pageContext ?? null,
+  });
 }
 
 export async function logRouteRequest(requestText, email) {

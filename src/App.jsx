@@ -446,6 +446,11 @@ ${trkpts}    </trkseg>
         routeId: selectedRouteId,
         comment: bugComment,
         imageData: bugScreenshot,
+        pageContext: {
+          destination: routeRequestText,
+          selectedRouteTitle: selectedRoute?.title ?? null,
+          url: window.location.href,
+        },
       });
       setBugSubmitSuccess(true);
       setTimeout(() => {
