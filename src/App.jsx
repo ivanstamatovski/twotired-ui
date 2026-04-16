@@ -1,11 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
-import { useJsApiLoader, GoogleMap, Polyline } from '@react-google-maps/api';
 import { supabase } from './lib/supabase';
 import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
 import './App.css';
 import { getRoutes, submitBugReport, saveRoute, logRouteRequest } from './lib/routeService';
 
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyDnD7vlzPzPWvJOCYNp47_wO5NrrE3Ds0s';
+// Poll until the Google Maps script (loaded in index.html) is ready
+function useMapsLoaded() {
+  const [loaded, setLoaded] = useState(!!window.google?.maps);
+  useEffect(() => {
+    if (window.google?.maps) { setLoaded(true); return; }
+    const id = setInterval(() => {
+      if (window.google?.maps) { setLoaded(true); clearInterval(id); }
+    }, 100);
+    return () => clearInterval(id);
+  }, []);
+  return loaded;
+}
 
 // Inject CSS for spinner animation
 const styles = `
@@ -18,7 +28,7 @@ if (typeof document !== 'undefined') {
   document.head.appendChild(styleSheet);
 }
 
-// ── Duration helpers ───────────────────────────────────────────────────────
+// ââ Duration helpers âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 const parseMins = (str) => {
   if (!str) return 0;
   const h = str.match(/(\d+)\s*h/);
@@ -32,11 +42,11 @@ const formatMins = (total) => {
   const m = total % 60;
   return m > 0 ? `${h}h ${m}min` : `${h}h`;
 };
-const sumDurations = (segs) => formatMins(segs.reduce((acc, s) => acc + parseMins(s.duration), 0));
+const sumDurations = (segs) ¦=> formatMins(segs.reduce((acc, s) => acc + parseMins(s.duration), 0));
 
 const RECENT_KEY = 'twistyroute_recent';
 
-// Convert GeoJSON FeatureCollection → array of {path, options} for Google Maps Polylines
+// Convert GeoJSON FeatureCollection â array of {path, options} for Google Maps Polylines
 function geoJSONToPolylines(geojson) {
   const features = geojson?.type === 'FeatureCollection' ? geojson.features : [geojson];
   return features.map(f => {
@@ -55,7 +65,7 @@ function geoJSONToPolylines(geojson) {
 }
 
 function App() {
-  // ── Route state ────────────────────────────────────────────────────────────
+  // ââ Route state âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   const [routesDb, setRoutesDb] = useState([]);
   const [selectedRouteId, setSelectedRouteId] = useState(null);
   const [searchResults, setSearchResults] = useState(null);
@@ -65,25 +75,25 @@ function App() {
   const [isRequestingRoute, setIsRequestingRoute] = useState(false);
   const [routeRequestSuccess, setRouteRequestSuccess] = useState('');
 
-  // ── UI state ───────────────────────────────────────────────────────────────
+  // ââ UI state ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   const [showLeftSidebar, setShowLeftSidebar] = useState(true);
   const [showRightSidebar, setShowRightSidebar] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768 || window.innerHeight <= 500);
 
-  // ── Input state ────────────────────────────────────────────────────────────
+  // ââ Input state âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   const [startLocation] = useState('Balancero Astoria');
   const [routeRequestText, setRouteRequestText] = useState('');
 
-  // ── Recent routes (localStorage) ──────────────────────────────────────────
+  // ââ Recent routes (localStorage) ââââââââââââââââââââââââââââââââââââââââââ
   const [recentRoutes, setRecentRoutes] = useState(() => {
     try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
   });
 
-  // ── Cycling loading message ────────────────────────────────────────────────
+  // ââ Cycling loading message ââââââââââââââââââââââââââââââââââââââââââââââââ
   const loadingMessages = ['Researching routes...', 'Connecting to destination...', 'Drawing your path...', 'Finding twisty roads...'];
   const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
 
-  // ── Bug report state ───────────────────────────────────────────────────────
+  // ââ Bug report state âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   const [reportStatus, setReportStatus] = useState('Report Bug');
   const [isBugModalOpen, setIsBugModalOpen] = useState(false);
   const [bugScreenshot, setBugScreenshot] = useState(null);
@@ -91,7 +101,7 @@ function App() {
   const [isSubmittingBug, setIsSubmittingBug] = useState(false);
   const [bugSubmitSuccess, setBugSubmitSuccess] = useState(false);
 
-  // ── Auth state ─────────────────────────────────────────────────────────────
+  // ââ Auth state ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   const [user, setUser] = useState(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
@@ -99,10 +109,12 @@ function App() {
   const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
 
-  const mapRef = useRef(null); // holds the google.maps.Map instance after onLoad
-  const { isLoaded: mapsLoaded } = useJsApiLoader({ googleMapsApiKey: GOOGLE_MAPS_API_KEY });
+  const mapDivRef = useRef(null);   // DOM div for the map
+  const mapRef = useRef(null);      // google.maps.Map instance
+  const polylinesRef =useRef([]);  // active Polyline instances
+  const mapsLoaded = useMapsLoaded();
 
-  // ── Auth + initial data + realtime subscription ────────────────────────────
+  // ââ Auth + initial data + realtime subscription ââââââââââââââââââââââââââââ
   useEffect(() => {
     // Auth check
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -131,7 +143,7 @@ function App() {
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const mapped = { ...payload.new, group: payload.new.group_name };
           // Prefer routes with geojson (drawable line). If this route has geojson,
-          // always upgrade the selection — even if another route was auto-selected first.
+          // always upgrade the selection â even if another route was auto-selected first.
           // Only keeps prev if it already had geojson or this one doesn't.
           setSelectedRouteId(prev => mapped.geojson ? mapped.id : (prev ?? mapped.id));
           setIsRequestingRoute(false);
@@ -147,7 +159,7 @@ function App() {
             if (idx >= 0) { const next = [...prev]; next[idx] = mapped; return next; }
             return [...prev, mapped];
           });
-          // Accumulate into searchResults — but never overwrite a route that already
+          // Accumulate into searchResults â but never overwrite a route that already
           // has waypoints (edge function response) with a DB version that lacks them
           setSearchResults(prev => {
             const list = prev ?? [];
@@ -170,7 +182,7 @@ function App() {
     };
   }, []);
 
-  // ── Resize handler ─────────────────────────────────────────────────────────
+  // ââ Resize handler âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth <= 768 || window.innerHeight <= 500;
@@ -181,7 +193,7 @@ function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // ── Cycle loading message while generating ─────────────────────────────────
+  // ââ Cycle loading message while generating âââââââââââââââââââââââââââââââââ
   useEffect(() => {
     if (!generating && !isRequestingRoute) return;
     setLoadingMsgIdx(0);
@@ -189,7 +201,7 @@ function App() {
     return () => clearInterval(id);
   }, [generating, isRequestingRoute]);
 
-  // ── Auto-resolve loading when new route arrives via websocket ──────────────
+  // ââ Auto-resolve loading when new route arrives via websocket ââââââââââââââ
   useEffect(() => {
     if (isRequestingRoute && routeRequestText.trim()) {
       const query = routeRequestText.trim().toLowerCase();
@@ -205,7 +217,7 @@ function App() {
     }
   }, [routesDb, isRequestingRoute, routeRequestText]);
 
-  // ── OSRM route fetching (for routes without stored geojson) ───────────────
+  // ââ OSRM route fetching (for routes without stored geojson) âââââââââââââââ
   const [computedGeoJSON, setComputedGeoJSON] = useState(null);
 
   useEffect(() => {
@@ -243,28 +255,50 @@ function App() {
       });
   }, [selectedRouteId, routesDb, searchResults]);
 
-  // ── Auto-fit map when selected route changes ───────────────────────────────
+  // ââ Init native Google Maps when API is ready âââââââââââââââââââââââââââââ
   useEffect(() => {
-    if (mapRef.current && selectedGeoJSON && window.google) {
-      const bounds = new window.google.maps.LatLngBounds();
-      const features = selectedGeoJSON.type === 'FeatureCollection' ? selectedGeoJSON.features : [selectedGeoJSON];
-      features.forEach(f => {
-        const geom = f.geometry || f;
-        const coords = geom.type === 'MultiLineString' ? geom.coordinates.flat() : (geom.coordinates || []);
-        coords.forEach(([lng, lat]) => bounds.extend({ lat, lng }));
-      });
-      mapRef.current.fitBounds(bounds, 40);
-    }
-  }, [selectedGeoJSON]);
+    if (!mapsLoaded || !mapDivRef.current || mapRef.current) return;
+    mapRef.current = new window.google.maps.Map(mapDivRef.current, {
+      center: { lat: 41.0, lng: -74.0 },
+      zoom: 9,
+      zoomControl: true,
+      streetViewControl: false,
+      mapTypeControl: false,
+      fullscreenControl: false,
+      gestureHandling: 'greedy',
+    });
+  }, [mapsLoaded]);
 
-  // ── Derived values ─────────────────────────────────────────────────────────
+  // ââ Draw polylines + auto-fit when route changes ââââââââââââââââââââââââââ
+  useEffect(() => {
+    if (!mapRef.current || !window.google) return;
+    // Clear previous polylines
+    polylinesRef.current.forEach(p => p.setMap(null));
+    polylinesRef.current = [];
+    if (!selectedGeoJSON) return;
+    const bounds = new window.google.maps.LatLngBounds();
+    geoJSONToPolylines(selectedGeoJSON).forEach(line => {
+      const poly = new window.google.maps.Polyline({
+        path: line.path,
+        strokeColor: line.options.strokeColor,
+        strokeWeight: line.options.strokeWeight,
+        strokeOpacity: line.options.strokeOpacity,
+        map: mapRef.current,
+      });
+      polylinesRef.current.push(poly);
+      line.path.forEach(pt => bounds.extend(pt));
+    });
+    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 40);
+  }, [selectedGeoJSON, mapsLoaded]);
+
+  // ââ Derived values âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   const selectedRoute = (searchResults || []).find(r => r.id === selectedRouteId)
     || routesDb.find(r => r.id === selectedRouteId);
   const selectedGeoJSON = selectedRoute?.geojson ?? computedGeoJSON;
-  // Only show search results — never show the full historical DB list
+  // Only show search results â never show the full historical DB list
   const displayRoutes = searchResults !== null ? searchResults : [];
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
+  // ââ Handlers âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
   const handleRouteRequest = async () => {
     const query = routeRequestText.trim();
@@ -292,8 +326,8 @@ function App() {
         return;
       }
 
-      // Step 2: Call edge function — Gemini handles geocoding internally via Maps grounding
-      // Use fetch with explicit anon key — avoids supabase.functions.invoke sending an
+      // Step 2: Call edge function â Gemini handles geocoding internally via Maps grounding
+      // Use fetch with explicit anon key â avoids supabase.functions.invoke sending an
       // expired session JWT which results in 401 from the Supabase gateway.
       setIsRequestingRoute(true);
       const edgeFnUrl = import.meta.env.VITE_SUPABASE_URL + '/functions/v1/generate-route';
@@ -308,9 +342,9 @@ function App() {
 
       if (error) {
         console.error('[generate-route] Edge function error:', error.message);
-        // fall through to finally — clear loading state
+        // fall through to finally â clear loading state
       } else if (data?.status === 'generating') {
-        // Edge function returned immediately — all work is running in background.
+        // Edge function returned immediately â all work is running in background.
         // Realtime subscription will deliver routes + geojson when DB insert fires.
         // Keep generating=true and isRequestingRoute=true so the spinner stays up.
         // The realtime handler clears both when the first route arrives.
@@ -453,7 +487,7 @@ ${trkpts}    </trkseg>
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0);
 
-      // Google Maps renders natively in the browser capture — no manual redraw needed
+      // Google Maps renders natively in the browser capture â no manual redraw needed
 
       setBugScreenshot(canvas.toDataURL('image/jpeg', 0.85));
       setIsBugModalOpen(true);
@@ -518,7 +552,7 @@ ${trkpts}    </trkseg>
     await supabase.auth.signOut();
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ââ Render âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', fontFamily: 'sans-serif' }}>
 
@@ -532,7 +566,7 @@ ${trkpts}    </trkseg>
         </button>
       )}
 
-      {/* ── Left sidebar ─────────────────────────────────────────────────── */}
+      {/* ââ Left sidebar ââââââââââââââââââââââââââââââââââââââââââââââââââ */}
       {showLeftSidebar && (
         <div style={{
           width: '280px', background: '#fff', borderRight: '1px solid #e5e7eb',
@@ -543,7 +577,7 @@ ${trkpts}    </trkseg>
         }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>🏍️ TwistyRoute</h1>
+            <h1 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>ðï¸ TwistyRoute</h1>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               {user ? (
                 <button onClick={handleLogout} title="Logout" style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
@@ -646,7 +680,7 @@ ${trkpts}    </trkseg>
                   >
                     <p style={{ margin: '0 0 2px', fontWeight: 600, fontSize: '14px' }}>{route.title}</p>
                     <p style={{ margin: 0, fontSize: '12px', color: '#6b7280' }}>
-                      {total && `⏱ ${total}`}{route.destination ? ` · ${route.destination}` : ''}
+                      {total && `â± ${total}`}{route.destination ? ` Â· ${route.destination}` : ''}
                     </p>
                   </div>
                 );
@@ -676,7 +710,7 @@ ${trkpts}    </trkseg>
                     >
                       <p style={{ margin: '0 0 2px', fontWeight: 600, fontSize: '13px' }}>{route.title}</p>
                       <p style={{ margin: 0, fontSize: '11px', color: '#9ca3af' }}>
-                        {total && `⏱ ${total}`}{route.destination ? ` · ${route.destination}` : ''}
+                        {total && `â± ${total}`}{route.destination ? ` Â· ${route.destination}` : ''}
                       </p>
                     </div>
                   );
@@ -687,35 +721,14 @@ ${trkpts}    </trkseg>
         </div>
       )}
 
-      {/* ── Map ──────────────────────────────────────────────────────────── */}
+      {/* ââ Map ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ */}
       <div style={{ flex: 1, position: 'relative' }}>
-        {mapsLoaded ? (
-          <GoogleMap
-            mapContainerStyle={{ height: '100%', width: '100%' }}
-            center={{ lat: 41.0, lng: -74.0 }}
-            zoom={9}
-            onLoad={map => { mapRef.current = map; }}
-            options={{
-              zoomControl: true,
-              streetViewControl: false,
-              mapTypeControl: false,
-              fullscreenControl: false,
-              gestureHandling: 'greedy',
-            }}
-          >
-            {selectedGeoJSON && geoJSONToPolylines(selectedGeoJSON).map((line, i) => (
-              <Polyline
-                key={`${selectedRouteId}-${i}`}
-                path={line.path}
-                options={line.options}
-              />
-            ))}
-          </GoogleMap>
-        ) : (
-          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}>
-            Loading map…
+        {!mapsLoaded && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', zIndex: 1 }}>
+            Loading mapâ¦
           </div>
         )}
+        <div ref={mapDivRef} style={{ height: '100%', width: '100%' }} />
 
         {/* Map action buttons */}
         <div style={{ position: 'absolute', bottom: '16px', right: '16px', display: 'flex', gap: '8px', zIndex: 1000 }}>
@@ -735,7 +748,7 @@ ${trkpts}    </trkseg>
         </div>
       </div>
 
-      {/* ── Right panel ──────────────────────────────────────────────────── */}
+      {/* ââ Right panel ââââââââââââââââââââââââââââââââââââââââââââââââââââ */}
       {selectedRoute && showRightSidebar && (
         <div style={{
           width: '260px', background: '#fff', borderLeft: '1px solid #e5e7eb',
@@ -748,9 +761,9 @@ ${trkpts}    </trkseg>
             const segs = selectedRoute.segments
               ? selectedRoute.segments.map(s => ({ color: s.color, label: s.label, desc: s.description, duration: s.duration, miles: s.miles }))
               : [
-                  { color: '#e74c3c', label: '⚡ City / Highway', desc: selectedRoute.highway_desc },
-                  { color: '#9b59b6', label: '🛣️ Parkway',        desc: selectedRoute.parkway_desc },
-                  { color: '#2ecc71', label: '🌲 The Ride',       desc: selectedRoute.twisty_desc },
+                  { color: '#e74c3c', label: 'â¡ City / Highway', desc: selectedRoute.highway_desc },
+                  { color: '#9b59b6', label: 'ð£ï¸ Parkway',        desc: selectedRoute.parkway_desc },
+                  { color: '#2ecc71', label: 'ð² The Ride',       desc: selectedRoute.twisty_desc },
                 ].filter(s => s.desc);
 
             const totalDuration = selectedRoute.duration_str || sumDurations(segs);
@@ -764,11 +777,11 @@ ${trkpts}    </trkseg>
                   <div>
                     <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: '15px' }}>{selectedRoute.title}</p>
                     <p style={{ margin: 0, fontSize: '13px', color: '#f97316', fontWeight: 600 }}>
-                      {totalDuration && `⏱ ${totalDuration}`}
-                      {totalMiles && ` · 🛣️ ${totalMiles}`}
+                      {totalDuration && `â± ${totalDuration}`}
+                      {totalMiles && ` Â· ð£ï¸ ${totalMiles}`}
                     </p>
                     {selectedRoute.destination && (
-                      <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#9ca3af' }}>→ {selectedRoute.destination}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#9ca3af' }}>â {selectedRoute.destination}</p>
                     )}
                   </div>
                   {isMobile && (
@@ -789,7 +802,7 @@ ${trkpts}    </trkseg>
                     <p style={{ fontWeight: 600, margin: '0 0 2px', fontSize: '14px' }}>{seg.label}</p>
                     {(seg.duration || seg.miles) && (
                       <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#f97316', fontWeight: 600 }}>
-                        {[seg.duration, seg.miles].filter(Boolean).join(' · ')}
+                        {[seg.duration, seg.miles].filter(Boolean).join(' Â· ')}
                       </p>
                     )}
                     {seg.desc && (
@@ -803,7 +816,7 @@ ${trkpts}    </trkseg>
         </div>
       )}
 
-      {/* ── Bug report modal ──────────────────────────────────────────────── */}
+      {/* ââ Bug report modal ââââââââââââââââââââââââââââââââââââââââââââââââ */}
       {isBugModalOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
           <div style={{ background: '#fff', borderRadius: '12px', padding: '24px', width: '360px', maxWidth: '90vw' }}>
@@ -822,7 +835,7 @@ ${trkpts}    </trkseg>
               style={{ width: '100%', padding: '10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box', marginBottom: '12px', resize: 'vertical' }}
             />
             {bugSubmitSuccess ? (
-              <div style={{ textAlign: 'center', color: '#059669', fontWeight: 600 }}>✓ Bug reported! Thanks.</div>
+              <div style={{ textAlign: 'center', color: '#059669', fontWeight: 600 }}>â Bug reported! Thanks.</div>
             ) : (
               <button
                 onClick={handleSubmitBug}
@@ -836,7 +849,7 @@ ${trkpts}    </trkseg>
         </div>
       )}
 
-      {/* ── Auth modal ────────────────────────────────────────────────────── */}
+      {/* ââ Auth modal ââââââââââââââââââââââââââââââââââââââââââââââââââââââ */}
       {isAuthModalOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
           <div style={{ background: '#fff', borderRadius: '12px', padding: '32px', width: '320px', maxWidth: '90vw' }}>
