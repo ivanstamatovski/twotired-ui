@@ -8,12 +8,13 @@ import { createClient } from 'npm:@supabase/supabase-js';
 //           grounded in live Google Maps data (250M+ places, current road network).
 //           Falls back to Gemini without grounding if Maps tool is unavailable.
 //
-//  Step 2 — Claude + ORS in PARALLEL (independent of each other)
-//           Claude:  takes Gemini's route summaries → writes narrative layer
-//           ORS:     takes Gemini's waypoints → snaps to road geometry → GeoJSON
+//  Step 2 — Claude + Google Maps Directions API in PARALLEL (independent)
+//           Claude:        takes Gemini's route summaries → writes narrative layer
+//           Google Maps:   takes Gemini's waypoints → returns road-snapped polyline
+//                          Same map data as Gemini → perfect alignment, no mismatch
 //
 //  Step 3 — Merge + Supabase upsert (all routes in parallel)
-//           Combines Claude's narrative with ORS's geometry → saves to DB
+//           Combines Claude's narrative with Google's geometry → saves to DB
 //           Supabase Realtime fires on each INSERT → frontend renders routes
 //
 // Docs: https://ai.google.dev/gemini-api/docs/maps-grounding
@@ -58,62 +59,111 @@ interface EnrichedRoute {
   colors: object;
 }
 
-// ── OpenRouteService routing ────────────────────────────────────────────────
-// Takes Gemini-discovered waypoints, returns a road-following GeoJSON.
-// 500m snap radius — tight enough to prevent cross-river snapping,
-// loose enough to handle points slightly off the road surface.
-async function computeORSRoute(waypoints: Waypoint[]): Promise<object | null> {
-  const orsApiKey = Deno.env.get('ORS_API_KEY');
-  if (!orsApiKey || waypoints.length < 2) return null;
+// ── Google Maps polyline decoder ─────────────────────────────────────────────
+// Decodes Google's encoded polyline format into [lat, lng] pairs.
+// https://developers.google.com/maps/documentation/utilities/polylinealgorithm
+function decodePolyline(encoded: string): Array<[number, number]> {
+  const coords: Array<[number, number]> = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    let shift = 0, result = 0, b: number;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    coords.push([lat / 1e5, lng / 1e5]);
+  }
+  return coords;
+}
 
-  const coordinates = waypoints.map(wp => [wp.lng, wp.lat]); // ORS wants [lng, lat]
-  const radiuses = waypoints.map(() => 500);
+// ── Google Maps Directions API routing ───────────────────────────────────────
+// Uses the SAME Google Maps road graph as Gemini's Maps grounding — perfect
+// alignment. Gemini places waypoints on Google roads; Google routes between them.
+// Replaces ORS which used OpenStreetMap data (different graph → mismatch).
+async function computeGoogleMapsRoute(waypoints: Waypoint[]): Promise<object | null> {
+  const mapsApiKey = Deno.env.get('GOOGLE_MAPS_API_KEY');
+  if (!mapsApiKey || waypoints.length < 2) return null;
+
+  // Directions API supports up to 25 total points (origin + 23 intermediates + destination)
+  const capped = waypoints.length > 25 ? [
+    waypoints[0],
+    ...waypoints.slice(1, -1).filter((_, i, arr) =>
+      Math.round(i * 23 / (arr.length - 1)) === Math.round(i * 23 / (arr.length - 1))
+    ).slice(0, 23),
+    waypoints[waypoints.length - 1],
+  ] : waypoints;
+
+  const origin = `${capped[0].lat},${capped[0].lng}`;
+  const dest   = `${capped[capped.length - 1].lat},${capped[capped.length - 1].lng}`;
+  const intermediates = capped.slice(1, -1).map(w => `${w.lat},${w.lng}`).join('|');
+
+  const url = new URL('https://maps.googleapis.com/maps/api/directions/json');
+  url.searchParams.set('origin', origin);
+  url.searchParams.set('destination', dest);
+  if (intermediates) url.searchParams.set('waypoints', intermediates);
+  url.searchParams.set('key', mapsApiKey);
+  url.searchParams.set('mode', 'driving');
 
   try {
-    const res = await fetch(
-      'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: orsApiKey,
-          'Content-Type': 'application/json',
-          Accept: 'application/json, application/geo+json',
-        },
-        body: JSON.stringify({
-          coordinates,
-          radiuses,
-          continue_straight: true, // prevent U-turns at junctions
-        }),
-      }
-    );
-
+    const res = await fetch(url.toString());
     if (!res.ok) {
-      const errText = await res.text();
-      console.error(`ORS error ${res.status}:`, errText);
+      console.error(`Google Maps error ${res.status}:`, await res.text());
+      return null;
+    }
+    const data = await res.json();
+    if (data.status !== 'OK') {
+      console.error(`Google Maps status: ${data.status}`, data.error_message ?? '');
       return null;
     }
 
-    return await res.json();
+    // Decode the overview polyline → GeoJSON LineString
+    // For higher fidelity, concatenate all step polylines within each leg
+    const allCoords: number[][] = [];
+    for (const leg of data.routes[0].legs) {
+      for (const step of leg.steps) {
+        const pts = decodePolyline(step.polyline.points);
+        for (const [lat, lng] of pts) {
+          allCoords.push([lng, lat]); // GeoJSON is [lng, lat]
+        }
+      }
+    }
+
+    console.log(`[Google Maps] Route decoded: ${allCoords.length} coordinate points`);
+    return {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: allCoords },
+        properties: {},
+      }],
+    };
   } catch (err) {
-    console.error('ORS fetch failed:', err.message);
+    console.error('Google Maps fetch failed:', err.message);
     return null;
   }
 }
 
-// Straight-line fallback when ORS is unavailable
+// Straight-line fallback when routing API is unavailable
 function straightLineGeoJSON(waypoints: Waypoint[]) {
   return {
     type: 'FeatureCollection',
-    features: [
-      {
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: waypoints.map(w => [w.lng, w.lat]),
-        },
-        properties: {},
+    features: [{
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: waypoints.map(w => [w.lng, w.lat]),
       },
-    ],
+      properties: {},
+    }],
   };
 }
 
@@ -201,7 +251,7 @@ Return ONLY a raw JSON array. No markdown, no code fences. Start with [ and end 
 // ── Step 2a: Claude adds narrative and rider voice ──────────────────────────
 // Claude receives Gemini's route skeleton (roads, waypoints, character) and
 // crafts the narrative layer: titles, segment descriptions, difficulty, tags.
-// Runs in PARALLEL with ORS — neither depends on the other's output.
+// Runs in PARALLEL with Google Maps routing — neither depends on the other's output.
 async function enrichRoutesWithClaude(
   geminiRoutes: GeminiRoute[],
   start: string,
@@ -311,25 +361,26 @@ Deno.serve(async (req) => {
         console.log(`[Gemini] Done in ${Date.now() - t0}ms`);
 
         // ── Steps 2a + 2b in PARALLEL ──────────────────────────────────────
-        // Claude writes narrative; ORS snaps waypoints to road geometry.
+        // Claude writes narrative; Google Maps Directions API snaps waypoints to road geometry.
         // These are fully independent — no reason to run them sequentially.
         const t1 = Date.now();
-        console.log(`[Parallel] Starting Claude narrative + ORS geometry for ${geminiRoutes.length} routes`);
+        console.log(`[Parallel] Starting Claude narrative + Google Maps geometry for ${geminiRoutes.length} routes`);
 
         const [enrichedRoutes, geojsonList] = await Promise.all([
           // 2a: Claude — narrative layer for all routes (single API call)
           enrichRoutesWithClaude(geminiRoutes, start, destination),
 
-          // 2b: ORS — road geometry for each route (all in parallel)
+          // 2b: Google Maps Directions API — road geometry for each route (all in parallel)
+          // Uses the same Google Maps road graph as Gemini → perfect waypoint alignment
           Promise.all(
             geminiRoutes.map(async (route) => {
               if (!Array.isArray(route.waypoints) || route.waypoints.length < 2) {
                 return null;
               }
-              console.log(`[ORS] Computing geometry for ${route.id}`);
-              const geojson = await computeORSRoute(route.waypoints);
+              console.log(`[Google Maps] Computing geometry for ${route.id}`);
+              const geojson = await computeGoogleMapsRoute(route.waypoints);
               if (!geojson) {
-                console.warn(`[ORS] Failed for ${route.id}, using straight-line fallback`);
+                console.warn(`[Google Maps] Failed for ${route.id}, using straight-line fallback`);
                 return straightLineGeoJSON(route.waypoints);
               }
               return geojson;
@@ -337,7 +388,7 @@ Deno.serve(async (req) => {
           ),
         ]);
 
-        console.log(`[Parallel] Claude + ORS done in ${Date.now() - t1}ms`);
+        console.log(`[Parallel] Claude + Google Maps done in ${Date.now() - t1}ms`);
 
         // ── Step 3: Merge + save all routes to Supabase in parallel ────────
         // Realtime fires on each INSERT → frontend renders routes incrementally.
