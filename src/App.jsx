@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, GeoJSON, useMap, ZoomControl } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import { useJsApiLoader, GoogleMap, Polyline } from '@react-google-maps/api';
 import { supabase } from './lib/supabase';
+
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyDnD7vlzPzPWvJOCYNp47_wO5NrrE3Ds0s';
 import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
 import './App.css';
 import { getRoutes, submitBugReport, saveRoute, logRouteRequest } from './lib/routeService';
@@ -36,16 +36,22 @@ const sumDurations = (segs) => formatMins(segs.reduce((acc, s) => acc + parseMin
 
 const RECENT_KEY = 'twistyroute_recent';
 
-// Sub-component to auto-fit the map to the selected route
-function FitBounds({ geojson }) {
-  const map = useMap();
-  useEffect(() => {
-    if (geojson) {
-      const layer = L.geoJSON(geojson);
-      map.flyToBounds(layer.getBounds().pad(0.1), { duration: 0.6 });
-    }
-  }, [geojson, map]);
-  return null;
+// Convert GeoJSON FeatureCollection → array of {path, options} for Google Maps Polylines
+function geoJSONToPolylines(geojson) {
+  const features = geojson?.type === 'FeatureCollection' ? geojson.features : [geojson];
+  return features.map(f => {
+    const leg = f.properties?.leg;
+    const color = leg === 'highway' ? '#e74c3c' : leg === 'parkway' ? '#9b59b6' : '#2ecc71';
+    const weight = leg === 'highway' || leg === 'parkway' ? 5 : 6;
+    const geom = f.geometry || f;
+    const coords = geom.type === 'MultiLineString'
+      ? geom.coordinates.flat()
+      : geom.coordinates || [];
+    return {
+      path: coords.map(([lng, lat]) => ({ lat, lng })),
+      options: { strokeColor: color, strokeWeight: weight, strokeOpacity: 0.9 }
+    };
+  });
 }
 
 function App() {
@@ -93,7 +99,8 @@ function App() {
   const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
 
-  const mapRef = useRef(null);
+  const mapRef = useRef(null); // holds the google.maps.Map instance after onLoad
+  const { isLoaded: mapsLoaded } = useJsApiLoader({ googleMapsApiKey: GOOGLE_MAPS_API_KEY });
 
   // ── Auth + initial data + realtime subscription ────────────────────────────
   useEffect(() => {
@@ -236,6 +243,20 @@ function App() {
       });
   }, [selectedRouteId, routesDb, searchResults]);
 
+  // ── Auto-fit map when selected route changes ───────────────────────────────
+  useEffect(() => {
+    if (mapRef.current && selectedGeoJSON && window.google) {
+      const bounds = new window.google.maps.LatLngBounds();
+      const features = selectedGeoJSON.type === 'FeatureCollection' ? selectedGeoJSON.features : [selectedGeoJSON];
+      features.forEach(f => {
+        const geom = f.geometry || f;
+        const coords = geom.type === 'MultiLineString' ? geom.coordinates.flat() : (geom.coordinates || []);
+        coords.forEach(([lng, lat]) => bounds.extend({ lat, lng }));
+      });
+      mapRef.current.fitBounds(bounds, 40);
+    }
+  }, [selectedGeoJSON]);
+
   // ── Derived values ─────────────────────────────────────────────────────────
   const selectedRoute = (searchResults || []).find(r => r.id === selectedRouteId)
     || routesDb.find(r => r.id === selectedRouteId);
@@ -335,17 +356,16 @@ function App() {
     if (isMobile) setShowLeftSidebar(false);
   };
 
-  const getStyle = (feature) => {
-    const leg = feature.properties?.leg;
-    if (leg === 'highway') return { color: '#e74c3c', weight: 5, opacity: 0.9 };
-    if (leg === 'parkway') return { color: '#9b59b6', weight: 5, opacity: 0.9 };
-    return { color: '#2ecc71', weight: 6, opacity: 0.9 };
-  };
-
   const fitRoute = () => {
-    if (mapRef.current && selectedGeoJSON) {
-      const layer = L.geoJSON(selectedGeoJSON);
-      mapRef.current.flyToBounds(layer.getBounds().pad(0.1), { duration: 0.6 });
+    if (mapRef.current && selectedGeoJSON && window.google) {
+      const bounds = new window.google.maps.LatLngBounds();
+      const features = selectedGeoJSON.type === 'FeatureCollection' ? selectedGeoJSON.features : [selectedGeoJSON];
+      features.forEach(f => {
+        const geom = f.geometry || f;
+        const coords = geom.type === 'MultiLineString' ? geom.coordinates.flat() : (geom.coordinates || []);
+        coords.forEach(([lng, lat]) => bounds.extend({ lat, lng }));
+      });
+      mapRef.current.fitBounds(bounds, 40);
     }
   };
 
@@ -433,50 +453,7 @@ ${trkpts}    </trkseg>
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0);
 
-      // The Leaflet SVG overlay lives on a GPU compositor layer that
-      // getDisplayMedia routinely misses. Re-draw the route line ourselves
-      // using Leaflet's coordinate conversion so it's always visible.
-      if (selectedGeoJSON && mapRef.current) {
-        const map = mapRef.current;
-        const mapEl = document.querySelector('.leaflet-container');
-        if (mapEl) {
-          const rect = mapEl.getBoundingClientRect();
-          const scaleX = canvas.width / window.innerWidth;
-          const scaleY = canvas.height / window.innerHeight;
-
-          const legColor = (leg) => {
-            if (leg === 'highway') return { color: '#e74c3c', width: 5 };
-            if (leg === 'parkway') return { color: '#9b59b6', width: 5 };
-            return { color: '#2ecc71', width: 6 };
-          };
-
-          const features = selectedGeoJSON.type === 'FeatureCollection'
-            ? selectedGeoJSON.features : [selectedGeoJSON];
-
-          for (const f of features) {
-            const g = f.geometry || f;
-            const { color, width } = legColor(f.properties?.leg);
-            const segs = g.type === 'LineString' ? [g.coordinates]
-              : g.type === 'MultiLineString' ? g.coordinates : [];
-
-            ctx.strokeStyle = color;
-            ctx.lineWidth = width * scaleX;
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-
-            for (const seg of segs) {
-              ctx.beginPath();
-              seg.forEach(([lng, lat], i) => {
-                const pt = map.latLngToContainerPoint([lat, lng]);
-                const x = (rect.left + pt.x) * scaleX;
-                const y = (rect.top + pt.y) * scaleY;
-                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-              });
-              ctx.stroke();
-            }
-          }
-        }
-      }
+      // Google Maps renders natively in the browser capture — no manual redraw needed
 
       setBugScreenshot(canvas.toDataURL('image/jpeg', 0.85));
       setIsBugModalOpen(true);
@@ -712,25 +689,33 @@ ${trkpts}    </trkseg>
 
       {/* ── Map ──────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: 'relative' }}>
-        <MapContainer
-          center={[41.0, -74.0]}
-          zoom={9}
-          style={{ height: '100%', width: '100%' }}
-          zoomControl={false}
-          ref={mapRef}
-        >
-          <ZoomControl position="topright" />
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-            attribution='&copy; OpenStreetMap contributors &copy; CARTO'
-          />
-          {selectedGeoJSON && (
-            <>
-              <GeoJSON key={selectedRouteId} data={selectedGeoJSON} style={getStyle} />
-              <FitBounds geojson={selectedGeoJSON} />
-            </>
-          )}
-        </MapContainer>
+        {mapsLoaded ? (
+          <GoogleMap
+            mapContainerStyle={{ height: '100%', width: '100%' }}
+            center={{ lat: 41.0, lng: -74.0 }}
+            zoom={9}
+            onLoad={map => { mapRef.current = map; }}
+            options={{
+              zoomControl: true,
+              streetViewControl: false,
+              mapTypeControl: false,
+              fullscreenControl: false,
+              gestureHandling: 'greedy',
+            }}
+          >
+            {selectedGeoJSON && geoJSONToPolylines(selectedGeoJSON).map((line, i) => (
+              <Polyline
+                key={`${selectedRouteId}-${i}`}
+                path={line.path}
+                options={line.options}
+              />
+            ))}
+          </GoogleMap>
+        ) : (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}>
+            Loading map…
+          </div>
+        )}
 
         {/* Map action buttons */}
         <div style={{ position: 'absolute', bottom: '16px', right: '16px', display: 'flex', gap: '8px', zIndex: 1000 }}>
