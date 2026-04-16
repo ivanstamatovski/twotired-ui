@@ -271,23 +271,7 @@ function App() {
         return;
       }
 
-      // Step 2: Geocode the destination in the browser (no rate-limit issues)
-      let destLat = 0, destLng = 0;
-      try {
-        const geoRes = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=us`,
-          { headers: { 'User-Agent': 'TwoTired/1.0' } }
-        );
-        const geoData = await geoRes.json();
-        if (geoData && geoData[0]) {
-          destLat = parseFloat(geoData[0].lat);
-          destLng = parseFloat(geoData[0].lon);
-        }
-      } catch (geoErr) {
-        console.warn('Geocoding failed, proceeding without coords', geoErr);
-      }
-
-      // Step 3: Call edge function directly with geocoded coords
+      // Step 2: Call edge function — Gemini handles geocoding internally via Maps grounding
       // Use fetch with explicit anon key — avoids supabase.functions.invoke sending an
       // expired session JWT which results in 401 from the Supabase gateway.
       setIsRequestingRoute(true);
@@ -296,7 +280,7 @@ function App() {
       const res = await fetch(edgeFnUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + anonKey },
-        body: JSON.stringify({ start: startLocation, destination: query, destLat, destLng })
+        body: JSON.stringify({ start: startLocation, destination: query })
       });
       const data = res.ok ? await res.json() : null;
       const error = res.ok ? null : { message: `HTTP ${res.status}` };
