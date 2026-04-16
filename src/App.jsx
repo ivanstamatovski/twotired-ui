@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useJsApiLoader, GoogleMap, Polyline } from '@react-google-maps/api';
 import { supabase } from './lib/supabase';
-
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyDnD7vlzPzPWvJOCYNp47_wO5NrrE3Ds0s';
 import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
 import './App.css';
 import { getRoutes, submitBugReport, saveRoute, logRouteRequest } from './lib/routeService';
+
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyDnD7vlzPzPWvJOCYNp47_wO5NrrE3Ds0s';
 
 // Inject CSS for spinner animation
 const styles = `
