@@ -566,7 +566,7 @@ ${trkpts}    </trkseg>
         </button>
       )}
 
-      {/* ── Left sidebar ─────────────────────────────────────────────────── */}
+      {/* ── Left sidebar ────────────────────────────────────────────────── */}
       {showLeftSidebar && (
         <div style={{
           width: '280px', background: '#fff', borderRight: '1px solid #e5e7eb',
