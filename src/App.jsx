@@ -1,11 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
-import { useJsApiLoader, GoogleMap, Polyline } from '@react-google-maps/api';
 import { supabase } from './lib/supabase';
 import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
 import './App.css';
 import { getRoutes, submitBugReport, saveRoute, logRouteRequest } from './lib/routeService';
 
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyDnD7vlzPzPWvJOCYNp47_wO5NrrE3Ds0s';
+// Poll until the Google Maps script (loaded in index.html) is ready
+function useMapsLoaded() {
+  const [loaded, setLoaded] = useState(!!window.google?.maps);
+  useEffect(() => {
+    if (window.google?.maps) { setLoaded(true); return; }
+    const id = setInterval(() => {
+      if (window.google?.maps) { setLoaded(true); clearInterval(id); }
+    }, 100);
+    return () => clearInterval(id);
+  }, []);
+  return loaded;
+}
 
 // Inject CSS for spinner animation
 const styles = `
@@ -99,8 +109,10 @@ function App() {
   const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
 
-  const mapRef = useRef(null); // holds the google.maps.Map instance after onLoad
-  const { isLoaded: mapsLoaded } = useJsApiLoader({ googleMapsApiKey: GOOGLE_MAPS_API_KEY });
+  const mapDivRef = useRef(null);   // DOM div for the map
+  const mapRef = useRef(null);      // google.maps.Map instance
+  const polylinesRef = useRef([]);  // active Polyline instances
+  const mapsLoaded = useMapsLoaded();
 
   // ── Auth + initial data + realtime subscription ────────────────────────────
   useEffect(() => {
@@ -243,19 +255,41 @@ function App() {
       });
   }, [selectedRouteId, routesDb, searchResults]);
 
-  // ── Auto-fit map when selected route changes ───────────────────────────────
+  // ── Init native Google Maps when API is ready ─────────────────────────────
   useEffect(() => {
-    if (mapRef.current && selectedGeoJSON && window.google) {
-      const bounds = new window.google.maps.LatLngBounds();
-      const features = selectedGeoJSON.type === 'FeatureCollection' ? selectedGeoJSON.features : [selectedGeoJSON];
-      features.forEach(f => {
-        const geom = f.geometry || f;
-        const coords = geom.type === 'MultiLineString' ? geom.coordinates.flat() : (geom.coordinates || []);
-        coords.forEach(([lng, lat]) => bounds.extend({ lat, lng }));
+    if (!mapsLoaded || !mapDivRef.current || mapRef.current) return;
+    mapRef.current = new window.google.maps.Map(mapDivRef.current, {
+      center: { lat: 41.0, lng: -74.0 },
+      zoom: 9,
+      zoomControl: true,
+      streetViewControl: false,
+      mapTypeControl: false,
+      fullscreenControl: false,
+      gestureHandling: 'greedy',
+    });
+  }, [mapsLoaded]);
+
+  // ── Draw polylines + auto-fit when route changes ──────────────────────────
+  useEffect(() => {
+    if (!mapRef.current || !window.google) return;
+    // Clear previous polylines
+    polylinesRef.current.forEach(p => p.setMap(null));
+    polylinesRef.current = [];
+    if (!selectedGeoJSON) return;
+    const bounds = new window.google.maps.LatLngBounds();
+    geoJSONToPolylines(selectedGeoJSON).forEach(line => {
+      const poly = new window.google.maps.Polyline({
+        path: line.path,
+        strokeColor: line.options.strokeColor,
+        strokeWeight: line.options.strokeWeight,
+        strokeOpacity: line.options.strokeOpacity,
+        map: mapRef.current,
       });
-      mapRef.current.fitBounds(bounds, 40);
-    }
-  }, [selectedGeoJSON]);
+      polylinesRef.current.push(poly);
+      line.path.forEach(pt => bounds.extend(pt));
+    });
+    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 40);
+  }, [selectedGeoJSON, mapsLoaded]);
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const selectedRoute = (searchResults || []).find(r => r.id === selectedRouteId)
@@ -689,33 +723,12 @@ ${trkpts}    </trkseg>
 
       {/* ── Map ──────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: 'relative' }}>
-        {mapsLoaded ? (
-          <GoogleMap
-            mapContainerStyle={{ height: '100%', width: '100%' }}
-            center={{ lat: 41.0, lng: -74.0 }}
-            zoom={9}
-            onLoad={map => { mapRef.current = map; }}
-            options={{
-              zoomControl: true,
-              streetViewControl: false,
-              mapTypeControl: false,
-              fullscreenControl: false,
-              gestureHandling: 'greedy',
-            }}
-          >
-            {selectedGeoJSON && geoJSONToPolylines(selectedGeoJSON).map((line, i) => (
-              <Polyline
-                key={`${selectedRouteId}-${i}`}
-                path={line.path}
-                options={line.options}
-              />
-            ))}
-          </GoogleMap>
-        ) : (
-          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6' }}>
+        {!mapsLoaded && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', zIndex: 1 }}>
             Loading map…
           </div>
         )}
+        <div ref={mapDivRef} style={{ height: '100%', width: '100%' }} />
 
         {/* Map action buttons */}
         <div style={{ position: 'absolute', bottom: '16px', right: '16px', display: 'flex', gap: '8px', zIndex: 1000 }}>
