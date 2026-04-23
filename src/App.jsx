@@ -8,13 +8,15 @@ import './App.css';
 
 import { getRoutes, submitBugReport, saveRoute, logRouteRequest } from './lib/routeService';
 
-// Poll until the Google Maps script (loaded in index.html) is ready
+// Poll until the Google Maps script (loaded in index.html) is ready.
+// Must check window.google?.maps?.Map specifically — the maps object can exist
+// before Map constructor is available, causing "Map is not a constructor" crash.
 function useMapsLoaded() {
-  const [loaded, setLoaded] = useState(!!window.google?.maps);
+  const [loaded, setLoaded] = useState(typeof window.google?.maps?.Map === 'function');
   useEffect(() => {
-    if (window.google?.maps) { setLoaded(true); return; }
+    if (typeof window.google?.maps?.Map === 'function') { setLoaded(true); return; }
     const id = setInterval(() => {
-      if (window.google?.maps) { setLoaded(true); clearInterval(id); }
+      if (typeof window.google?.maps?.Map === 'function') { setLoaded(true); clearInterval(id); }
     }, 100);
     return () => clearInterval(id);
   }, []);
