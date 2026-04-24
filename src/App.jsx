@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+<<<<<<< HEAD
 <<<<<<< Updated upstream
 import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -13,16 +14,42 @@ import { supabase } from './lib/supabase';
 import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
 
 import './App.css';
+=======
+
+import { supabase } from './lib/supabase';
+
+import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
+
+import './App.css';
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 
 import { getRoutes, submitBugReport, saveRoute, logRouteRequest } from './lib/routeService';
 >>>>>>> Stashed changes
 
+<<<<<<< HEAD
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
+=======
+// Poll until the Google Maps script (loaded in index.html) is ready.
+// Must check window.google?.maps?.Map specifically — the maps object can exist
+// before Map constructor is available, causing "Map is not a constructor" crash.
+function useMapsLoaded() {
+  const [loaded, setLoaded] = useState(typeof window.google?.maps?.Map === 'function');
+  useEffect(() => {
+    if (typeof window.google?.maps?.Map === 'function') { setLoaded(true); return; }
+    const id = setInterval(() => {
+      if (typeof window.google?.maps?.Map === 'function') { setLoaded(true); clearInterval(id); }
+    }, 100);
+    return () => clearInterval(id);
+  }, []);
+  return loaded;
+}
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 
 // Inject CSS for spinner and pulse
 const styles = `
+<<<<<<< HEAD
 <<<<<<< Updated upstream
 @keyframes spin {
   to { transform: rotate(360deg); }
@@ -36,6 +63,10 @@ const styles = `
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 >>>>>>> Stashed changes
+=======
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 `;
 if (typeof document !== 'undefined') {
   const styleSheet = document.createElement("style");
@@ -58,8 +89,11 @@ function FitBounds({ geojson }) {
 }
 
 function App() {
+<<<<<<< HEAD
 <<<<<<< Updated upstream
 =======
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 
   // ── Route state ────────────────────────────────────────────────────────────
 >>>>>>> Stashed changes
@@ -93,21 +127,30 @@ function App() {
   const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
 
+<<<<<<< HEAD
 <<<<<<< Updated upstream
   const mapRef = useRef(null);
 =======
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
   const mapDivRef = useRef(null); // DOM div for the map
   const mapRef = useRef(null);    // google.maps.Map instance
   const polylinesRef = useRef([]); // active Polyline instances
 
   const mapsLoaded = useMapsLoaded();
+<<<<<<< HEAD
 >>>>>>> Stashed changes
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 
   useEffect(() => {
+<<<<<<< HEAD
 <<<<<<< Updated upstream
     // Auth Check
 =======
 >>>>>>> Stashed changes
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
     });
@@ -118,11 +161,14 @@ function App() {
       setUser(session?.user ?? null);
     });
 
+<<<<<<< HEAD
 <<<<<<< Updated upstream
     const fetchRoutes = async () => {
       const { data, error } = await supabase.from('routes').select('*');
       if (data) {
 =======
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
     const fetchInitialRoutes = async () => {
       const { data, error } = await supabase
         .from('routes')
@@ -137,6 +183,7 @@ function App() {
       }
     };
 
+<<<<<<< HEAD
 <<<<<<< Updated upstream
     fetchRoutes();
 
@@ -153,6 +200,8 @@ function App() {
             } else {
               return [...prev, mappedNew];
 =======
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
     const channel = supabase.channel('public:routes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'routes' }, (payload) => {
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
@@ -454,7 +503,10 @@ function App() {
       if (f.geometry?.type === 'LineString') {
         f.geometry.coordinates.forEach(c => {
           trkpts += `  <trkpt lat="${c[1]}" lon="${c[0]}"></trkpt>\n`;
+<<<<<<< HEAD
 >>>>>>> Stashed changes
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
         });
       }
     });
@@ -570,6 +622,7 @@ ${trkpts}    </trkseg>
   };
 
   const closeBugModal = () => { setIsBugModalOpen(false); setBugScreenshot(null); setBugComment(''); };
+<<<<<<< HEAD
 
   const handleRouteRequest = async () => {
     if (!routeRequestText.trim()) return;
@@ -619,6 +672,8 @@ ${trkpts}    </trkseg>
       setIsRequestingRoute(false);
     }
   };
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 
   // Auto-resolve loading state when new route arrives via websocket
   useEffect(() => {
@@ -661,6 +716,7 @@ ${trkpts}    </trkseg>
   };
 
   const handleLogout = async () => { await supabase.auth.signOut(); };
+<<<<<<< HEAD
 
   const handleSaveRoute = async () => {
     if (!user) {
@@ -681,6 +737,8 @@ ${trkpts}    </trkseg>
       alert('Route saved successfully!');
     }
   };
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 
   return (
 <<<<<<< Updated upstream
@@ -852,6 +910,7 @@ ${trkpts}    </trkseg>
             </div>
           </div>
         )}
+<<<<<<< HEAD
 <<<<<<< Updated upstream
 
         {/* Search Results or Placeholder */}
@@ -923,6 +982,8 @@ ${trkpts}    </trkseg>
           <button className="zoom-fit-btn" style={{ position: 'relative', bottom: 'auto', right: 'auto' }} onClick={fitRoute} title="Fit Route">
             <Maximize size={18} /> <span className="btn-text">Fit Route</span>
 =======
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
         <div ref={mapDivRef} style={{ height: '100%', width: '100%' }} />
         <div style={{ position: 'absolute', bottom: '16px', right: '16px', display: 'flex', gap: '8px', zIndex: 1000 }}>
           <button onClick={handleReportBug} style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1070,12 +1131,16 @@ ${trkpts}    </trkseg>
             </div>
             {bugScreenshot && <img src={bugScreenshot} alt="Screenshot" style={{ width: '100%', borderRadius: '8px', marginBottom: '12px', border: '1px solid #e5e7eb' }} />}
             <textarea value={bugComment} onChange={e => setBugComment(e.target.value)} placeholder="What went wrong?" rows={3} style={{ width: '100%', padding: '10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box', marginBottom: '12px', resize: 'vertical' }} />
+<<<<<<< HEAD
 >>>>>>> Stashed changes
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
             {bugSubmitSuccess ? (
               <div style={{ textAlign: 'center', padding: '40px 0' }}>
                 <h2 style={{ color: '#2ecc71', margin: 0 }}>Thanks for reporting!</h2>
               </div>
             ) : (
+<<<<<<< HEAD
 <<<<<<< Updated upstream
               <>
                 <h2 style={{ margin: 0, fontSize: '1.25rem' }}>Report a Bug</h2>
@@ -1112,6 +1177,8 @@ ${trkpts}    </trkseg>
                 </div>
               </>
 =======
+=======
+>>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
               <button onClick={handleSubmitBug} disabled={isSubmittingBug} style={{ width: '100%', padding: '10px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '15px', fontWeight: 600, cursor: isSubmittingBug ? 'not-allowed' : 'pointer' }}>
                 {isSubmittingBug ? 'Submitting...' : 'Submit Bug Report'}
               </button>
