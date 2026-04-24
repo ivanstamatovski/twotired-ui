@@ -3,16 +3,6 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
-=======
-=======
->>>>>>> 8f7b89e01cb5848f80e754f6f8ceed6e8a252fdd
 // ── ErrorBoundary: catches render errors and shows them on screen ──────────
 class ErrorBoundary extends Component {
   constructor(props) {
@@ -89,4 +79,3 @@ try {
       '<b>Sync crash:</b><pre style="white-space:pre-wrap">' + err.message + '\n\n' + err.stack + '</pre></div>'
   }
 }
->>>>>>> Stashed changes
