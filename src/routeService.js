@@ -1,10 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
-const EDGE_FN = supabaseUrl + '/functions/v1/generate-route';
+import { supabase } from './supabase.js';
 
 export async function getRoutes(destination) {
   if (!destination || !destination.trim()) return { routes: [], source: 'empty' };
@@ -19,7 +13,6 @@ export async function getRoutes(destination) {
   if (!error && cached && cached.length > 0) {
     return { routes: cached, source: 'cache' };
   }
-
   return { routes: [], source: 'none' };
 }
 
@@ -28,16 +21,12 @@ export async function saveRoute(routeId, userId) {
 }
 
 export async function submitBugReport({ userId, routeId, comment, imageData, pageContext }) {
-  // Convert base64 PNG → Blob and upload to Storage, then store the public URL
   let screenshotUrl = null;
 
   if (imageData) {
     try {
-      // Convert dataURL to Blob
       const res = await fetch(imageData);
       const blob = await res.blob();
-
-      // Unique filename: timestamp + random suffix
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
 
       const { data: uploadData, error: uploadError } = await supabase.storage
@@ -57,7 +46,6 @@ export async function submitBugReport({ userId, routeId, comment, imageData, pag
     }
   }
 
-  // Use RPC function to bypass RLS (SECURITY DEFINER runs as postgres owner)
   return supabase.rpc('insert_bug_report', {
     p_comment: comment,
     p_screenshot_url: screenshotUrl,
