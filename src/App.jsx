@@ -324,7 +324,7 @@ function App() {
       const res = await fetch(edgeFnUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + anonKey },
-        body: JSON.stringify({ start: startLocation, destination: query })
+        body: JSON.stringify({ query })
       });
       const data = res.ok ? await res.json() : null;
       const error = res.ok ? null : { message: `HTTP ${res.status}` };
@@ -540,14 +540,21 @@ ${trkpts}    </trkseg>
             </div>
           </div>
 
-          <div style={{ marginBottom: '8px' }}>
-            <label style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: '4px' }}>FROM</label>
-            <input value={startLocation} readOnly style={{ width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box', background: '#f9fafb' }} />
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', display: 'block', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Starting from</label>
+            <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#374151' }}>📍 {startLocation}</p>
           </div>
 
           <div style={{ marginBottom: '12px' }}>
-            <label style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: '4px' }}>WHERE TO?</label>
-            <input value={routeRequestText} onChange={e => setRouteRequestText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleRouteRequest()} placeholder="e.g., Bear Mountain, Hawk's Nest" style={{ width: '100%', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box' }} />
+            <label style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Your route request</label>
+            <textarea
+              value={routeRequestText}
+              onChange={e => setRouteRequestText(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleRouteRequest())}
+              placeholder={"e.g., scenic ride to Hawks Nest\nor twisty roads through the Catskills with a coffee stop"}
+              rows={3}
+              style={{ width: '100%', padding: '10px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box', resize: 'none', lineHeight: 1.5, fontFamily: 'sans-serif' }}
+            />
           </div>
 
           <button onClick={handleRouteRequest} disabled={generating || isRequestingRoute || !routeRequestText.trim()} style={{ width: '100%', padding: '10px', background: generating || isRequestingRoute ? '#93c5fd' : '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '15px', fontWeight: 600, cursor: generating || isRequestingRoute || !routeRequestText.trim() ? 'not-allowed' : 'pointer', marginBottom: '16px' }}>
@@ -628,44 +635,61 @@ ${trkpts}    </trkseg>
 
       {/* ── Right panel ──────────────────────────────────────────────────── */}
       {selectedRoute && showRightSidebar && (
-        <div style={{ width: '260px', background: '#fff', borderLeft: '1px solid #e5e7eb', padding: '16px', overflowY: 'auto', zIndex: 1000, position: isMobile ? 'absolute' : 'relative', top: 0, right: 0, height: '100%' }}>
-          {(() => {
-            const segs = selectedRoute.segments
-              ? selectedRoute.segments.map(s => ({ color: s.color, label: s.label, desc: s.description, duration: s.duration, miles: s.miles }))
-              : [
-                  { color: '#e74c3c', label: '⚡ City / Highway', desc: selectedRoute.highway_desc },
-                  { color: '#9b59b6', label: '🛣️ Parkway', desc: selectedRoute.parkway_desc },
-                  { color: '#2ecc71', label: '🌲 The Ride', desc: selectedRoute.twisty_desc },
-                ].filter(s => s.desc);
-            const totalDuration = selectedRoute.duration_str || sumDurations(segs);
-            const totalMiles = selectedRoute.distance_mi ? `${selectedRoute.distance_mi} mi` : segs.map(s => s.miles).filter(Boolean).join(' + ');
-            return (
-              <>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                  <div>
-                    <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: '15px' }}>{selectedRoute.title}</p>
+        <div style={{ width: '300px', background: '#fff', borderLeft: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', zIndex: 1000, position: isMobile ? 'absolute' : 'relative', top: 0, right: 0, height: '100%' }}>
+          {/* Header */}
+          <div style={{ padding: '16px 16px 12px', borderBottom: '1px solid #f3f4f6' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: '16px', lineHeight: 1.3 }}>{selectedRoute.title}</p>
+                {(() => {
+                  const segs = selectedRoute.segments || [];
+                  const totalDuration = selectedRoute.duration_str || sumDurations(segs);
+                  const totalMiles = selectedRoute.distance_mi ? `${selectedRoute.distance_mi} mi` : '';
+                  return (totalDuration || totalMiles) ? (
                     <p style={{ margin: 0, fontSize: '13px', color: '#f97316', fontWeight: 600 }}>
                       {totalDuration && `⏱ ${totalDuration}`}{totalMiles && ` · 🛣️ ${totalMiles}`}
                     </p>
-                    {selectedRoute.destination && <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#9ca3af' }}>→ {selectedRoute.destination}</p>}
-                  </div>
-                  {isMobile && <button onClick={() => setShowRightSidebar(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}><X size={18} /></button>}
+                  ) : null;
+                })()}
+                {selectedRoute.destination && <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#9ca3af' }}>📍 → {selectedRoute.destination}</p>}
+              </div>
+              {isMobile && <button onClick={() => setShowRightSidebar(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0, marginLeft: '8px' }}><X size={18} /></button>}
+            </div>
+          </div>
+
+          {/* Scrollable narrative */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+            {(() => {
+              const segs = selectedRoute.segments
+                ? selectedRoute.segments.map(s => ({ color: s.color || '#6b7280', label: s.label, desc: s.description || s.desc, duration: s.duration, miles: s.miles }))
+                : [
+                    { color: '#e74c3c', label: '⚡ City Exit', desc: selectedRoute.highway_desc },
+                    { color: '#9b59b6', label: '🛣️ Parkway', desc: selectedRoute.parkway_desc },
+                    { color: '#2ecc71', label: '🌲 The Ride', desc: selectedRoute.twisty_desc },
+                  ].filter(s => s.desc);
+              return segs.map((seg, i) => (
+                <div key={i} style={{ borderLeft: `4px solid ${seg.color}`, paddingLeft: '14px', marginBottom: '22px' }}>
+                  <p style={{ fontWeight: 700, margin: '0 0 3px', fontSize: '14px', color: '#111827' }}>{seg.label}</p>
+                  {(seg.duration || seg.miles) && (
+                    <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#f97316', fontWeight: 600 }}>
+                      {[seg.duration, seg.miles].filter(Boolean).join(' · ')}
+                    </p>
+                  )}
+                  {seg.desc && <p style={{ margin: 0, fontSize: '14px', color: '#374151', lineHeight: 1.65 }}>{seg.desc}</p>}
                 </div>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-                  <button onClick={handleSaveRoute} style={{ flex: 1, padding: '8px', background: '#eab308', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Save</button>
-                  <button onClick={handleOpenInGoogleMaps} style={{ flex: 1, padding: '8px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Maps</button>
-                  <button onClick={handleDownloadGPX} style={{ flex: 1, padding: '8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>GPX</button>
-                </div>
-                {segs.map((seg, i) => (
-                  <div key={i} style={{ borderLeft: `4px solid ${seg.color}`, paddingLeft: '12px', marginBottom: '14px' }}>
-                    <p style={{ fontWeight: 600, margin: '0 0 2px', fontSize: '14px' }}>{seg.label}</p>
-                    {(seg.duration || seg.miles) && <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#f97316', fontWeight: 600 }}>{[seg.duration, seg.miles].filter(Boolean).join(' · ')}</p>}
-                    {seg.desc && <p style={{ margin: 0, fontSize: '13px', color: '#6b7280', lineHeight: 1.5 }}>{seg.desc}</p>}
-                  </div>
-                ))}
-              </>
-            );
-          })()}
+              ));
+            })()}
+          </div>
+
+          {/* Footer buttons */}
+          <div style={{ padding: '12px 16px', borderTop: '1px solid #e5e7eb', display: 'flex', gap: '8px' }}>
+            <button onClick={handleOpenInGoogleMaps} style={{ flex: 1, padding: '10px 8px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
+              Open in Maps
+            </button>
+            <button onClick={handleDownloadGPX} style={{ flex: 1, padding: '10px 8px', background: '#f3f4f6', color: '#374151', border: '1px solid #e5e7eb', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
+              Download GPX
+            </button>
+          </div>
         </div>
       )}
 
