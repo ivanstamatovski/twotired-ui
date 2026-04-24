@@ -33,7 +33,7 @@ class ErrorBoundary extends Component {
           margin: '20px',
           maxWidth: '90vw',
         }}>
-          <h2 style={{ marginTop: 0, fontSize: '18px' }}>🚨 App crashed — error details:</h2>
+          <h2 style={{ marginTop: 0, fontSize: '18px' }}>App crashed</h2>
           <p style={{ fontWeight: 700, fontSize: '15px' }}>{this.state.error.message}</p>
           <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px', overflow: 'auto', maxHeight: '60vh', background: '#fff5f5', padding: '12px', borderRadius: '4px' }}>
             {this.state.error.stack}
@@ -70,7 +70,6 @@ try {
   )
   console.log('[BOOT] render() called')
 } catch (err) {
-  // Synchronous crash fallback — show in DOM directly
   console.error('[BOOT] render threw synchronously:', err)
   const el = document.getElementById('root')
   if (el) {
