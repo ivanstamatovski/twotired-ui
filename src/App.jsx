@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -14,24 +14,17 @@ const LOADING_MSGS = [
   'Almost there…',
 ];
 
-function getMapsKey() {
-  const script = document.querySelector('script[src*="maps.googleapis.com"]');
-  if (!script) return '';
-  try { return new URL(script.src).searchParams.get('key') || ''; } catch { return ''; }
-}
-
-function buildMapSrc(route, mapsKey) {
-  if (!mapsKey) return '';
-  if (!route?.waypoints?.length) {
-    return `https://www.google.com/maps/embed/v1/view?key=${mapsKey}&center=40.92,-74.2&zoom=9&maptype=roadmap`;
-  }
-  const wps = route.waypoints;
-  const origin = encodeURIComponent(wps[0]);
-  const dest = encodeURIComponent(wps[wps.length - 1]);
-  const middle = wps.slice(1, -1).map(w => encodeURIComponent(w)).join('|');
-  let url = `https://www.google.com/maps/embed/v1/directions?key=${mapsKey}&origin=${origin}&destination=${dest}&mode=driving`;
-  if (middle) url += `&waypoints=${middle}`;
-  return url;
+// Poll until Google Maps API is ready
+function useMapsReady() {
+  const [ready, setReady] = useState(typeof window.google?.maps?.Map === 'function');
+  useEffect(() => {
+    if (ready) return;
+    const id = setInterval(() => {
+      if (typeof window.google?.maps?.Map === 'function') { setReady(true); clearInterval(id); }
+    }, 150);
+    return () => clearInterval(id);
+  }, [ready]);
+  return ready;
 }
 
 export default function App() {
@@ -41,18 +34,54 @@ export default function App() {
   const [error, setError] = useState('');
   const [route, setRoute] = useState(null);
   const [recent, setRecent] = useState([]);
-  const [mapsKey, setMapsKey] = useState('');
 
+  const mapRef = useRef(null);
+  const mapObj = useRef(null);
+  const dirService = useRef(null);
+  const dirRenderer = useRef(null);
+  const mapsReady = useMapsReady();
+
+  // Init map once API is ready
   useEffect(() => {
-    const key = getMapsKey();
-    if (key) { setMapsKey(key); return; }
-    const id = setInterval(() => {
-      const k = getMapsKey();
-      if (k) { setMapsKey(k); clearInterval(id); }
-    }, 100);
-    return () => clearInterval(id);
-  }, []);
+    if (!mapsReady || !mapRef.current || mapObj.current) return;
+    mapObj.current = new window.google.maps.Map(mapRef.current, {
+      center: { lat: 40.92, lng: -74.2 },
+      zoom: 9,
+      mapTypeId: 'roadmap',
+      gestureHandling: 'greedy',
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+    });
+    dirService.current = new window.google.maps.DirectionsService();
+    dirRenderer.current = new window.google.maps.DirectionsRenderer({
+      suppressMarkers: false,
+      polylineOptions: { strokeColor: '#3b82f6', strokeWeight: 5, strokeOpacity: 0.85 },
+    });
+    dirRenderer.current.setMap(mapObj.current);
+  }, [mapsReady]);
 
+  // Draw route on map whenever route changes
+  useEffect(() => {
+    if (!route || !mapsReady || !dirService.current || !dirRenderer.current) return;
+    const wps = route.waypoints || [];
+    if (wps.length < 2) return;
+    dirService.current.route(
+      {
+        origin: wps[0],
+        destination: wps[wps.length - 1],
+        waypoints: wps.slice(1, -1).map(loc => ({ location: loc, stopover: true })),
+        travelMode: window.google.maps.TravelMode.DRIVING,
+        optimizeWaypoints: false,
+      },
+      (result, status) => {
+        if (status === 'OK') dirRenderer.current.setDirections(result);
+        else console.warn('[Maps] Directions failed:', status);
+      }
+    );
+  }, [route, mapsReady]);
+
+  // Load recent routes from DB
   const loadRecent = useCallback(() => {
     fetch(
       `${SUPABASE_URL}/rest/v1/routes?select=id,title,destination,duration_str,distance_mi&group_name=eq.AI%20Generated&order=created_at.desc&limit=8`,
@@ -65,6 +94,7 @@ export default function App() {
 
   useEffect(() => { loadRecent(); }, [loadRecent]);
 
+  // Loading message rotation
   useEffect(() => {
     if (!loading) return;
     setLoadingMsg(0);
@@ -106,11 +136,11 @@ export default function App() {
     } catch {}
   }
 
-  const mapSrc = buildMapSrc(route, mapsKey);
-
+  // ── Render ───────────────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', -apple-system, sans-serif", background: '#f1f5f9' }}>
 
+      {/* ── Left panel ─────────────────────────────────────────────────────────────── */}
       <div style={{ width: 260, background: '#0f172a', color: 'white', display: 'flex', flexDirection: 'column', padding: 16, gap: 12, overflowY: 'auto', flexShrink: 0 }}>
 
         <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏙️ TwistyRoute</div>
@@ -186,26 +216,20 @@ export default function App() {
         )}
       </div>
 
+      {/* ── Map ───────────────────────────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: 'relative' }}>
-        {mapsKey ? (
-          <iframe
-            key={mapSrc}
-            src={mapSrc}
-            style={{ width: '100%', height: '100%', border: 'none' }}
-            allowFullScreen
-            loading="lazy"
-            referrerPolicy="no-referrer-when-downgrade"
-            title="Route map"
-          />
-        ) : (
+        <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+        {!mapsReady && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e2e8f0', color: '#64748b', fontSize: 15 }}>
             Loading map…
           </div>
         )}
       </div>
 
+      {/* ── Right panel ─────────────────────────────────────────────────────────────────── */}
       {route && (
         <div style={{ width: 340, background: 'white', display: 'flex', flexDirection: 'column', boxShadow: '-2px 0 12px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
+          {/* Header */}
           <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid #f1f5f9' }}>
             <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.3, color: '#0f172a' }}>{route.title}</div>
             <div style={{ fontSize: 13, color: '#64748b', marginTop: 6 }}>
@@ -214,6 +238,7 @@ export default function App() {
             <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>📍 → {route.destination}</div>
           </div>
 
+          {/* Segments */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
             {(route.segments || []).map((seg, i) => (
               <div key={i} style={{ paddingLeft: 14, borderLeft: `4px solid ${seg.color || '#3b82f6'}` }}>
@@ -230,6 +255,7 @@ export default function App() {
             ))}
           </div>
 
+          {/* Close */}
           <div style={{ padding: '14px 20px', borderTop: '1px solid #f1f5f9', display: 'flex', justifyContent: 'flex-end' }}>
             <button
               onClick={() => setRoute(null)}
