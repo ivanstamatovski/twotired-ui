@@ -14,7 +14,6 @@ const LOADING_MSGS = [
   'Almost there…',
 ];
 
-// Read the Maps API key from the script tag src
 function getMapsKey() {
   const el = Array.from(document.querySelectorAll('script')).find(s =>
     s.src && s.src.includes('maps.googleapis.com')
@@ -23,7 +22,6 @@ function getMapsKey() {
   return m?.[1] || '';
 }
 
-// Build Google Maps navigation URL (opens in Google Maps app / web for turn-by-turn)
 function buildNavUrl(route) {
   if (!route) return '';
   const wps = route.waypoints || [];
@@ -33,21 +31,15 @@ function buildNavUrl(route) {
   return `https://www.google.com/maps/dir/${wps.map(toStr).join('/')}`;
 }
 
-// Build Google Maps Embed URL for the route
 function buildMapSrc(route, key) {
   if (!route || !key) return '';
   const wps = route.waypoints || [];
   if (wps.length < 2) return '';
-
   const toStr = wp =>
-    typeof wp === 'string'
-      ? encodeURIComponent(wp)
-      : `${wp.lat},${wp.lng}`;
-
+    typeof wp === 'string' ? encodeURIComponent(wp) : `${wp.lat},${wp.lng}`;
   const origin = toStr(wps[0]);
   const destination = toStr(wps[wps.length - 1]);
   const middle = wps.slice(1, -1).map(toStr).join('|');
-
   let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
   if (middle) url += `&waypoints=${middle}`;
   return url;
@@ -145,9 +137,7 @@ export default function App() {
             disabled={loading}
             style={{ background: '#1e293b', color: 'white', border: '1px solid #334155', borderRadius: 10, padding: '10px 12px', resize: 'none', height: 100, fontSize: 13, lineHeight: 1.5, outline: 'none', transition: 'border 0.2s' }}
           />
-          <button
-            type="submit"
-            disabled={loading || !query.trim()}
+          <button type="submit" disabled={loading || !query.trim()}
             style={{ background: loading ? '#1d4ed8' : '#3b82f6', color: 'white', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: loading ? 'default' : 'pointer', fontWeight: 700, fontSize: 14, transition: 'background 0.2s' }}
           >
             {loading ? LOADING_MSGS[loadingMsg] : '🗺️ Generate Route'}
@@ -177,6 +167,7 @@ export default function App() {
           </>
         )}
       </div>
+
       <div style={{ flex: 1, position: 'relative' }}>
         {(mapSrc || defaultSrc) ? (
           <iframe key={mapSrc || defaultSrc} src={mapSrc || defaultSrc} style={{ width: '100%', height: '100%', border: 'none' }} allowFullScreen loading="lazy" referrerPolicy="no-referrer-when-downgrade" title="Route map" />
@@ -184,6 +175,7 @@ export default function App() {
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e2e8f0', color: '#64748b', fontSize: 15 }}>Loading map…</div>
         )}
       </div>
+
       {route && (
         <div style={{ width: 340, background: 'white', display: 'flex', flexDirection: 'column', boxShadow: '-2px 0 12px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
           <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid #f1f5f9' }}>
@@ -197,6 +189,22 @@ export default function App() {
                 <div style={{ fontSize: 14, fontWeight: 700, color: seg.color || '#3b82f6', marginBottom: 2 }}>{seg.label}</div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>{seg.duration} &nbsp;·&nbsp; {seg.miles}</div>
                 <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>{seg.description}</div>
+                {seg.place && (
+                  <div style={{ display: 'flex', gap: 10, marginTop: 10, padding: '10px 12px', background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0' }}>
+                    {seg.place.photoUrl && (
+                      <img src={seg.place.photoUrl} alt={seg.place.name} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
+                    )}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{seg.place.name}</div>
+                      {seg.place.rating && (
+                        <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>
+                          {'★'.repeat(Math.round(seg.place.rating))}{'☆'.repeat(5 - Math.round(seg.place.rating))} {seg.place.rating}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 3, lineHeight: 1.4 }}>{seg.place.address}</div>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
