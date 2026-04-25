@@ -39,7 +39,7 @@ function buildMapSrc(route, key) {
   const middle = wps.slice(1, -1).map(toStr).join('|');
 
   let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
-  if (middle) url += `&waypoints=${encodeURIComponent(middle)}`;
+  if (middle) url += `&waypoints=${middle}`;
   return url;
 }
 
