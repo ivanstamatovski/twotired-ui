@@ -14,6 +14,7 @@ const LOADING_MSGS = [
   'Almost there…',
 ];
 
+// Read the Maps API key from the script tag src
 function getMapsKey() {
   const el = Array.from(document.querySelectorAll('script')).find(s =>
     s.src && s.src.includes('maps.googleapis.com')
@@ -22,6 +23,7 @@ function getMapsKey() {
   return m?.[1] || '';
 }
 
+// Build Google Maps navigation URL (opens in Google Maps app / web for turn-by-turn)
 function buildNavUrl(route) {
   if (!route) return '';
   const wps = route.waypoints || [];
@@ -31,6 +33,7 @@ function buildNavUrl(route) {
   return `https://www.google.com/maps/dir/${wps.map(toStr).join('/')}`;
 }
 
+// Build Google Maps Embed URL for the route
 function buildMapSrc(route, key) {
   if (!route || !key) return '';
   const wps = route.waypoints || [];
@@ -43,6 +46,39 @@ function buildMapSrc(route, key) {
   let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
   if (middle) url += `&waypoints=${middle}`;
   return url;
+}
+
+// Enrich POI segments with real Places data using the Maps JS Places library
+async function enrichWithPlaces(route) {
+  if (!route?.segments || !window.google?.maps?.places) return route;
+  const segments = [...route.segments];
+  await Promise.all(
+    segments.map(async (seg, i) => {
+      if (seg.place) return;
+      const isPoi = seg.color === '#f59e0b' || /stop|coffee|cafe|restaurant|food|lunch|breakfast|dinner/i.test(seg.label);
+      if (!isPoi) return;
+      const q = seg.label.replace(/^(coffee|food|lunch|breakfast|dinner|cafe|restaurant)\s+stop:\s*/i, '').trim() || seg.label;
+      try {
+        const place = await new Promise(resolve => {
+          const svc = new window.google.maps.places.PlacesService(document.createElement('div'));
+          svc.textSearch({ query: q }, (results, status) => {
+            resolve(status === window.google.maps.places.PlacesServiceStatus.OK ? results?.[0] : null);
+          });
+        });
+        if (!place) return;
+        segments[i] = {
+          ...seg,
+          place: {
+            name: place.name,
+            address: place.formatted_address,
+            rating: place.rating ?? null,
+            photoUrl: place.photos?.[0]?.getUrl({ maxWidth: 400 }) || null,
+          },
+        };
+      } catch {}
+    })
+  );
+  return { ...route, segments };
 }
 
 export default function App() {
@@ -75,6 +111,16 @@ export default function App() {
   }, []);
 
   useEffect(() => { loadRecent(); }, [loadRecent]);
+
+  // Enrich POI segments with Places data whenever a new route loads
+  useEffect(() => {
+    if (!route) return;
+    const needsEnrichment = route.segments?.some(s =>
+      !s.place && (s.color === '#f59e0b' || /stop|coffee|cafe|restaurant|food|lunch|breakfast|dinner/i.test(s.label))
+    );
+    if (!needsEnrichment) return;
+    enrichWithPlaces(route).then(enriched => setRoute(enriched));
+  }, [route?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!loading) return;
@@ -124,6 +170,7 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', -apple-system, sans-serif", background: '#f1f5f9' }}>
+
       <div style={{ width: 260, background: '#0f172a', color: 'white', display: 'flex', flexDirection: 'column', padding: 16, gap: 12, overflowY: 'auto', flexShrink: 0 }}>
         <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏙️ TwistyRoute</div>
         <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Starting from</div>
@@ -137,7 +184,9 @@ export default function App() {
             disabled={loading}
             style={{ background: '#1e293b', color: 'white', border: '1px solid #334155', borderRadius: 10, padding: '10px 12px', resize: 'none', height: 100, fontSize: 13, lineHeight: 1.5, outline: 'none', transition: 'border 0.2s' }}
           />
-          <button type="submit" disabled={loading || !query.trim()}
+          <button
+            type="submit"
+            disabled={loading || !query.trim()}
             style={{ background: loading ? '#1d4ed8' : '#3b82f6', color: 'white', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: loading ? 'default' : 'pointer', fontWeight: 700, fontSize: 14, transition: 'background 0.2s' }}
           >
             {loading ? LOADING_MSGS[loadingMsg] : '🗺️ Generate Route'}
@@ -170,7 +219,9 @@ export default function App() {
 
       <div style={{ flex: 1, position: 'relative' }}>
         {(mapSrc || defaultSrc) ? (
-          <iframe key={mapSrc || defaultSrc} src={mapSrc || defaultSrc} style={{ width: '100%', height: '100%', border: 'none' }} allowFullScreen loading="lazy" referrerPolicy="no-referrer-when-downgrade" title="Route map" />
+          <iframe key={mapSrc || defaultSrc} src={mapSrc || defaultSrc}
+            style={{ width: '100%', height: '100%', border: 'none' }}
+            allowFullScreen loading="lazy" referrerPolicy="no-referrer-when-downgrade" title="Route map" />
         ) : (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e2e8f0', color: '#64748b', fontSize: 15 }}>Loading map…</div>
         )}
@@ -180,19 +231,20 @@ export default function App() {
         <div style={{ width: 340, background: 'white', display: 'flex', flexDirection: 'column', boxShadow: '-2px 0 12px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
           <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid #f1f5f9' }}>
             <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.3, color: '#0f172a' }}>{route.title}</div>
-            <div style={{ fontSize: 13, color: '#64748b', marginTop: 6 }}>⏱ {route.duration_str} &nbsp;·&nbsp; 🛣️ {route.distance_mi} mi</div>
+            <div style={{ fontSize: 13, color: '#64748b', marginTop: 6 }}>⏱ {route.duration_str}  ·  🛣️ {route.distance_mi} mi</div>
             <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>📍 → {route.destination}</div>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
             {(route.segments || []).map((seg, i) => (
               <div key={i} style={{ paddingLeft: 14, borderLeft: `4px solid ${seg.color || '#3b82f6'}` }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: seg.color || '#3b82f6', marginBottom: 2 }}>{seg.label}</div>
-                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>{seg.duration} &nbsp;·&nbsp; {seg.miles}</div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>{seg.duration}  ·  {seg.miles}</div>
                 <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>{seg.description}</div>
                 {seg.place && (
                   <div style={{ display: 'flex', gap: 10, marginTop: 10, padding: '10px 12px', background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0' }}>
                     {seg.place.photoUrl && (
-                      <img src={seg.place.photoUrl} alt={seg.place.name} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
+                      <img src={seg.place.photoUrl} alt={seg.place.name}
+                        style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }} />
                     )}
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{seg.place.name}</div>
@@ -210,11 +262,13 @@ export default function App() {
           </div>
           <div style={{ padding: '14px 20px', borderTop: '1px solid #f1f5f9', display: 'flex', gap: 8 }}>
             <a href={buildNavUrl(route)} target="_blank" rel="noopener noreferrer"
-              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#1d4ed8', color: 'white', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}
-            >
+              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: '#1d4ed8', color: 'white', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}>
               🧭 Open in Google Maps
             </a>
-            <button onClick={() => setRoute(null)} style={{ background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: 'pointer', fontSize: 13 }}>✕</button>
+            <button onClick={() => setRoute(null)}
+              style={{ background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: 'pointer', fontSize: 13 }}>
+              ✕
+            </button>
           </div>
         </div>
       )}
