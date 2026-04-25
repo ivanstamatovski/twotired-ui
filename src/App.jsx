@@ -120,6 +120,9 @@ export default function App() {
   }
 
   const mapSrc = buildMapSrc(route, mapsKey);
+  const defaultSrc = mapsKey
+    ? `https://www.google.com/maps/embed/v1/view?key=${mapsKey}&center=40.92,-74.2&zoom=9&maptype=roadmap`
+    : '';
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -203,10 +206,10 @@ export default function App() {
 
       {/* ── Map ────────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: 'relative' }}>
-        {mapSrc ? (
+        {(mapSrc || defaultSrc) ? (
           <iframe
-            key={mapSrc}
-            src={mapSrc}
+            key={mapSrc || defaultSrc}
+            src={mapSrc || defaultSrc}
             style={{ width: '100%', height: '100%', border: 'none' }}
             allowFullScreen
             loading="lazy"
@@ -215,7 +218,7 @@ export default function App() {
           />
         ) : (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e2e8f0', color: '#64748b', fontSize: 15 }}>
-            {route ? 'Loading map…' : 'Generate a route to see it here'}
+            Loading map…
           </div>
         )}
       </div>
