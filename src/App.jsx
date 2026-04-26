@@ -36,31 +36,17 @@ function buildNavUrl(route) {
   return `https://www.google.com/maps/dir/${origin}${middle ? '/' + middle : ''}/${dest}`;
 }
 
-// Build Google Maps Embed URL for the route
+// Build Google Maps Embed URL for the route.
+// NOTE: The Embed API does NOT support via: waypoints (that's a Directions API feature only).
+// Regular hard-stop waypoints cause spur detours to each exact coordinate.
+// Solution: embed shows just origin → destination so Google routes naturally between them.
+// The "Open in Google Maps" nav URL carries the full scenic waypoint chain for turn-by-turn.
 function buildMapSrc(route, key) {
   if (!route || !key) return '';
-  const wps = route.waypoints || [];
-  if (!wps.length) return '';
-
-  const toStr = wp =>
-    typeof wp === 'string' ? wp : `${wp.lat},${wp.lng}`;
-
-  // Always use the rider's real start address — never wps[0] which is a Gemini scenic anchor
   const origin = encodeURIComponent(START);
-  // Use the named destination text if available, else fall back to last waypoint
-  const destination = route.destination
-    ? encodeURIComponent(route.destination)
-    : encodeURIComponent(toStr(wps[wps.length - 1]));
-
-  // All Gemini waypoints are via: passthrough points — they bend the route without
-  // forcing a literal stop at the coordinate, eliminating spur detours.
-  // IMPORTANT: via: prefix and | separators must be literal (not percent-encoded)
-  // so the Embed API can parse them correctly.
-  const viaParts = wps.slice(0, 23).map(wp => `via:${toStr(wp)}`).join('|');
-
-  let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
-  if (viaParts) url += `&waypoints=${viaParts}`;
-  return url;
+  const destination = route.destination ? encodeURIComponent(route.destination) : '';
+  if (!destination) return '';
+  return `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
 }
 
 export default function App() {
