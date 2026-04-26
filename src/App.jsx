@@ -53,11 +53,13 @@ function buildMapSrc(route, key) {
     : encodeURIComponent(toStr(wps[wps.length - 1]));
 
   // All Gemini waypoints are via: passthrough points — they bend the route without
-  // forcing a literal stop at the coordinate, eliminating spur detours
+  // forcing a literal stop at the coordinate, eliminating spur detours.
+  // IMPORTANT: via: prefix and | separators must be literal (not percent-encoded)
+  // so the Embed API can parse them correctly.
   const viaParts = wps.slice(0, 23).map(wp => `via:${toStr(wp)}`).join('|');
 
   let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
-  if (viaParts) url += `&waypoints=${encodeURIComponent(viaParts)}`;
+  if (viaParts) url += `&waypoints=${viaParts}`;
   return url;
 }
 
