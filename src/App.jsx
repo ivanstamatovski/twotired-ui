@@ -1,528 +1,371 @@
-import { useState, useEffect, useRef } from 'react';
-import { supabase } from './lib/supabase';
-import { Menu, X, Maximize, Bug, LogIn, LogOut } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
-// ── Google Maps readiness poll ────────────────────────────────────────────────
-function useMapsLoaded() {
-  const [loaded, setLoaded] = useState(typeof window.google?.maps?.Map === 'function');
-  useEffect(() => {
-    if (typeof window.google?.maps?.Map === 'function') { setLoaded(true); return; }
-    const id = setInterval(() => {
-      if (typeof window.google?.maps?.Map === 'function') { setLoaded(true); clearInterval(id); }
-    }, 100);
-    return () => clearInterval(id);
-  }, []);
-  return loaded;
-}
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const EDGE_URL = `${SUPABASE_URL}/functions/v1/generate-route`;
+const START = 'Balancero cafe, Astoria, Queens, NY';
+const START_LABEL = 'Balancero cafe, Astoria';
 
-// ── Spinner CSS ───────────────────────────────────────────────────────────────
-if (typeof document !== 'undefined') {
-  const s = document.createElement('style');
-  s.innerText = '@keyframes spin { to { transform: rotate(360deg); } }';
-  document.head.appendChild(s);
-}
-
-// ── GeoJSON → Google Maps Polylines ──────────────────────────────────────────
-function geoJSONToPolylines(geojson) {
-  const features = geojson?.type === 'FeatureCollection' ? geojson.features : [geojson];
-  return features.map(f => {
-    const geom = f.geometry || f;
-    const coords = geom.type === 'MultiLineString' ? geom.coordinates.flat() : (geom.coordinates || []);
-    return {
-      path: coords.map(([lng, lat]) => ({ lat, lng })),
-      options: { strokeColor: '#3b82f6', strokeWeight: 5, strokeOpacity: 0.85 }
-    };
-  });
-}
-
-const RECENT_KEY = 'twistyroute_recent_v2';
-const START_LOCATION = 'Balancero cafe, Astoria, Queens, NY';
-const LOADING_MESSAGES = [
-  'Researching scenic roads…',
+const LOADING_MSGS = [
   'Asking Gemini for the best twisties…',
   'Plotting your escape from the city…',
-  'Finding the good stuff…',
+  'Finding the scenic stuff…',
+  'Almost there…',
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
+// Read the Maps API key from the script tag src
+function getMapsKey() {
+  const el = Array.from(document.querySelectorAll('script')).find(s =>
+    s.src && s.src.includes('maps.googleapis.com')
+  );
+  const m = el?.src.match(/[?&]key=([^&]+)/);
+  return m?.[1] || '';
+}
+
+// Build Google Maps navigation URL (opens in Google Maps app / web for turn-by-turn)
+function buildNavUrl(route) {
+  if (!route) return '';
+  const wps = route.waypoints || [];
+  if (wps.length < 2) return '';
+  const toStr = wp =>
+    typeof wp === 'string' ? encodeURIComponent(wp) : `${wp.lat},${wp.lng}`;
+  // /maps/dir/origin/waypoint.../destination — works on web and deep-links to Maps app on mobile
+  return `https://www.google.com/maps/dir/${wps.map(toStr).join('/')}`;
+}
+
+// Build Google Maps Embed URL for the route
+function buildMapSrc(route, key) {
+  if (!route || !key) return '';
+  const wps = route.waypoints || [];
+  if (wps.length < 2) return '';
+
+  const toStr = wp =>
+    typeof wp === 'string'
+      ? encodeURIComponent(wp)
+      : `${wp.lat},${wp.lng}`;
+
+  const origin = toStr(wps[0]);
+  const destination = toStr(wps[wps.length - 1]);
+  const middle = wps.slice(1, -1).map(toStr).join('|');
+
+  let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
+  if (middle) url += `&waypoints=${middle}`;
+  return url;
+}
+
+// Enrich POI segments with real Places data using the Maps JS Places library
+async function enrichWithPlaces(route) {
+  if (!route?.segments || !window.google?.maps?.places) return route;
+  const segments = [...route.segments];
+  await Promise.all(
+    segments.map(async (seg, i) => {
+      if (seg.place) return; // already enriched
+      const isPoi = seg.color === '#f59e0b' || /stop|coffee|cafe|restaurant|food|lunch|breakfast|dinner/i.test(seg.label);
+      if (!isPoi) return;
+      // "Coffee Stop: Foundry42, Port Jervis" → "Foundry42, Port Jervis"
+      // "Coffee Stop: Warwick, NY" → "coffee near Warwick, NY" (generic city → search by type)
+      const typeMatch = seg.label.match(/^(coffee|café|cafe|food|restaurant|lunch|dinner|breakfast)/i)?.[1]?.toLowerCase() || 'cafe';
+      const location = seg.label.replace(/^(coffee|food|lunch|breakfast|dinner|cafe|restaurant)\s+stop:\s*/i, '').trim();
+      const q = /,\s*[A-Z]{2}/.test(location) ? `${typeMatch} near ${location}` : (location || seg.label);
+      try {
+        const place = await new Promise(resolve => {
+          const svc = new window.google.maps.places.PlacesService(document.createElement('div'));
+          svc.textSearch({ query: q }, (results, status) => {
+            resolve(status === window.google.maps.places.PlacesServiceStatus.OK ? results?.[0] : null);
+          });
+        });
+        if (!place) return;
+        segments[i] = {
+          ...seg,
+          place: {
+            name: place.name,
+            address: place.formatted_address,
+            rating: place.rating ?? null,
+            photoUrl: place.photos?.[0]?.getUrl({ maxWidth: 400 }) || null,
+          },
+        };
+      } catch {}
+    })
+  );
+  return { ...route, segments };
+}
+
 export default function App() {
-
-  // Route state
-  const [routes, setRoutes] = useState([]);
-  const [selectedRouteId, setSelectedRouteId] = useState(null);
-  const [recentRoutes, setRecentRoutes] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
-  });
-
-  // UI state
-  const [showLeft, setShowLeft] = useState(true);
-  const [showRight, setShowRight] = useState(false);
-  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
-  const [loading, setLoading] = useState(false);
-  const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
-  const [error, setError] = useState('');
-
-  // Input
   const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState(0);
+  const [error, setError] = useState('');
+  const [route, setRoute] = useState(null);
+  const [recent, setRecent] = useState([]);
+  const [mapsKey, setMapsKey] = useState('');
 
-  // Bug report
-  const [reportStatus, setReportStatus] = useState('Report Bug');
-  const [isBugModalOpen, setIsBugModalOpen] = useState(false);
-  const [bugScreenshot, setBugScreenshot] = useState(null);
-  const [bugComment, setBugComment] = useState('');
-  const [isSubmittingBug, setIsSubmittingBug] = useState(false);
-  const [bugSubmitSuccess, setBugSubmitSuccess] = useState(false);
-
-  // Auth
-  const [user, setUser] = useState(null);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authMode, setAuthMode] = useState('login');
-  const [authError, setAuthError] = useState('');
-
-  // Map refs
-  const mapDivRef = useRef(null);
-  const mapRef = useRef(null);
-  const polylinesRef = useRef([]);
-  const mapsLoaded = useMapsLoaded();
-
-  // Derived
-  const selectedRoute = routes.find(r => r.id === selectedRouteId) || recentRoutes.find(r => r.id === selectedRouteId);
-  const selectedGeoJSON = selectedRoute?.geojson ?? null;
-
-  // ── Auth ────────────────────────────────────────────────────────────────────
+  // Read Maps key once DOM is ready
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setUser(session?.user ?? null));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setUser(s?.user ?? null));
-    return () => subscription.unsubscribe();
+    const key = getMapsKey();
+    if (key) { setMapsKey(key); return; }
+    // Script might still be loading — poll briefly
+    const id = setInterval(() => {
+      const k = getMapsKey();
+      if (k) { setMapsKey(k); clearInterval(id); }
+    }, 200);
+    return () => clearInterval(id);
   }, []);
 
-  // ── Resize ──────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const fn = () => { const m = window.innerWidth <= 768; setIsMobile(m); if (!m) setShowLeft(true); };
-    window.addEventListener('resize', fn);
-    return () => window.removeEventListener('resize', fn);
+  // Load recent routes from DB
+  const loadRecent = useCallback(() => {
+    fetch(
+      `${SUPABASE_URL}/rest/v1/routes?select=id,title,destination,duration_str,distance_mi&group_name=eq.AI%20Generated&order=created_at.desc&limit=8`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
+    )
+      .then(r => r.json())
+      .then(data => Array.isArray(data) && setRecent(data))
+      .catch(() => {});
   }, []);
 
-  // ── Loading message cycle ───────────────────────────────────────────────────
+  useEffect(() => { loadRecent(); }, [loadRecent]);
+
+  // Enrich POI segments with Places data whenever a new route loads
+  useEffect(() => {
+    if (!route) return;
+    const needsEnrichment = route.segments?.some(s =>
+      !s.place && (s.color === '#f59e0b' || /stop|coffee|cafe|restaurant|food|lunch|breakfast|dinner/i.test(s.label))
+    );
+    if (!needsEnrichment) return;
+    enrichWithPlaces(route).then(enriched => setRoute(enriched));
+  }, [route?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Loading message rotation
   useEffect(() => {
     if (!loading) return;
-    setLoadingMsgIdx(0);
-    const id = setInterval(() => setLoadingMsgIdx(i => (i + 1) % LOADING_MESSAGES.length), 1800);
+    setLoadingMsg(0);
+    const id = setInterval(() => setLoadingMsg(i => (i + 1) % LOADING_MSGS.length), 2500);
     return () => clearInterval(id);
   }, [loading]);
 
-  // ── Init map ────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!mapsLoaded || !mapDivRef.current || mapRef.current) return;
-    mapRef.current = new window.google.maps.Map(mapDivRef.current, {
-      center: { lat: 41.0, lng: -74.0 },
-      zoom: 9,
-      zoomControl: true,
-      streetViewControl: false,
-      mapTypeControl: false,
-      fullscreenControl: false,
-      gestureHandling: 'greedy',
-    });
-  }, [mapsLoaded]);
-
-  // ── Draw route on map ───────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!mapRef.current || !window.google) return;
-    polylinesRef.current.forEach(p => p.setMap(null));
-    polylinesRef.current = [];
-    if (!selectedGeoJSON) return;
-    const bounds = new window.google.maps.LatLngBounds();
-    geoJSONToPolylines(selectedGeoJSON).forEach(line => {
-      const poly = new window.google.maps.Polyline({
-        path: line.path,
-        strokeColor: line.options.strokeColor,
-        strokeWeight: line.options.strokeWeight,
-        strokeOpacity: line.options.strokeOpacity,
-        map: mapRef.current,
-      });
-      polylinesRef.current.push(poly);
-      line.path.forEach(pt => bounds.extend(pt));
-    });
-    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 40);
-  }, [selectedGeoJSON, mapsLoaded]);
-
-  // ── Generate route ──────────────────────────────────────────────────────────
-  const handleGenerate = async () => {
-    const q = query.trim();
-    if (!q) return;
+  async function generate(e) {
+    e?.preventDefault();
+    if (!query.trim() || loading) return;
     setLoading(true);
     setError('');
-    setRoutes([]);
-    setSelectedRouteId(null);
-    setShowRight(false);
-
     try {
-      const edgeUrl = import.meta.env.VITE_SUPABASE_URL + '/functions/v1/generate-route';
-      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      const res = await fetch(edgeUrl, {
+      const res = await fetch(EDGE_URL, {
         method: 'POST',
+<<<<<<< HEAD
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + anonKey },
         body: JSON.stringify({ query: q, start: START_LOCATION, destination: q }),
+=======
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ query: query.trim(), start: START }),
+>>>>>>> 1dc4a57540eddd2baedb093a0a8f4cf7c3a408b6
       });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `HTTP ${res.status}`);
-      }
-
       const data = await res.json();
-      const list = Array.isArray(data) ? data : [data];
-
-      if (list.length === 0) {
-        setError('No routes returned. Try a different request.');
-        return;
-      }
-
-      setRoutes(list);
-      setSelectedRouteId(list[0].id);
-      setShowRight(true);
-      if (isMobile) setShowLeft(false);
-
-      // Save to recent
-      setRecentRoutes(prev => {
-        const merged = [...list, ...prev.filter(r => !list.find(nr => nr.id === r.id))].slice(0, 5);
-        try { localStorage.setItem(RECENT_KEY, JSON.stringify(merged)); } catch {}
-        return merged;
-      });
-
+      const r = Array.isArray(data) ? data[0] : data;
+      if (r?.error) throw new Error(r.error);
+      setRoute(r);
+      loadRecent();
     } catch (err) {
-      console.error('[generate]', err);
-      setError('Failed to generate route: ' + err.message);
+      setError(`Failed to generate route: ${err.message}`);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  // ── Map helpers ─────────────────────────────────────────────────────────────
-  const fitRoute = () => {
-    if (!mapRef.current || !selectedGeoJSON || !window.google) return;
-    const bounds = new window.google.maps.LatLngBounds();
-    const features = selectedGeoJSON.type === 'FeatureCollection' ? selectedGeoJSON.features : [selectedGeoJSON];
-    features.forEach(f => {
-      const geom = f.geometry || f;
-      const coords = geom.type === 'MultiLineString' ? geom.coordinates.flat() : (geom.coordinates || []);
-      coords.forEach(([lng, lat]) => bounds.extend({ lat, lng }));
-    });
-    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 40);
-  };
-
-  const openInGoogleMaps = () => {
-    if (!selectedGeoJSON?.features) return;
-    let coords = [];
-    selectedGeoJSON.features.forEach(f => {
-      if (f.geometry?.type === 'LineString') coords.push(...f.geometry.coordinates);
-    });
-    if (!coords.length) return;
-    const fmt = c => `${c[1]},${c[0]}`;
-    const origin = coords[0];
-    const dest = coords[coords.length - 1];
-    const maxWP = 8;
-    let waypoints = [];
-    if (coords.length > 2) {
-      const step = Math.max(1, Math.floor((coords.length - 2) / (maxWP + 1)));
-      for (let i = 1; i <= maxWP && i * step < coords.length - 1; i++) waypoints.push(coords[i * step]);
-    }
-    let url = `https://www.google.com/maps/dir/?api=1&origin=${fmt(origin)}&destination=${fmt(dest)}&travelmode=driving`;
-    if (waypoints.length) url += `&waypoints=${waypoints.map(fmt).join('|')}`;
-    window.open(url, '_blank');
-  };
-
-  const downloadGPX = () => {
-    if (!selectedGeoJSON?.features) return;
-    let trkpts = '';
-    selectedGeoJSON.features.forEach(f => {
-      if (f.geometry?.type === 'LineString') {
-        f.geometry.coordinates.forEach(c => { trkpts += `  <trkpt lat="${c[1]}" lon="${c[0]}"></trkpt>\n`; });
-      }
-    });
-    const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="TwistyRoute">\n  <trk>\n    <name>${selectedRoute?.title || 'Route'}</name>\n    <trkseg>\n${trkpts}    </trkseg>\n  </trk>\n</gpx>`;
-    const a = Object.assign(document.createElement('a'), {
-      href: URL.createObjectURL(new Blob([gpx], { type: 'application/gpx+xml' })),
-      download: `${(selectedRoute?.title || 'route').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.gpx`,
-    });
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  };
-
-  // ── Bug report ──────────────────────────────────────────────────────────────
-  const handleReportBug = async () => {
-    setReportStatus('Capturing…');
-    let stream = null;
+  async function openRecentRoute(id) {
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'browser' }, preferCurrentTab: true });
-      await new Promise(r => setTimeout(r, 400));
-      const video = Object.assign(document.createElement('video'), { srcObject: stream, muted: true });
-      await new Promise(r => { video.onloadedmetadata = r; });
-      await video.play();
-      await new Promise(r => requestAnimationFrame(r));
-      const canvas = Object.assign(document.createElement('canvas'), { width: video.videoWidth, height: video.videoHeight });
-      canvas.getContext('2d').drawImage(video, 0, 0);
-      setBugScreenshot(canvas.toDataURL('image/jpeg', 0.85));
-      setIsBugModalOpen(true);
-      setReportStatus('Report Bug');
-    } catch { setReportStatus('Report Bug'); }
-    finally { if (stream) stream.getTracks().forEach(t => t.stop()); }
-  };
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/routes?id=eq.${id}&select=*`,
+        { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
+      );
+      const data = await res.json();
+      if (data[0]) setRoute(data[0]);
+    } catch {}
+  }
 
-  const handleSubmitBug = async () => {
-    setIsSubmittingBug(true);
-    try {
-      await supabase.from('bug_reports').insert([{
-        user_id: user?.id ?? null,
-        route_id: selectedRouteId ?? null,
-        comment: bugComment,
-        image_data: bugScreenshot,
-        page_context: { query, selectedRouteTitle: selectedRoute?.title ?? null, url: window.location.href },
-        created_at: new Date().toISOString(),
-      }]);
-      setBugSubmitSuccess(true);
-      setTimeout(() => { setBugSubmitSuccess(false); setIsBugModalOpen(false); setBugScreenshot(null); setBugComment(''); }, 2000);
-    } catch (err) { alert('Error submitting bug report'); }
-    finally { setIsSubmittingBug(false); }
-  };
-
-  // ── Auth ────────────────────────────────────────────────────────────────────
-  const handleAuth = async () => {
-    setAuthError('');
-    const fn = authMode === 'login' ? supabase.auth.signInWithPassword : supabase.auth.signUp;
-    const { error } = await fn({ email: authEmail, password: authPassword });
-    if (error) setAuthError(error.message);
-    else if (authMode === 'login') setIsAuthOpen(false);
-    else setAuthError('Check your email for the confirmation link.');
-  };
+  const mapSrc = buildMapSrc(route, mapsKey);
+  const defaultSrc = mapsKey
+    ? `https://www.google.com/maps/embed/v1/view?key=${mapsKey}&center=40.92,-74.2&zoom=9&maptype=roadmap`
+    : '';
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden', fontFamily: 'sans-serif' }}>
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', -apple-system, sans-serif", background: '#f1f5f9' }}>
 
-      {/* Mobile menu toggle */}
-      {isMobile && !showLeft && (
-        <button onClick={() => setShowLeft(true)} style={{ position: 'absolute', top: 12, left: 12, zIndex: 1001, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, cursor: 'pointer' }}>
-          <Menu size={20} />
-        </button>
-      )}
+      {/* ── Left panel ─────────────────────────────────────────────────────── */}
+      <div style={{ width: 260, background: '#0f172a', color: 'white', display: 'flex', flexDirection: 'column', padding: 16, gap: 12, overflowY: 'auto', flexShrink: 0 }}>
 
-      {/* ── Left sidebar ──────────────────────────────────────────────────── */}
-      {showLeft && (
-        <div style={{ width: 280, background: '#fff', borderRight: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', padding: 16, zIndex: 1000, overflowY: 'auto', position: isMobile ? 'absolute' : 'relative', top: 0, left: 0, height: '100%' }}>
+        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏙️ TwistyRoute</div>
 
-          {/* Header */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-            <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>🏍️ TwistyRoute</h1>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              {user
-                ? <button onClick={() => supabase.auth.signOut()} title="Logout" style={{ background: 'none', border: 'none', cursor: 'pointer' }}><LogOut size={18} /></button>
-                : <button onClick={() => setIsAuthOpen(true)} title="Login" style={{ background: 'none', border: 'none', cursor: 'pointer' }}><LogIn size={18} /></button>
-              }
-              {isMobile && <button onClick={() => setShowLeft(false)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={20} /></button>}
-            </div>
-          </div>
+        <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Starting from</div>
+        <div style={{ fontSize: 13, color: '#94a3b8', marginTop: -8 }}>📍 {START_LABEL}</div>
 
-          {/* Starting point */}
-          <div style={{ marginBottom: 14, padding: '10px 12px', background: '#f9fafb', borderRadius: 8, border: '1px solid #e5e7eb' }}>
-            <p style={{ margin: '0 0 2px', fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Starting from</p>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#374151' }}>📍 Balancero cafe, Astoria</p>
-          </div>
-
-          {/* Query input */}
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Where do you want to ride?</label>
-            <textarea
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleGenerate())}
-              placeholder={"e.g., scenic route to Hawks Nest\ntwisty roads through the Catskills\nBear Mountain loop with a coffee stop"}
-              rows={4}
-              style={{ width: '100%', padding: 10, border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', resize: 'none', lineHeight: 1.5, fontFamily: 'sans-serif', color: '#111827' }}
-            />
-          </div>
-
-          {/* Generate button */}
+        <form onSubmit={generate} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <textarea
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); } }}
+            placeholder={'e.g. "scenic loop to Hawks Nest"\n"Bears Nest coffee stop via Catskills"\n"twisty roads, avoid highways"'}
+            disabled={loading}
+            style={{
+              background: '#1e293b', color: 'white', border: '1px solid #334155',
+              borderRadius: 10, padding: '10px 12px', resize: 'none',
+              height: 100, fontSize: 13, lineHeight: 1.5,
+              outline: 'none', transition: 'border 0.2s',
+            }}
+          />
           <button
-            onClick={handleGenerate}
+            type="submit"
             disabled={loading || !query.trim()}
-            style={{ width: '100%', padding: '11px 0', background: loading ? '#93c5fd' : '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, fontSize: 15, fontWeight: 700, cursor: loading || !query.trim() ? 'not-allowed' : 'pointer', marginBottom: 12 }}
+            style={{
+              background: loading ? '#1d4ed8' : '#3b82f6',
+              color: 'white', border: 'none', borderRadius: 10,
+              padding: '11px 16px', cursor: loading ? 'default' : 'pointer',
+              fontWeight: 700, fontSize: 14, transition: 'background 0.2s',
+            }}
           >
-            {loading ? LOADING_MESSAGES[loadingMsgIdx] : '🗺️ Generate Route'}
+            {loading ? LOADING_MSGS[loadingMsg] : '🗺️ Generate Route'}
           </button>
+        </form>
 
-          {/* Loading spinner */}
-          {loading && (
-            <div style={{ textAlign: 'center', padding: '12px 0', marginBottom: 12 }}>
-              <div style={{ width: 28, height: 28, border: '3px solid #e5e7eb', borderTop: '3px solid #3b82f6', borderRadius: '50%', margin: '0 auto 8px', animation: 'spin 1s linear infinite' }} />
-              <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>AI is planning your ride…</p>
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8, padding: '10px 12px', marginBottom: 12, fontSize: 13, color: '#b91c1c' }}>
-              {error}
-            </div>
-          )}
-
-          {/* Current results */}
-          {routes.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <p style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>Route</p>
-              {routes.map(r => (
-                <div key={r.id} onClick={() => { setSelectedRouteId(r.id); setShowRight(true); if (isMobile) setShowLeft(false); }}
-                  style={{ padding: '10px 12px', borderRadius: 8, marginBottom: 6, cursor: 'pointer', border: selectedRouteId === r.id ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: selectedRouteId === r.id ? '#eff6ff' : '#fff' }}>
-                  <p style={{ margin: '0 0 2px', fontWeight: 700, fontSize: 14 }}>{r.title}</p>
-                  <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>
-                    {r.duration_str && `⏱ ${r.duration_str}`}{r.distance_mi && ` · 🛣️ ${r.distance_mi} mi`}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Recent routes */}
-          {recentRoutes.length > 0 && (
-            <div>
-              <p style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>Recent</p>
-              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-                {recentRoutes.map(r => (
-                  <div key={r.id} onClick={() => { setSelectedRouteId(r.id); setShowRight(true); if (isMobile) setShowLeft(false); }}
-                    style={{ padding: '8px 12px', borderRadius: 8, marginBottom: 4, cursor: 'pointer', border: selectedRouteId === r.id ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: selectedRouteId === r.id ? '#eff6ff' : '#fafafa' }}>
-                    <p style={{ margin: '0 0 1px', fontWeight: 600, fontSize: 13 }}>{r.title}</p>
-                    <p style={{ margin: 0, fontSize: 11, color: '#9ca3af' }}>
-                      {r.duration_str && `⏱ ${r.duration_str}`}{r.destination ? ` · ${r.destination}` : ''}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Map ───────────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, position: 'relative' }}>
-        {!mapsLoaded && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f3f4f6', zIndex: 1 }}>
-            <p style={{ color: '#6b7280', fontSize: 14 }}>Loading map…</p>
+        {error && (
+          <div style={{ background: '#450a0a', border: '1px solid #7f1d1d', borderRadius: 8, padding: '8px 12px', fontSize: 12, color: '#fca5a5', lineHeight: 1.4 }}>
+            {error}
           </div>
         )}
-        <div ref={mapDivRef} style={{ height: '100%', width: '100%' }} />
-        <div style={{ position: 'absolute', bottom: 16, right: 16, display: 'flex', gap: 8, zIndex: 1000 }}>
-          <button onClick={handleReportBug} style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Bug size={14} /> {reportStatus}
-          </button>
-          <button onClick={fitRoute} disabled={!selectedGeoJSON} style={{ padding: '8px 14px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, cursor: selectedGeoJSON ? 'pointer' : 'default', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, opacity: selectedGeoJSON ? 1 : 0.5 }}>
-            <Maximize size={14} /> Fit Route
-          </button>
-        </div>
+
+        {route && (
+          <div style={{ background: '#1e3a5f', border: '1px solid #2563eb', borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>{route.title}</div>
+            <div style={{ fontSize: 11, color: '#93c5fd', marginTop: 4 }}>
+              ⏱ {route.duration_str} · 🛣️ {route.distance_mi} mi
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>📍 → {route.destination}</div>
+          </div>
+        )}
+
+        {recent.length > 0 && (
+          <>
+            <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 4 }}>Recent</div>
+            {recent.filter(r => r.id !== route?.id).map(r => (
+              <div
+                key={r.id}
+                onClick={() => openRecentRoute(r.id)}
+                style={{
+                  background: '#1e293b', borderRadius: 10, padding: '10px 12px',
+                  cursor: 'pointer', transition: 'background 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = '#334155'}
+                onMouseLeave={e => e.currentTarget.style.background = '#1e293b'}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{r.title}</div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
+                  ⏱ {r.duration_str} · 🛣️ {r.distance_mi} mi
+                </div>
+              </div>
+            ))}
+          </>
+        )}
       </div>
 
-      {/* ── Right panel ───────────────────────────────────────────────────── */}
-      {selectedRoute && showRight && (
-        <div style={{ width: 300, background: '#fff', borderLeft: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', zIndex: 1000, position: isMobile ? 'absolute' : 'relative', top: 0, right: 0, height: '100%' }}>
+      {/* ── Map ────────────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, position: 'relative' }}>
+        {(mapSrc || defaultSrc) ? (
+          <iframe
+            key={mapSrc || defaultSrc}
+            src={mapSrc || defaultSrc}
+            style={{ width: '100%', height: '100%', border: 'none' }}
+            allowFullScreen
+            loading="lazy"
+            referrerPolicy="no-referrer-when-downgrade"
+            title="Route map"
+          />
+        ) : (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e2e8f0', color: '#64748b', fontSize: 15 }}>
+            Loading map…
+          </div>
+        )}
+      </div>
 
-          {/* Route header */}
-          <div style={{ padding: '16px 16px 12px', borderBottom: '1px solid #f3f4f6' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 17, lineHeight: 1.3 }}>{selectedRoute.title}</p>
-                {(selectedRoute.duration_str || selectedRoute.distance_mi) && (
-                  <p style={{ margin: 0, fontSize: 13, color: '#f97316', fontWeight: 600 }}>
-                    {selectedRoute.duration_str && `⏱ ${selectedRoute.duration_str}`}
-                    {selectedRoute.distance_mi && ` · 🛣️ ${selectedRoute.distance_mi} mi`}
-                  </p>
-                )}
-                {selectedRoute.destination && (
-                  <p style={{ margin: '3px 0 0', fontSize: 12, color: '#9ca3af' }}>📍 → {selectedRoute.destination}</p>
-                )}
-              </div>
-              {isMobile && <button onClick={() => setShowRight(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', marginLeft: 8, flexShrink: 0 }}><X size={18} /></button>}
+      {/* ── Right panel ────────────────────────────────────────────────────── */}
+      {route && (
+        <div style={{ width: 340, background: 'white', display: 'flex', flexDirection: 'column', boxShadow: '-2px 0 12px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
+          {/* Header */}
+          <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid #f1f5f9' }}>
+            <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.3, color: '#0f172a' }}>{route.title}</div>
+            <div style={{ fontSize: 13, color: '#64748b', marginTop: 6 }}>
+              ⏱ {route.duration_str} &nbsp;·&nbsp; 🛣️ {route.distance_mi} mi
             </div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>📍 → {route.destination}</div>
           </div>
 
-          {/* Segment narrative */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
-            {(selectedRoute.segments || []).map((seg, i) => (
-              <div key={i} style={{ borderLeft: `4px solid ${seg.color || '#6b7280'}`, paddingLeft: 14, marginBottom: 24 }}>
-                <p style={{ fontWeight: 700, margin: '0 0 3px', fontSize: 14, color: '#111827' }}>{seg.label}</p>
-                {(seg.duration || seg.miles) && (
-                  <p style={{ margin: '0 0 8px', fontSize: 12, color: '#f97316', fontWeight: 600 }}>
-                    {[seg.duration, seg.miles].filter(Boolean).join(' · ')}
-                  </p>
-                )}
-                {(seg.description || seg.desc) && (
-                  <p style={{ margin: 0, fontSize: 14, color: '#374151', lineHeight: 1.7 }}>
-                    {seg.description || seg.desc}
-                  </p>
+          {/* Segments */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {(route.segments || []).map((seg, i) => (
+              <div key={i} style={{ paddingLeft: 14, borderLeft: `4px solid ${seg.color || '#3b82f6'}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: seg.color || '#3b82f6', marginBottom: 2 }}>
+                  {seg.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>
+                  {seg.duration} &nbsp;·&nbsp; {seg.miles}
+                </div>
+                <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>
+                  {seg.description}
+                </div>
+                {/* Business card for POI stops */}
+                {seg.place && (
+                  <div style={{ display: 'flex', gap: 10, marginTop: 10, padding: '10px 12px', background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0' }}>
+                    {seg.place.photoUrl && (
+                      <img
+                        src={seg.place.photoUrl}
+                        alt={seg.place.name}
+                        style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }}
+                      />
+                    )}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {seg.place.name}
+                      </div>
+                      {seg.place.rating && (
+                        <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>
+                          {'★'.repeat(Math.round(seg.place.rating))}{'☆'.repeat(5 - Math.round(seg.place.rating))} {seg.place.rating}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 3, lineHeight: 1.4 }}>
+                        {seg.place.address}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
             ))}
-            {(!selectedRoute.segments || selectedRoute.segments.length === 0) && (
-              <p style={{ color: '#9ca3af', fontSize: 13, textAlign: 'center', marginTop: 40 }}>No route details available.</p>
-            )}
           </div>
 
-          {/* Action buttons */}
-          <div style={{ padding: '12px 16px', borderTop: '1px solid #e5e7eb', display: 'flex', gap: 8 }}>
-            <button onClick={openInGoogleMaps} style={{ flex: 1, padding: '10px 8px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
-              Open in Maps
-            </button>
-            <button onClick={downloadGPX} style={{ flex: 1, padding: '10px 8px', background: '#f3f4f6', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-              Download GPX
+          {/* Footer: Navigate + Close */}
+          <div style={{ padding: '14px 20px', borderTop: '1px solid #f1f5f9', display: 'flex', gap: 8 }}>
+            <a
+              href={buildNavUrl(route)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                flex: 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                background: '#1d4ed8', color: 'white',
+                border: 'none', borderRadius: 10, padding: '11px 16px',
+                cursor: 'pointer', fontSize: 13, fontWeight: 700,
+                textDecoration: 'none',
+              }}
+            >
+              🧭 Open in Google Maps
+            </a>
+            <button
+              onClick={() => setRoute(null)}
+              style={{ background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: 'pointer', fontSize: 13 }}
+            >
+              ✕
             </button>
           </div>
         </div>
       )}
-
-      {/* ── Bug modal ─────────────────────────────────────────────────────── */}
-      {isBugModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 360, maxWidth: '90vw' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h2 style={{ margin: 0, fontSize: 18 }}>Report a Bug</h2>
-              <button onClick={() => { setIsBugModalOpen(false); setBugScreenshot(null); setBugComment(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={20} /></button>
-            </div>
-            {bugScreenshot && <img src={bugScreenshot} alt="Screenshot" style={{ width: '100%', borderRadius: 8, marginBottom: 12, border: '1px solid #e5e7eb' }} />}
-            <textarea value={bugComment} onChange={e => setBugComment(e.target.value)} placeholder="What went wrong?" rows={3} style={{ width: '100%', padding: 10, border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, boxSizing: 'border-box', marginBottom: 12, resize: 'vertical' }} />
-            {bugSubmitSuccess
-              ? <div style={{ textAlign: 'center', color: '#059669', fontWeight: 600 }}>✓ Bug reported! Thanks.</div>
-              : <button onClick={handleSubmitBug} disabled={isSubmittingBug} style={{ width: '100%', padding: 10, background: '#ef4444', color: '#fff', border: 'none', borderRadius: 6, fontSize: 15, fontWeight: 600, cursor: isSubmittingBug ? 'not-allowed' : 'pointer' }}>
-                  {isSubmittingBug ? 'Submitting…' : 'Submit Bug Report'}
-                </button>
-            }
-          </div>
-        </div>
-      )}
-
-      {/* ── Auth modal ────────────────────────────────────────────────────── */}
-      {isAuthOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 32, width: 320, maxWidth: '90vw' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <h2 style={{ margin: 0, fontSize: 18 }}>{authMode === 'login' ? 'Log In' : 'Sign Up'}</h2>
-              <button onClick={() => setIsAuthOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={20} /></button>
-            </div>
-            {authError && <p style={{ color: '#ef4444', fontSize: 13, marginBottom: 12 }}>{authError}</p>}
-            <input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} style={{ width: '100%', padding: 10, border: '1px solid #d1d5db', borderRadius: 6, marginBottom: 10, fontSize: 14, boxSizing: 'border-box' }} />
-            <input type="password" placeholder="Password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAuth()} style={{ width: '100%', padding: 10, border: '1px solid #d1d5db', borderRadius: 6, marginBottom: 16, fontSize: 14, boxSizing: 'border-box' }} />
-            <button onClick={handleAuth} style={{ width: '100%', padding: 10, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, fontSize: 15, fontWeight: 600, cursor: 'pointer', marginBottom: 12 }}>
-              {authMode === 'login' ? 'Log In' : 'Sign Up'}
-            </button>
-            <p style={{ textAlign: 'center', fontSize: 13, margin: 0 }}>
-              {authMode === 'login' ? "Don't have an account? " : 'Already have an account? '}
-              <span onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')} style={{ color: '#3b82f6', cursor: 'pointer', fontWeight: 600 }}>
-                {authMode === 'login' ? 'Sign Up' : 'Log In'}
-              </span>
-            </p>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }
