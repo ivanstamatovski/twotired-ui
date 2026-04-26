@@ -8,10 +8,10 @@ const START = 'Balancero cafe, Astoria, Queens, NY';
 const START_LABEL = 'Balancero cafe, Astoria';
 
 const LOADING_MSGS = [
-  'Asking Gemini for the best twistiesâ¦',
-  'Plotting your escape from the cityâ¦',
-  'Finding the scenic stuffâ¦',
-  'Almost thereâ¦',
+  'Asking Gemini for the best twisties…',
+  'Plotting your escape from the city…',
+  'Finding the scenic stuff…',
+  'Almost there…',
 ];
 
 // Read the Maps API key from the script tag src
@@ -27,79 +27,38 @@ function getMapsKey() {
 function buildNavUrl(route) {
   if (!route) return '';
   const wps = route.waypoints || [];
-  if (wps.length < 2) return '';
   const toStr = wp =>
     typeof wp === 'string' ? encodeURIComponent(wp) : `${wp.lat},${wp.lng}`;
-  // /maps/dir/origin/waypoint.../destination â works on web and deep-links to Maps app on mobile
-  return `https://www.google.com/maps/dir/${wps.map(toStr).join('/')}`;
+  // Always start from the rider's real address, end at the named destination
+  const origin = encodeURIComponent(START);
+  const dest = route.destination ? encodeURIComponent(route.destination) : toStr(wps[wps.length - 1]);
+  const middle = wps.slice(0, 23).map(toStr).join('/');
+  return `https://www.google.com/maps/dir/${origin}${middle ? '/' + middle : ''}/${dest}`;
 }
 
 // Build Google Maps Embed URL for the route
 function buildMapSrc(route, key) {
   if (!route || !key) return '';
   const wps = route.waypoints || [];
-  if (wps.length < 2) return '';
+  if (!wps.length) return '';
+
   const toStr = wp =>
-    typeof wp === 'string' ? encodeURIComponent(wp) : `${wp.lat},${wp.lng}`;
-  // /maps/dir/origin/waypoint.../destination â works on web and deep-links to Maps app on mobile
-  return `https://www.google.com/maps/dir/${wps.map(toStr).join('/')}`;
-}
+    typeof wp === 'string' ? wp : `${wp.lat},${wp.lng}`;
 
-// Build Google Maps Embed URL for the route
-function buildMapSrc(route, key, startAddress) {
-  if (!route || !key) return '';
-  const wps = route.waypoints || [];
+  // Always use the rider's real start address — never wps[0] which is a Gemini scenic anchor
+  const origin = encodeURIComponent(START);
+  // Use the named destination text if available, else fall back to last waypoint
+  const destination = route.destination
+    ? encodeURIComponent(route.destination)
+    : encodeURIComponent(toStr(wps[wps.length - 1]));
 
-  // Use the rider's actual start address and Gemini's destination as endpoints.
-  // All of Gemini's waypoints are intermediate scenic anchors only.
-  const origin = encodeURIComponent(startAddress || START);
-  const destination = encodeURIComponent(route.destination || '');
-  if (!destination) return '';
-
-  const middle = wps.map(wp =>
-    typeof wp === 'string' ? wp : `${wp.lat},${wp.lng}`
-  ).join('|');
+  // All Gemini waypoints are via: passthrough points — they bend the route without
+  // forcing a literal stop at the coordinate, eliminating spur detours
+  const viaParts = wps.slice(0, 23).map(wp => `via:${toStr(wp)}`).join('|');
 
   let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
-  if (middle) url += `&waypoints=${encodeURIComponent(middle)}`;
+  if (viaParts) url += `&waypoints=${encodeURIComponent(viaParts)}`;
   return url;
-}
-
-// Enrich POI segments with real Places data using the Maps JS Places library
-async function enrichWithPlaces(route) {
-  if (!route?.segments || !window.google?.maps?.places) return route;
-  const segments = [...route.segments];
-  await Promise.all(
-    segments.map(async (seg, i) => {
-      if (seg.place) return; // already enriched
-      const isPoi = seg.color === '#f59e0b' || /stop|coffee|cafe|restaurant|food|lunch|breakfast|dinner/i.test(seg.label);
-      if (!isPoi) return;
-      // "Coffee Stop: Foundry42, Port Jervis" â "Foundry42, Port Jervis"
-      // "Coffee Stop: Warwick, NY" â "coffee near Warwick, NY" (generic city â search by type)
-      const typeMatch = seg.label.match(/^(coffee|cafÃ©|cafe|food|restaurant|lunch|dinner|breakfast)/i)?.[1]?.toLowerCase() || 'cafe';
-      const location = seg.label.replace(/^(coffee|food|lunch|breakfast|dinner|cafe|restaurant)\s+stop:\s*/i, '').trim();
-      const q = /,\s*[A-Z]{2}/.test(location) ? `${typeMatch} near ${location}` : (location || seg.label);
-      try {
-        const place = await new Promise(resolve => {
-          const svc = new window.google.maps.places.PlacesService(document.createElement('div'));
-          svc.textSearch({ query: q }, (results, status) => {
-            resolve(status === window.google.maps.places.PlacesServiceStatus.OK ? results?.[0] : null);
-          });
-        });
-        if (!place) return;
-        segments[i] = {
-          ...seg,
-          place: {
-            name: place.name,
-            address: place.formatted_address,
-            rating: place.rating ?? null,
-            photoUrl: place.photos?.[0]?.getUrl({ maxWidth: 400 }) || null,
-          },
-        };
-      } catch {}
-    })
-  );
-  return { ...route, segments };
 }
 
 export default function App() {
@@ -115,7 +74,7 @@ export default function App() {
   useEffect(() => {
     const key = getMapsKey();
     if (key) { setMapsKey(key); return; }
-    // Script might still be loading â poll briefly
+    // Script might still be loading — poll briefly
     const id = setInterval(() => {
       const k = getMapsKey();
       if (k) { setMapsKey(k); clearInterval(id); }
@@ -135,16 +94,6 @@ export default function App() {
   }, []);
 
   useEffect(() => { loadRecent(); }, [loadRecent]);
-
-  // Enrich POI segments with Places data whenever a new route loads
-  useEffect(() => {
-    if (!route) return;
-    const needsEnrichment = route.segments?.some(s =>
-      !s.place && (s.color === '#f59e0b' || /stop|coffee|cafe|restaurant|food|lunch|breakfast|dinner/i.test(s.label))
-    );
-    if (!needsEnrichment) return;
-    enrichWithPlaces(route).then(enriched => setRoute(enriched));
-  }, [route?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Loading message rotation
   useEffect(() => {
@@ -188,29 +137,29 @@ export default function App() {
     } catch {}
   }
 
-  const mapSrc = buildMapSrc(route, mapsKey, START);
+  const mapSrc = buildMapSrc(route, mapsKey);
   const defaultSrc = mapsKey
     ? `https://www.google.com/maps/embed/v1/view?key=${mapsKey}&center=40.92,-74.2&zoom=9&maptype=roadmap`
     : '';
 
-  // ââ Render ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', -apple-system, sans-serif", background: '#f1f5f9' }}>
 
-      {/* ââ Left panel âââââââââââââââââââââââââââââââââââââââââââââââââââââââ */}
+      {/* ── Left panel ─────────────────────────────────────────────────────── */}
       <div style={{ width: 260, background: '#0f172a', color: 'white', display: 'flex', flexDirection: 'column', padding: 16, gap: 12, overflowY: 'auto', flexShrink: 0 }}>
 
-        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>ðï¸ TwistyRoute</div>
+        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏙️ TwistyRoute</div>
 
         <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Starting from</div>
-        <div style={{ fontSize: 13, color: '#94a3b8', marginTop: -8 }}>ð {START_LABEL}</div>
+        <div style={{ fontSize: 13, color: '#94a3b8', marginTop: -8 }}>📍 {START_LABEL}</div>
 
         <form onSubmit={generate} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <textarea
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); } }}
-            placeholder={'e.g. "scenic loop to Hawks Nest"\n"Bears Nest coffee stop via Catskills"\n"twisty roads, mvokd highways"'}
+            placeholder={'e.g. "scenic loop to Hawks Nest"\n"Bears Nest coffee stop via Catskills"\n"twisty roads, avoid highways"'}
             disabled={loading}
             style={{
               background: '#1e293b', color: 'white', border: '1px solid #334155',
@@ -229,7 +178,7 @@ export default function App() {
               fontWeight: 700, fontSize: 14, transition: 'background 0.2s',
             }}
           >
-            {loading ? LOADING_MSGS[loadingMsg] : 'ðºï¸ Generate Route'}
+            {loading ? LOADING_MSGS[loadingMsg] : '🗺️ Generate Route'}
           </button>
         </form>
 
@@ -243,9 +192,9 @@ export default function App() {
           <div style={{ background: '#1e3a5f', border: '1px solid #2563eb', borderRadius: 10, padding: '10px 12px' }}>
             <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>{route.title}</div>
             <div style={{ fontSize: 11, color: '#93c5fd', marginTop: 4 }}>
-              âµ {route.duration_str} Â· ð£ï¸ {route.distance_mi} mi
+              ⏱ {route.duration_str} · 🛣️ {route.distance_mi} mi
             </div>
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>ð â {route.destination}</div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>📍 → {route.destination}</div>
           </div>
         )}
 
@@ -265,7 +214,7 @@ export default function App() {
               >
                 <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{r.title}</div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
-                  âµ {r.duration_str} Â· ð£ï¸ {r.distance_mi} mi
+                  ⏱ {r.duration_str} · 🛣️ {r.distance_mi} mi
                 </div>
               </div>
             ))}
@@ -273,7 +222,7 @@ export default function App() {
         )}
       </div>
 
-      {/* ââ Map ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ */}
+      {/* ── Map ────────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: 'relative' }}>
         {(mapSrc || defaultSrc) ? (
           <iframe
@@ -287,21 +236,21 @@ export default function App() {
           />
         ) : (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#e2e8f0', color: '#64748b', fontSize: 15 }}>
-            Loading mapâ¦
+            Loading map…
           </div>
         )}
       </div>
 
-      {/* ââ Right panel ââââââââââââââââââââââââââââââââââââââââââââââââââââââ */}
+      {/* ── Right panel ────────────────────────────────────────────────────── */}
       {route && (
         <div style={{ width: 340, background: 'white', display: 'flex', flexDirection: 'column', boxShadow: '-2px 0 12px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
           {/* Header */}
           <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid #f1f5f9' }}>
             <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.3, color: '#0f172a' }}>{route.title}</div>
             <div style={{ fontSize: 13, color: '#64748b', marginTop: 6 }}>
-              âµ {route.duration_str} &nbsp;Â·&nbsp; ð£ï¸ {route.distance_mi} mi
+              ⏱ {route.duration_str} &nbsp;·&nbsp; 🛣️ {route.distance_mi} mi
             </div>
-            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>ð â {route.destination}</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>📍 → {route.destination}</div>
           </div>
 
           {/* Segments */}
@@ -312,36 +261,11 @@ export default function App() {
                   {seg.label}
                 </div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>
-                  {seg.duration} &nbsp;Â·&nbsp; {seg.miles}
+                  {seg.duration} &nbsp;·&nbsp; {seg.miles}
                 </div>
                 <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>
                   {seg.description}
                 </div>
-                {/* Business card for POI stops */}
-                {seg.place && (
-                  <div style={{ display: 'flex', gap: 10, marginTop: 10, padding: '10px 12px', background: '#f8fafc', borderRadius: 10, border: '1px solid #e2e8f0' }}>
-                    {seg.place.photoUrl && (
-                      <img
-                        src={seg.place.photoUrl}
-                        alt={seg.place.name}
-                        style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, flexShrink: 0 }}
-                      />
-                    )}
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {seg.place.name}
-                      </div>
-                      {seg.place.rating && (
-                        <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>
-                          {'â'.repeat(Math.round(seg.place.rating))}{'â'.repeat(5 - Math.round(seg.place.rating))} {seg.place.rating}
-                        </div>
-                      )}
-                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 3, lineHeight: 1.4 }}>
-                        {seg.place.address}
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
             ))}
           </div>
@@ -361,13 +285,13 @@ export default function App() {
                 textDecoration: 'none',
               }}
             >
-              ð§­ Open in Google Maps
+              🧭 Open in Google Maps
             </a>
             <button
               onClick={() => setRoute(null)}
               style={{ background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 10, padding: '11px 16px', cursor: 'pointer', fontSize: 13 }}
             >
-              â
+              ✕
             </button>
           </div>
         </div>
