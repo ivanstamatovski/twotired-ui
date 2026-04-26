@@ -165,7 +165,7 @@ export default function App() {
       const res = await fetch(edgeUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + anonKey },
-        body: JSON.stringify({ query: q, start: START_LOCATION }),
+        body: JSON.stringify({ query: q, start: START_LOCATION, destination: q }),
       });
 
       if (!res.ok) {
