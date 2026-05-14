@@ -133,7 +133,7 @@ function LoginScreen() {
   );
 }
 
-// ── ConversationThread — module level (never inside App) ──────────────────────
+// ── ConversationThread — module level ─────────────────────────────────────────
 function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
   return (
     <div className="messages-scroll">
@@ -187,6 +187,7 @@ function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
     </div>
   );
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -195,14 +196,14 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
 
   // Core state
-  const [query, setQuery]               = useState('');
-  const [loading, setLoading]           = useState(false);
-  const [loadingMsg, setLoadingMsg]     = useState('Planning your ride…');
-  const [error, setError]               = useState(null);
-  const [messages, setMessages]         = useState([]);
+  const [query, setQuery]                 = useState('');
+  const [loading, setLoading]             = useState(false);
+  const [loadingMsg, setLoadingMsg]       = useState('Planning your ride…');
+  const [error, setError]                 = useState(null);
+  const [messages, setMessages]           = useState([]);
   const [currentIntent, setCurrentIntent] = useState(null);
   const [followUpInput, setFollowUpInput] = useState('');
-  const [routeData, setRouteData]       = useState(null);
+  const [routeData, setRouteData]         = useState(null);
   const [routeApproved, setRouteApproved] = useState(false);
 
   // Mobile sheet UI state
@@ -249,8 +250,10 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Map init ──────────────────────────────────────────────────────────────
+  // ── Map init — depends on session so it runs after auth resolves ──────────
   useEffect(() => {
+    // Don't init until logged in (map container isn't in DOM during auth screens)
+    if (!session) return;
     if (!mapContainerRef.current || mapRef.current) return;
 
     const map = new maplibregl.Map({
@@ -274,7 +277,7 @@ export default function App() {
 
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; mapLoadedRef.current = false; };
-  }, []);
+  }, [session]);
 
   // ── Draw route on map ─────────────────────────────────────────────────────
   function drawRouteOnMap(route) {
@@ -294,13 +297,11 @@ export default function App() {
       type: 'geojson',
       data: { type: 'Feature', geometry: route.geometry },
     });
-
     map.addLayer({
       id: 'route-casing', type: 'line', source: 'route',
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: { 'line-color': '#fff', 'line-width': 6, 'line-opacity': 0.3 },
     });
-
     map.addLayer({
       id: 'route-line', type: 'line', source: 'route',
       layout: { 'line-join': 'round', 'line-cap': 'round' },
@@ -311,15 +312,12 @@ export default function App() {
       if (!stop.lat || !stop.lng) return;
       const el = document.createElement('div');
       el.className = 'map-stop-marker';
-
       const popup = new maplibregl.Popup({ offset: 14, closeButton: false })
         .setHTML(`<div class="map-popup"><strong>${stop.name}</strong>${stop.rating ? `<br>⭐ ${stop.rating}` : ''}</div>`);
-
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([stop.lng, stop.lat])
         .setPopup(popup)
         .addTo(map);
-
       markersRef.current.push(marker);
     });
 
@@ -374,7 +372,6 @@ export default function App() {
       setRefineOpen(false);
       setMessages(prev => [...prev, { role: 'route', route: r }]);
       drawRouteOnMap(r);
-
       if (isMobile) setSheetMode('collapsed');
 
       const entry = { id:Date.now(), title:r.title, distance_mi:r.distance_mi, duration_str:r.duration_str };
@@ -435,27 +432,23 @@ export default function App() {
 
   // ── Auth gates ────────────────────────────────────────────────────────────
   if (!authReady) return (
-    <div className="loading-shell">
-      <span className="dot-spin"/>
-    </div>
+    <div className="loading-shell"><span className="dot-spin"/></div>
   );
   if (!session) return <LoginScreen />;
 
-  // ── Sheet height by mode ──────────────────────────────────────────────────
+  // ── Sheet height ──────────────────────────────────────────────────────────
   const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68vh' }[sheetMode] || '160px';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app-shell">
 
-      {/* ── Map ── */}
+      {/* Map */}
       <div className="map-panel">
         <div ref={mapContainerRef} className="map-canvas"/>
       </div>
 
-      {/* ════════════════════════════════════════
-          MOBILE bottom sheet
-          ════════════════════════════════════════ */}
+      {/* ── MOBILE bottom sheet ── */}
       {isMobile ? (
         <div className="sheet" style={{ height: sheetHeight }}>
 
@@ -465,7 +458,6 @@ export default function App() {
             <div className="sheet-bar"/>
           </div>
 
-          {/* ── IDLE ── */}
           {sheetMode === 'idle' && (
             <div className="sheet-idle">
               {voice.supported ? (
@@ -507,7 +499,6 @@ export default function App() {
             </div>
           )}
 
-          {/* ── COLLAPSED ── */}
           {sheetMode === 'collapsed' && routeData && (
             <div className="sheet-collapsed-content">
               <div className="collapsed-info">
@@ -520,36 +511,23 @@ export default function App() {
             </div>
           )}
 
-          {/* ── EXPANDED ── */}
           {sheetMode === 'expanded' && (
             <div className="sheet-expanded-content">
               {error && <div className="error-banner">⚠️ {error}</div>}
-
-              <ConversationThread
-                messages={messages} loading={loading} loadingMsg={loadingMsg}
-                messagesEndRef={messagesEnd}
-              />
-
+              <ConversationThread messages={messages} loading={loading} loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
               <div className="sheet-input-area">
-
                 {routeData && !routeApproved && refineOpen && (
                   <div className="chips-row">
                     {REFINE_CHIPS.map(c=>(
                       <button key={c} className="chip" onClick={()=>handleFollowUp(c)}>{c}</button>
                     ))}
-                    <button className="chip chip-approve" onClick={()=>handleFollowUp('looks good')}>
-                      👍 Approve
-                    </button>
+                    <button className="chip chip-approve" onClick={()=>handleFollowUp('looks good')}>👍 Approve</button>
                   </div>
                 )}
-
                 <div className="input-row">
                   {voice.supported && (
-                    <button
-                      className={`mic-small${voice.listening?' mic-listening':''}`}
-                      onClick={voice.listening ? voice.stop : voice.start}
-                      aria-label="Voice input"
-                    >
+                    <button className={`mic-small${voice.listening?' mic-listening':''}`}
+                      onClick={voice.listening ? voice.stop : voice.start} aria-label="Voice input">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
                         <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
@@ -557,58 +535,43 @@ export default function App() {
                       </svg>
                     </button>
                   )}
-
-                  <input
-                    className="followup-input"
+                  <input className="followup-input"
                     placeholder={routeData ? 'Refine or approve…' : 'Where do you want to ride?'}
                     value={followUpInput || query}
                     onChange={e => routeData ? setFollowUpInput(e.target.value) : setQuery(e.target.value)}
                     onKeyDown={e => e.key==='Enter' && (routeData ? handleFollowUp() : submitQuery())}
                     disabled={loading}
                   />
-
                   {routeData && !routeApproved && (
-                    <button
-                      className={`refine-btn${refineOpen?' active':''}`}
-                      onClick={()=>setRefineOpen(x=>!x)}
-                      aria-label="Refine options"
-                    >
+                    <button className={`refine-btn${refineOpen?' active':''}`}
+                      onClick={()=>setRefineOpen(x=>!x)} aria-label="Refine options">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/>
                       </svg>
                     </button>
                   )}
-
                   <button className="send-btn"
                     onClick={()=> routeData ? handleFollowUp() : submitQuery()}
-                    disabled={loading || (routeData ? !followUpInput.trim() : !query.trim())}
-                  >↑</button>
-
+                    disabled={loading || (routeData ? !followUpInput.trim() : !query.trim())}>↑</button>
                   <button className="menu-btn" onClick={()=>setMenuOpen(x=>!x)} aria-label="More options">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
                     </svg>
                   </button>
                 </div>
-
                 {menuOpen && (
                   <div className="overflow-menu">
-                    {/* User info + sign out */}
                     <div className="menu-user-row">
                       <span className="menu-user-email">{session.user.email}</span>
                       <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
                     </div>
                     <div className="menu-divider"/>
-
                     {recent.length > 0 && (
                       <>
                         <div className="menu-section-label">Recent rides</div>
                         {recent.slice(0,3).map(r=>(
-                          <button key={r.id} className="menu-item" onClick={()=>{
-                            setMenuOpen(false); setQuery(r.title); submitQuery(r.title);
-                          }}>
-                            {r.title}
-                            <span className="menu-item-meta">{r.distance_mi?.toFixed(0)} mi</span>
+                          <button key={r.id} className="menu-item" onClick={()=>{ setMenuOpen(false); setQuery(r.title); submitQuery(r.title); }}>
+                            {r.title}<span className="menu-item-meta">{r.distance_mi?.toFixed(0)} mi</span>
                           </button>
                         ))}
                         <div className="menu-divider"/>
@@ -631,9 +594,7 @@ export default function App() {
         </div>
 
       ) : (
-        /* ════════════════════════════════════════
-           DESKTOP sidebar
-           ════════════════════════════════════════ */
+        /* ── DESKTOP sidebar ── */
         <div className="sidebar">
           <div className="brand">
             <span className="brand-name">🏍 TwoTired</span>
@@ -669,7 +630,6 @@ export default function App() {
               <>
                 <ConversationThread messages={messages} loading={loading}
                   loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
-
                 {routeData && !routeApproved && (
                   <div className="desktop-followup">
                     <div className="chips-row">
@@ -678,18 +638,14 @@ export default function App() {
                       ))}
                     </div>
                     <div className="input-row">
-                      <input className="followup-input"
-                        placeholder="Refine or approve…"
-                        value={followUpInput}
-                        onChange={e=>setFollowUpInput(e.target.value)}
-                        onKeyDown={e=>e.key==='Enter'&&handleFollowUp()}
-                      />
+                      <input className="followup-input" placeholder="Refine or approve…"
+                        value={followUpInput} onChange={e=>setFollowUpInput(e.target.value)}
+                        onKeyDown={e=>e.key==='Enter'&&handleFollowUp()}/>
                       <button className="send-btn" onClick={()=>handleFollowUp()}
                         disabled={!followUpInput.trim()}>↑</button>
                     </div>
                   </div>
                 )}
-
                 {routeApproved && <div className="approved-banner">✅ Route approved — ride safe!</div>}
               </>
             ) : (
@@ -715,16 +671,14 @@ export default function App() {
           </div>
 
           <div className="sidebar-bug">
-            <button className="bug-trigger"
-              onClick={()=>setMenuOpen(x=>!x)}>🐛 Report issue</button>
+            <button className="bug-trigger" onClick={()=>setMenuOpen(x=>!x)}>🐛 Report issue</button>
             {menuOpen && (
               <div className="bug-inline">
                 <textarea className="bug-textarea" placeholder="What went wrong?"
                   value={bugComment} onChange={e=>setBugComment(e.target.value)}/>
                 {bugDone
                   ? <p className="bug-done">Thanks!</p>
-                  : <button className="menu-submit" onClick={submitBug}
-                      disabled={bugSubmitting||!bugComment.trim()}>
+                  : <button className="menu-submit" onClick={submitBug} disabled={bugSubmitting||!bugComment.trim()}>
                       {bugSubmitting?'Sending…':'Submit'}
                     </button>
                 }
