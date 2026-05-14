@@ -4,8 +4,11 @@ import './App.css';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const EDGE_URL = `${SUPABASE_URL}/functions/v1/generate-route`;
-const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY;
 const RECENT_KEY = 'twistyroute_recent';
+
+// Default map center — Hudson Valley / Northeast US
+const DEFAULT_CENTER = { lat: 41.4, lng: -74.3 };
+const DEFAULT_ZOOM = 9;
 
 const APPROVAL_WORDS = [
   'looks good', 'perfect', 'great', 'love it', 'approve', "let's go",
@@ -26,9 +29,7 @@ function buildNavUrl(waypoints) {
   return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}${wps ? `&waypoints=${wps}` : ''}&travelmode=driving`;
 }
 
-// ─── Module-level component — MUST stay outside App() ───────────────────────
-// If defined inside App, React sees a new component type on every render,
-// unmounts the input, and focus is lost on every keystroke.
+// ─── Module-level component — must stay outside App() ────────────────────────
 function ConversationThread({
   messages, loading, loadingMsg, conversationActive, routeApproved,
   followUpInput, setFollowUpInput, onFollowUp, onChipClick,
@@ -36,17 +37,14 @@ function ConversationThread({
   bugSubmitting, bugDone, bugError, onSubmitBug,
   messagesEndRef,
 }) {
-  const inputRef = useRef(null);
-
   return (
     <div className="conversation-wrap">
       <div className="messages-scroll">
         {messages.map((msg, i) => {
           if (msg.role === 'user') {
-            return (
-              <div key={i} className="bubble bubble-user">{msg.content}</div>
-            );
+            return <div key={i} className="bubble bubble-user">{msg.content}</div>;
           }
+
           if (msg.role === 'clarify') {
             return (
               <div key={i} className="bubble bubble-clarify">
@@ -61,6 +59,7 @@ function ConversationThread({
               </div>
             );
           }
+
           if (msg.role === 'route') {
             const r = msg.route;
             return (
@@ -74,27 +73,22 @@ function ConversationThread({
                   <div className="route-stops">
                     {r.stops.map((s, si) => (
                       <div key={si} className="stop-pill">
-                        ☕ {s.name} {s.rating ? `· ${s.rating}★` : ''}
+                        📍 {s.name}
+                        {s.address ? <span className="stop-address">{s.address}</span> : null}
+                        {s.rating ? <span className="stop-rating">{s.rating}★</span> : null}
                       </div>
                     ))}
                   </div>
                 )}
-                {r.narrative && (
-                  <p className="route-narrative">{r.narrative}</p>
-                )}
                 {r.waypoints && (
-                  <a
-                    className="nav-link"
-                    href={buildNavUrl(r.waypoints)}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
+                  <a className="nav-link" href={buildNavUrl(r.waypoints)} target="_blank" rel="noreferrer">
                     Open in Google Maps →
                   </a>
                 )}
               </div>
             );
           }
+
           return null;
         })}
 
@@ -111,39 +105,30 @@ function ConversationThread({
         <div className="followup-area">
           <div className="chips-row">
             {QUICK_CHIPS.map(chip => (
-              <button key={chip} className="chip" onClick={() => onChipClick(chip)}>
-                {chip}
-              </button>
+              <button key={chip} className="chip" onClick={() => onChipClick(chip)}>{chip}</button>
             ))}
           </div>
           <div className="followup-input-row">
             <input
-              ref={inputRef}
               className="followup-input"
               placeholder="Suggest changes or approve…"
               value={followUpInput}
               onChange={e => setFollowUpInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && onFollowUp()}
             />
-            <button className="send-btn" onClick={onFollowUp} disabled={!followUpInput.trim()}>
-              ↑
-            </button>
+            <button className="send-btn" onClick={onFollowUp} disabled={!followUpInput.trim()}>↑</button>
           </div>
         </div>
       )}
 
       {routeApproved && (
-        <div className="approved-banner">
-          ✅ Route approved — ride safe!
-        </div>
+        <div className="approved-banner">✅ Route approved — ride safe!</div>
       )}
 
       {conversationActive && (
         <div className="bug-area">
           {!bugMode ? (
-            <button className="bug-trigger" onClick={() => setBugMode(true)}>
-              🐛 Report an issue
-            </button>
+            <button className="bug-trigger" onClick={() => setBugMode(true)}>🐛 Report an issue</button>
           ) : (
             <div className="bug-form">
               <textarea
@@ -154,11 +139,7 @@ function ConversationThread({
               />
               <div className="bug-actions">
                 <button className="bug-cancel" onClick={() => setBugMode(false)}>Cancel</button>
-                <button
-                  className="bug-submit"
-                  onClick={onSubmitBug}
-                  disabled={bugSubmitting}
-                >
+                <button className="bug-submit" onClick={onSubmitBug} disabled={bugSubmitting}>
                   {bugSubmitting ? 'Sending…' : 'Submit'}
                 </button>
               </div>
@@ -174,9 +155,9 @@ function ConversationThread({
 // ─────────────────────────────────────────────────────────────────────────────
 
 function useMapsLoaded() {
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(!!window.google?.maps);
   useEffect(() => {
-    if (window.google?.maps) { setLoaded(true); return; }
+    if (window.google?.maps) return;
     const iv = setInterval(() => {
       if (window.google?.maps) { setLoaded(true); clearInterval(iv); }
     }, 100);
@@ -204,32 +185,43 @@ export default function App() {
   const [recent, setRecent] = useState(() => {
     try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
   });
+
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const polylineRef = useRef(null);
+  const markersRef = useRef([]);
   const messagesEndRef = useRef(null);
   const mapsLoaded = useMapsLoaded();
+
+  // Init map immediately — show northeast US, no route needed
+  useEffect(() => {
+    if (!mapsLoaded || !mapRef.current || mapInstanceRef.current) return;
+    mapInstanceRef.current = new window.google.maps.Map(mapRef.current, {
+      zoom: DEFAULT_ZOOM,
+      center: DEFAULT_CENTER,
+      mapTypeId: 'roadmap',
+      disableDefaultUI: true,
+      zoomControl: true,
+    });
+  }, [mapsLoaded]);
 
   // Auto-scroll thread
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  // Draw polyline whenever route changes
+  // Draw route + stop markers whenever route changes
   useEffect(() => {
-    if (!mapsLoaded || !mapRef.current || !route?.geometry) return;
+    if (!mapInstanceRef.current || !route?.geometry) return;
 
-    if (!mapInstanceRef.current) {
-      mapInstanceRef.current = new window.google.maps.Map(mapRef.current, {
-        zoom: 10,
-        center: { lat: 41.0, lng: -74.5 },
-        mapTypeId: 'roadmap',
-        disableDefaultUI: true,
-      });
-    }
-
+    // Clear old polyline
     if (polylineRef.current) polylineRef.current.setMap(null);
 
+    // Clear old markers
+    markersRef.current.forEach(m => m.setMap(null));
+    markersRef.current = [];
+
+    // Draw route polyline
     const coords = route.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }));
     polylineRef.current = new window.google.maps.Polyline({
       path: coords,
@@ -240,10 +232,40 @@ export default function App() {
     });
     polylineRef.current.setMap(mapInstanceRef.current);
 
+    // Add stop markers
+    if (route.stops?.length) {
+      route.stops.forEach(stop => {
+        if (!stop.lat || !stop.lng) return;
+        const marker = new window.google.maps.Marker({
+          position: { lat: stop.lat, lng: stop.lng },
+          map: mapInstanceRef.current,
+          title: stop.name,
+          icon: {
+            path: window.google.maps.SymbolPath.CIRCLE,
+            scale: 9,
+            fillColor: '#FF6B35',
+            fillOpacity: 1,
+            strokeColor: '#fff',
+            strokeWeight: 2,
+          },
+        });
+
+        // Info window on click
+        const info = new window.google.maps.InfoWindow({
+          content: `<div style="font-size:13px;line-height:1.4"><strong>${stop.name}</strong>${stop.address ? `<br><span style="color:#666">${stop.address}</span>` : ''}${stop.rating ? `<br>⭐ ${stop.rating}` : ''}</div>`,
+        });
+        marker.addListener('click', () => info.open(mapInstanceRef.current, marker));
+        markersRef.current.push(marker);
+      });
+    }
+
+    // Fit map to route
     const bounds = new window.google.maps.LatLngBounds();
     coords.forEach(c => bounds.extend(c));
+    markersRef.current.forEach(m => bounds.extend(m.getPosition()));
     mapInstanceRef.current.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
-  }, [route, mapsLoaded]);
+
+  }, [route]);
 
   async function generateRoute(payload) {
     setLoading(true);
@@ -256,26 +278,16 @@ export default function App() {
     try {
       const res = await fetch(EDGE_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
       clearInterval(ticker);
 
-      if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
-      // Clarification response — Claude needs more info before routing
       if (data.clarify) {
-        setMessages(prev => [...prev, {
-          role: 'clarify',
-          question: data.question,
-          options: data.options || [],
-        }]);
+        setMessages(prev => [...prev, { role: 'clarify', question: data.question, options: data.options || [] }]);
         setConversationActive(true);
         return;
       }
@@ -287,7 +299,6 @@ export default function App() {
       setRouteApproved(false);
       setMessages(prev => [...prev, { role: 'route', route: routeData }]);
 
-      // Save to recent
       const entry = { id: Date.now(), title: routeData.title, distance_mi: routeData.distance_mi, duration_str: routeData.duration_str };
       const updated = [entry, ...recent.filter(r => r.title !== entry.title)].slice(0, 5);
       setRecent(updated);
@@ -316,24 +327,15 @@ export default function App() {
     const t = (text || followUpInput).trim();
     if (!t || loading) return;
     setFollowUpInput('');
-
-    if (isApproval(t)) {
-      handleApprove();
-      return;
-    }
-
+    if (isApproval(t)) { handleApprove(); return; }
     setMessages(prev => [...prev, { role: 'user', content: t }]);
-
-    if (currentIntent) {
-      await generateRoute({ refine: true, feedback: t, intent: currentIntent });
-    } else {
-      // No existing intent — treat as a new query continuation
-      await generateRoute({ query: t });
-    }
+    await generateRoute(currentIntent
+      ? { refine: true, feedback: t, intent: currentIntent }
+      : { query: t }
+    );
   }
 
   function handleChipClick(chip) {
-    // Approval chip
     if (chip === '👍 Looks great') { handleApprove(); return; }
     handleFollowUp(chip);
   }
@@ -351,11 +353,7 @@ export default function App() {
       const lastRoute = messages.findLast?.(m => m.role === 'route')?.route || route;
       await fetch(`${SUPABASE_URL}/rest/v1/rpc/insert_bug_report`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
         body: JSON.stringify({
           p_query: messages.find(m => m.role === 'user')?.content || '',
           p_route_data: lastRoute || null,
@@ -366,7 +364,7 @@ export default function App() {
       setBugDone(true);
       setBugComment('');
       setTimeout(() => { setBugMode(false); setBugDone(false); }, 2500);
-    } catch (err) {
+    } catch {
       setBugError('Failed to submit — try again.');
     } finally {
       setBugSubmitting(false);
@@ -375,14 +373,12 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {/* ── Left panel ── */}
       <div className="left-panel">
         <div className="brand">
           <span className="brand-icon">🏍</span>
           <span className="brand-name">TwoTired</span>
         </div>
 
-        {/* Main query input */}
         <div className="query-row">
           <input
             className="query-input"
@@ -392,14 +388,11 @@ export default function App() {
             onKeyDown={e => e.key === 'Enter' && handleSubmit()}
             disabled={loading}
           />
-          <button className="go-btn" onClick={handleSubmit} disabled={loading || !query.trim()}>
-            →
-          </button>
+          <button className="go-btn" onClick={handleSubmit} disabled={loading || !query.trim()}>→</button>
         </div>
 
         {error && <div className="error-banner">⚠️ {error}</div>}
 
-        {/* Conversation thread */}
         {messages.length > 0 ? (
           <ConversationThread
             messages={messages}
@@ -423,7 +416,7 @@ export default function App() {
           />
         ) : (
           <div className="recent-section">
-            {recent.length > 0 && (
+            {recent.length > 0 ? (
               <>
                 <div className="recent-label">Recent rides</div>
                 {recent.map(r => (
@@ -433,8 +426,7 @@ export default function App() {
                   </div>
                 ))}
               </>
-            )}
-            {recent.length === 0 && (
+            ) : (
               <div className="empty-hint">
                 <p>Try: <em>"Take me to Hawks Nest with coffee in Newburgh"</em></p>
                 <p>Or: <em>"Bear Mountain loop, as twisty as possible"</em></p>
@@ -444,14 +436,8 @@ export default function App() {
         )}
       </div>
 
-      {/* ── Map panel ── */}
       <div className="map-panel">
         <div ref={mapRef} className="map-canvas" />
-        {!route && (
-          <div className="map-empty">
-            <span>Your route will appear here</span>
-          </div>
-        )}
       </div>
     </div>
   );
