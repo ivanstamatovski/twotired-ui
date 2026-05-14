@@ -78,8 +78,11 @@ export default function App() {
   const [bugDone, setBugDone] = useState(false);
   const [bugError, setBugError] = useState('');
   // Mobile state
+  // sheetState: 'search' | 'expanded'
+  // No route → 'search'=108px collapsed, 'expanded'=65vh shows recents
+  // Route present → 'search'=190px peek (title+stats+navigate), 'expanded'=65vh full narrative
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
-  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const [sheetState, setSheetState] = useState('search');
 
   const mapsLoaded = useMapsLoaded();
   const mapDivRef = useRef(null);
@@ -93,9 +96,9 @@ export default function App() {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  // ── Auto-expand sheet when route arrives on mobile ─────────────────────────
+  // ── When route arrives on mobile: peek mode (compact, map still visible) ──
   useEffect(() => {
-    if (route && isMobile) setSheetExpanded(true);
+    if (route && isMobile) setSheetState('search');
   }, [route, isMobile]);
 
   // ── Initialize map once API is ready ──────────────────────────────────────
@@ -527,6 +530,26 @@ export default function App() {
         </div>
       )}
 
+      {/* ── Mobile loading overlay ───────────────────────────────────────────── */}
+      {isMobile && loading && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 90,
+          background: 'rgba(15, 23, 42, 0.65)',
+          backdropFilter: 'blur(3px)',
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 16,
+          pointerEvents: 'none',
+        }}>
+          <div style={{ fontSize: 48 }}>🏍️</div>
+          <div style={{
+            color: 'white', fontSize: 16, fontWeight: 600,
+            textAlign: 'center', padding: '0 40px', lineHeight: 1.5,
+          }}>
+            {LOADING_MSGS[loadingMsg]}
+          </div>
+        </div>
+      )}
+
       {/* ── Mobile bottom sheet ──────────────────────────────────────────────── */}
       {isMobile && (
         <div style={{
@@ -536,15 +559,15 @@ export default function App() {
           borderRadius: '20px 20px 0 0',
           boxShadow: '0 -4px 32px rgba(0,0,0,0.4)',
           zIndex: 100,
-          height: sheetExpanded ? '65vh' : '108px',
+          height: sheetState === 'expanded' ? '65vh' : (route ? '190px' : '108px'),
           transition: 'height 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
         }}>
-          {/* Drag handle — tap to toggle */}
+          {/* Drag handle — tap to toggle expanded/collapsed */}
           <div
-            onClick={() => setSheetExpanded(s => !s)}
+            onClick={() => setSheetState(s => s === 'expanded' ? 'search' : 'expanded')}
             style={{ padding: '10px 0 6px', display: 'flex', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}
           >
             <div style={{ width: 36, height: 4, borderRadius: 2, background: '#334155' }} />
@@ -556,18 +579,13 @@ export default function App() {
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder={loading ? LOADING_MSGS[loadingMsg] : 'Where do you want to ride?'}
+              placeholder="Where do you want to ride?"
               disabled={loading}
               style={{
-                flex: 1,
-                background: '#1e293b',
-                color: loading ? '#64748b' : 'white',
-                border: '1px solid #334155',
-                borderRadius: 12,
-                padding: '13px 16px',
-                fontSize: 15,
-                outline: 'none',
-                fontFamily: 'inherit',
+                flex: 1, background: '#1e293b', color: 'white',
+                border: '1px solid #334155', borderRadius: 12,
+                padding: '13px 16px', fontSize: 15,
+                outline: 'none', fontFamily: 'inherit',
               }}
             />
             <button
@@ -575,23 +593,53 @@ export default function App() {
               disabled={loading || !query.trim()}
               style={{
                 background: loading ? '#1e3a5f' : '#3b82f6',
-                color: 'white',
-                border: 'none',
-                borderRadius: 12,
-                padding: '13px 20px',
-                fontSize: 20,
+                color: 'white', border: 'none', borderRadius: 12,
+                padding: '13px 20px', fontSize: 20,
                 cursor: loading ? 'default' : 'pointer',
-                fontWeight: 700,
-                flexShrink: 0,
+                fontWeight: 700, flexShrink: 0,
               }}
             >
               {loading ? '…' : '→'}
             </button>
           </form>
 
-          {/* Expanded content — route details or recent routes */}
-          {sheetExpanded && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: '4px 14px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Route peek — visible when route present and not expanded */}
+          {route && sheetState === 'search' && (
+            <div style={{ padding: '0 14px 14px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'white', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {getTitle(route)}
+                </div>
+                <div style={{ fontSize: 12, color: '#93c5fd', marginTop: 3 }}>
+                  ⏱ {getDuration(route)} · 🛣️ {getDistance(route)} mi
+                  <span style={{ color: '#334155' }}> · tap ↑ for details</span>
+                </div>
+              </div>
+              <a
+                href={buildNavUrl(route)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  background: '#1d4ed8', color: 'white',
+                  borderRadius: 10, padding: '9px 14px',
+                  fontSize: 13, fontWeight: 700,
+                  textDecoration: 'none', whiteSpace: 'nowrap', flexShrink: 0,
+                }}
+              >
+                🧭 Go
+              </a>
+              <button
+                onClick={() => { setRoute(null); setSheetState('search'); }}
+                style={{ background: '#1e293b', color: '#475569', border: 'none', borderRadius: 10, padding: '9px 12px', fontSize: 16, cursor: 'pointer', flexShrink: 0 }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Expanded content — full details or recent routes */}
+          {sheetState === 'expanded' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: '4px 14px 28px', display: 'flex', flexDirection: 'column', gap: 12 }}>
               {error && (
                 <div style={{ background: '#450a0a', border: '1px solid #7f1d1d', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: '#fca5a5', lineHeight: 1.4 }}>
                   {error}
@@ -600,7 +648,6 @@ export default function App() {
 
               {route ? (
                 <>
-                  {/* Route summary */}
                   <div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: 'white', lineHeight: 1.3 }}>{getTitle(route)}</div>
                     <div style={{ fontSize: 13, color: '#93c5fd', marginTop: 6 }}>
@@ -610,13 +657,9 @@ export default function App() {
                       <div style={{ fontSize: 12, color: '#475569', marginTop: 2 }}>📍 → {route.destination}</div>
                     )}
                   </div>
-
-                  {/* Narrative */}
                   {route.narrative && (
                     <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.75 }}>{route.narrative}</div>
                   )}
-
-                  {/* Stops */}
                   {route.stops?.length > 0 && (
                     <div>
                       <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>Stops</div>
@@ -629,16 +672,13 @@ export default function App() {
                       ))}
                     </div>
                   )}
-
-                  {/* Action buttons */}
                   <div style={{ display: 'flex', gap: 10, paddingTop: 4 }}>
                     <a
                       href={buildNavUrl(route)}
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{
-                        flex: 1,
-                        background: '#1d4ed8', color: 'white',
+                        flex: 1, background: '#1d4ed8', color: 'white',
                         borderRadius: 14, padding: '15px',
                         fontSize: 15, fontWeight: 700,
                         textDecoration: 'none', textAlign: 'center',
@@ -647,12 +687,8 @@ export default function App() {
                       🧭 Navigate
                     </a>
                     <button
-                      onClick={() => { setRoute(null); setSheetExpanded(false); }}
-                      style={{
-                        background: '#1e293b', color: '#64748b',
-                        border: 'none', borderRadius: 14,
-                        padding: '15px 18px', fontSize: 18, cursor: 'pointer',
-                      }}
+                      onClick={() => { setRoute(null); setSheetState('search'); }}
+                      style={{ background: '#1e293b', color: '#64748b', border: 'none', borderRadius: 14, padding: '15px 18px', fontSize: 18, cursor: 'pointer' }}
                     >
                       ✕
                     </button>
@@ -660,7 +696,6 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  {/* No route yet — show recent */}
                   <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px' }}>📍 Starting from {START_LABEL}</div>
                   {recent.length > 0 && (
                     <>
@@ -671,12 +706,8 @@ export default function App() {
                           onClick={() => openRecentRoute(r.id)}
                           style={{ background: '#1e293b', borderRadius: 12, padding: '12px 14px', cursor: 'pointer' }}
                         >
-                          <div style={{ fontSize: 14, fontWeight: 600, color: 'white', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {r.title}
-                          </div>
-                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-                            ⏱ {r.duration_str} &nbsp;·&nbsp; 🛣️ {r.distance_mi} mi
-                          </div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'white', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>⏱ {r.duration_str} &nbsp;·&nbsp; 🛣️ {r.distance_mi} mi</div>
                         </div>
                       ))}
                     </>
