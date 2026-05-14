@@ -34,18 +34,14 @@ function extractPath(geojson) {
   let coords = null;
 
   if (Array.isArray(geojson?.features) && geojson.features[0]?.geometry?.coordinates) {
-    // FeatureCollection with a single LineString feature
     coords = geojson.features[0].geometry.coordinates;
   } else if (geojson?.geometry?.coordinates) {
-    // Feature with geometry
     coords = geojson.geometry.coordinates;
   } else if (Array.isArray(geojson?.coordinates)) {
-    // Bare geometry object (v2: GraphHopper returns LineString directly)
     coords = geojson.coordinates;
   }
 
   if (!coords || coords.length < 2) return [];
-  // GeoJSON is [lng, lat]; Google Maps wants { lat, lng }
   return coords.map(([lng, lat]) => ({ lat, lng }));
 }
 
@@ -64,8 +60,6 @@ function buildNavUrl(route) {
 }
 
 // ── v1 / v2 compat helpers ────────────────────────────────────────────────────
-// v1: { title, duration_str, distance_mi, destination, segments, geojson }
-// v2: { time_minutes, distance_miles, narrative, stops, geometry } (no title/destination)
 function getTitle(r) {
   return r.title || (r.destination ? `Route to ${r.destination}` : 'Generated Route');
 }
@@ -96,9 +90,9 @@ export default function App() {
   const [bugError, setBugError] = useState('');
 
   const mapsLoaded = useMapsLoaded();
-  const mapDivRef = useRef(null); // the <div> the map renders into
-  const mapRef = useRef(null);    // google.maps.Map instance
-  const polylineRef = useRef(null); // current drawn polyline
+  const mapDivRef = useRef(null);
+  const mapRef = useRef(null);
+  const polylineRef = useRef(null);
 
   // ── Initialize map once API is ready ──────────────────────────────────────
   useEffect(() => {
@@ -117,7 +111,6 @@ export default function App() {
   useEffect(() => {
     if (!mapRef.current) return;
 
-    // Clear previous polyline
     if (polylineRef.current) {
       polylineRef.current.setMap(null);
       polylineRef.current = null;
@@ -129,7 +122,6 @@ export default function App() {
       return;
     }
 
-    // v2 returns route.geometry (bare LineString); v1 returns route.geojson (FeatureCollection)
     const path = extractPath(route.geojson || route.geometry);
 
     if (path.length >= 2) {
@@ -146,7 +138,6 @@ export default function App() {
       path.forEach(p => bounds.extend(p));
       mapRef.current.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
     } else {
-      // No GeoJSON — fall back to centering on last waypoint
       const wps = route.waypoints || [];
       if (wps.length) {
         const last = wps[wps.length - 1];
@@ -156,10 +147,10 @@ export default function App() {
     }
   }, [route]);
 
-  // ── Load recent routes from DB ─────────────────────────────────────────────
+  // ── Load recent routes from DB (last 3 only) ───────────────────────────────
   const loadRecent = useCallback(() => {
     fetch(
-      `${SUPABASE_URL}/rest/v1/routes?select=id,title,destination,duration_str,distance_mi&group_name=eq.AI%20Generated&order=created_at.desc&limit=8`,
+      `${SUPABASE_URL}/rest/v1/routes?select=id,title,destination,duration_str,distance_mi&group_name=eq.AI%20Generated&order=created_at.desc&limit=3`,
       { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
     )
       .then(r => r.json())
@@ -192,7 +183,6 @@ export default function App() {
       const data = await res.json();
       const r = Array.isArray(data) ? data[0] : data;
       if (r?.error) throw new Error(r.error);
-      // v2 wraps response: { success: true, route: {...} }. v1 returns route directly.
       setRoute(r.route ?? r);
       loadRecent();
     } catch (err) {
@@ -214,84 +204,106 @@ export default function App() {
     } catch {}
   }
 
-  // ── Bug report: screen capture + polyline redraw + Supabase insert ─────────
+  // ── Bug report: programmatic route canvas capture → Supabase ───────────────
+  // No user interaction needed — works on mobile too.
   async function submitBugReport() {
     if (!bugComment.trim() || bugSubmitting) return;
     setBugSubmitting(true);
     setBugError('');
-    let stream = null;
     try {
-      // 1. Capture current tab (Chrome shows one-click "Share this tab" dialog)
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { preferCurrentTab: true },
-        audio: false,
-      });
-      // Wait for dialog to close and page to repaint
-      await new Promise(r => setTimeout(r, 400));
-
-      // 2. Grab one video frame onto a canvas
-      const video = document.createElement('video');
-      video.muted = true;
-      video.srcObject = stream;
-      await new Promise(r => { video.onloadedmetadata = r; });
-      await video.play();
-
+      // 1. Render the route path onto a canvas (no screen capture permission needed)
+      const path = extractPath(route?.geojson || route?.geometry);
       const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      canvas.width = 800;
+      canvas.height = 560;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
 
-      // Stop capture stream immediately
-      stream.getTracks().forEach(t => t.stop());
-      stream = null;
+      // Background — light map-like grey
+      ctx.fillStyle = '#e8eaed';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // 3. Redraw the route polyline on the canvas
-      //    Google Maps polylines live on a compositor layer that getDisplayMedia
-      //    may miss — this ensures the line is always visible in the screenshot.
-      if (mapRef.current && route) {
-        const path = extractPath(route.geojson || route.geometry);
-        if (path.length >= 2) {
-          const map = mapRef.current;
-          const mapDiv = mapDivRef.current;
-          const mapRect = mapDiv.getBoundingClientRect();
-          const projection = map.getProjection();
-          const scale = Math.pow(2, map.getZoom());
-          const bounds = map.getBounds();
-          // Northwest corner of the visible map in world coordinates
-          const nw = projection.fromLatLngToPoint(
-            new window.google.maps.LatLng(bounds.getNorthEast().lat(), bounds.getSouthWest().lng())
-          );
-          // Scale factors: canvas (physical px) ÷ window (CSS px)
-          const xScale = canvas.width / window.innerWidth;
-          const yScale = canvas.height / window.innerHeight;
-
-          function toCanvas(latlng) {
-            const wp = projection.fromLatLngToPoint(
-              new window.google.maps.LatLng(latlng.lat, latlng.lng)
-            );
-            return {
-              x: (mapRect.left + (wp.x - nw.x) * scale) * xScale,
-              y: (mapRect.top  + (wp.y - nw.y) * scale) * yScale,
-            };
-          }
-
-          ctx.beginPath();
-          ctx.strokeStyle = '#3b82f6';
-          ctx.lineWidth = Math.max(3, 5 * xScale);
-          ctx.lineJoin = 'round';
-          ctx.lineCap = 'round';
-          const p0 = toCanvas(path[0]);
-          ctx.moveTo(p0.x, p0.y);
-          for (let i = 1; i < path.length; i++) {
-            const p = toCanvas(path[i]);
-            ctx.lineTo(p.x, p.y);
-          }
-          ctx.stroke();
+      if (path.length >= 2) {
+        // Find route bounds
+        let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+        for (const p of path) {
+          if (p.lat < minLat) minLat = p.lat;
+          if (p.lat > maxLat) maxLat = p.lat;
+          if (p.lng < minLng) minLng = p.lng;
+          if (p.lng > maxLng) maxLng = p.lng;
         }
+        // Pad bounds by 12%
+        const latPad = (maxLat - minLat) * 0.12 || 0.05;
+        const lngPad = (maxLng - minLng) * 0.12 || 0.05;
+        minLat -= latPad; maxLat += latPad;
+        minLng -= lngPad; maxLng += lngPad;
+
+        const PAD = 40; // canvas pixel padding
+        function toXY(p) {
+          return {
+            x: PAD + ((p.lng - minLng) / (maxLng - minLng)) * (canvas.width - PAD * 2),
+            y: PAD + ((maxLat - p.lat) / (maxLat - minLat)) * (canvas.height - PAD * 2 - 60),
+          };
+        }
+
+        // Draw route line (white outline for contrast, then blue)
+        ctx.beginPath();
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 9;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        const p0 = toXY(path[0]);
+        ctx.moveTo(p0.x, p0.y);
+        for (let i = 1; i < path.length; i++) {
+          const p = toXY(path[i]);
+          ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 5;
+        ctx.moveTo(p0.x, p0.y);
+        for (let i = 1; i < path.length; i++) {
+          const p = toXY(path[i]);
+          ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+
+        // Start dot (green)
+        const start = toXY(path[0]);
+        ctx.beginPath();
+        ctx.fillStyle = 'white';
+        ctx.arc(start.x, start.y, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.fillStyle = '#22c55e';
+        ctx.arc(start.x, start.y, 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        // End dot (red)
+        const end = toXY(path[path.length - 1]);
+        ctx.beginPath();
+        ctx.fillStyle = 'white';
+        ctx.arc(end.x, end.y, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.fillStyle = '#ef4444';
+        ctx.arc(end.x, end.y, 7, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      // 4. Upload PNG to Supabase Storage (bug-screenshots bucket, public)
+      // Info bar at bottom
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(0, canvas.height - 60, canvas.width, 60);
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 14px -apple-system, sans-serif';
+      const title = getTitle(route) || 'Route';
+      ctx.fillText(title.length > 55 ? title.slice(0, 55) + '…' : title, 16, canvas.height - 36);
+      ctx.font = '12px -apple-system, sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(`${getDistance(route)} mi · ${getDuration(route)} · "${(query || '').slice(0, 60)}"`, 16, canvas.height - 16);
+
+      // 2. Upload PNG to Supabase Storage
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       const fileName = `bug_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.png`;
       const uploadRes = await fetch(
@@ -306,10 +318,10 @@ export default function App() {
           body: blob,
         }
       );
-      if (!uploadRes.ok) throw new Error(`Screenshot upload failed (${uploadRes.status})`);
+      if (!uploadRes.ok) throw new Error(`Upload failed (${uploadRes.status})`);
       const screenshotUrl = `${SUPABASE_URL}/storage/v1/object/public/bug-screenshots/${fileName}`;
 
-      // 5. Insert record via SECURITY DEFINER RPC (bypasses anon RLS)
+      // 3. Insert record via SECURITY DEFINER RPC (bypasses anon RLS)
       const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/insert_bug_report`, {
         method: 'POST',
         headers: {
@@ -326,7 +338,7 @@ export default function App() {
       });
       if (!rpcRes.ok) {
         const errText = await rpcRes.text();
-        throw new Error(`DB insert failed: ${errText}`);
+        throw new Error(`Save failed: ${errText}`);
       }
 
       setBugDone(true);
@@ -336,7 +348,6 @@ export default function App() {
       console.error('Bug report error:', err);
       setBugError(err.message || 'Submission failed');
     } finally {
-      if (stream) stream.getTracks().forEach(t => t.stop());
       setBugSubmitting(false);
     }
   }
@@ -413,7 +424,12 @@ export default function App() {
                 onMouseEnter={e => e.currentTarget.style.background = '#334155'}
                 onMouseLeave={e => e.currentTarget.style.background = '#1e293b'}
               >
-                <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{r.title}</div>
+                <div style={{
+                  fontSize: 13, fontWeight: 600, lineHeight: 1.3,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {r.title}
+                </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
                   ⏱ {r.duration_str} · 🛣️ {r.distance_mi} mi
                 </div>
@@ -421,75 +437,6 @@ export default function App() {
             ))}
           </>
         )}
-        {/* ── Bug report ────────────────────────────────────────────────────── */}
-        <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid #1e293b' }}>
-          {!bugMode ? (
-            <button
-              onClick={() => setBugMode(true)}
-              style={{
-                width: '100%', background: 'transparent', color: '#475569',
-                border: '1px solid #1e293b', borderRadius: 8, padding: '8px 12px',
-                cursor: 'pointer', fontSize: 12, textAlign: 'left',
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
-              onMouseEnter={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = '#334155'; }}
-              onMouseLeave={e => { e.currentTarget.style.color = '#475569'; e.currentTarget.style.borderColor = '#1e293b'; }}
-            >
-              🐛 Report routing issue
-            </button>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ fontSize: 11, color: '#94a3b8' }}>Describe the routing problem:</div>
-              <textarea
-                value={bugComment}
-                onChange={e => setBugComment(e.target.value)}
-                placeholder={'e.g. Route goes through Manhattan instead of using GWB'}
-                disabled={bugSubmitting}
-                style={{
-                  background: '#1e293b', color: 'white', border: '1px solid #334155',
-                  borderRadius: 8, padding: '8px 10px', resize: 'none',
-                  height: 80, fontSize: 12, lineHeight: 1.5, outline: 'none',
-                }}
-              />
-              {bugDone ? (
-                <div style={{ color: '#22c55e', fontSize: 12, textAlign: 'center', padding: '4px 0' }}>
-                  ✓ Report submitted — thanks!
-                </div>
-              ) : (
-                <>
-                  {bugError && (
-                    <div style={{ color: '#f87171', fontSize: 11, lineHeight: 1.4 }}>{bugError}</div>
-                  )}
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button
-                      onClick={submitBugReport}
-                      disabled={bugSubmitting || !bugComment.trim()}
-                      style={{
-                        flex: 1, background: bugSubmitting ? '#1d4ed8' : '#2563eb',
-                        color: 'white', border: 'none', borderRadius: 8,
-                        padding: '8px 10px', cursor: bugSubmitting ? 'default' : 'pointer',
-                        fontSize: 12, fontWeight: 600, opacity: !bugComment.trim() ? 0.5 : 1,
-                      }}
-                    >
-                      {bugSubmitting ? 'Capturing…' : '📸 Capture & Submit'}
-                    </button>
-                    <button
-                      onClick={() => { setBugMode(false); setBugComment(''); setBugError(''); setBugDone(false); }}
-                      disabled={bugSubmitting}
-                      style={{
-                        background: 'transparent', color: '#64748b', border: '1px solid #1e293b',
-                        borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontSize: 12,
-                      }}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-
       </div>
 
       {/* ── Map ─────────────────────────────────────────────────────────────── */}
@@ -500,6 +447,87 @@ export default function App() {
             Loading map…
           </div>
         )}
+
+        {/* ── Bug report button / panel — floating top-right ─────────────── */}
+        <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10 }}>
+          {!bugMode ? (
+            <button
+              onClick={() => setBugMode(true)}
+              title="Report a routing issue"
+              style={{
+                background: 'white', border: 'none', borderRadius: 10,
+                padding: '9px 14px', cursor: 'pointer', fontSize: 13,
+                fontWeight: 600, color: '#64748b',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+                display: 'flex', alignItems: 'center', gap: 6,
+                transition: 'box-shadow 0.15s, color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.22)'; e.currentTarget.style.color = '#1e293b'; }}
+              onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.18)'; e.currentTarget.style.color = '#64748b'; }}
+            >
+              🐛 Report issue
+            </button>
+          ) : (
+            <div style={{
+              background: 'white', borderRadius: 14, padding: 14, width: 280,
+              boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>
+                🐛 What's wrong with this route?
+              </div>
+              <textarea
+                value={bugComment}
+                onChange={e => setBugComment(e.target.value)}
+                placeholder={'e.g. Crosses GWB into NJ then immediately comes back — should escape via Goethals'}
+                disabled={bugSubmitting}
+                autoFocus
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  border: '1px solid #e2e8f0', borderRadius: 8,
+                  padding: '8px 10px', resize: 'none', height: 90,
+                  fontSize: 13, lineHeight: 1.5, outline: 'none',
+                  color: '#1e293b', fontFamily: 'inherit',
+                }}
+              />
+              {bugDone ? (
+                <div style={{ color: '#16a34a', fontSize: 13, fontWeight: 600, textAlign: 'center', padding: '8px 0' }}>
+                  ✓ Submitted — thanks!
+                </div>
+              ) : (
+                <>
+                  {bugError && (
+                    <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6, lineHeight: 1.4 }}>{bugError}</div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button
+                      onClick={submitBugReport}
+                      disabled={bugSubmitting || !bugComment.trim()}
+                      style={{
+                        flex: 1, background: bugSubmitting ? '#93c5fd' : '#3b82f6',
+                        color: 'white', border: 'none', borderRadius: 8,
+                        padding: '9px 12px', cursor: bugSubmitting ? 'default' : 'pointer',
+                        fontSize: 13, fontWeight: 700,
+                        opacity: !bugComment.trim() ? 0.5 : 1,
+                      }}
+                    >
+                      {bugSubmitting ? 'Submitting…' : 'Submit'}
+                    </button>
+                    <button
+                      onClick={() => { setBugMode(false); setBugComment(''); setBugError(''); setBugDone(false); }}
+                      disabled={bugSubmitting}
+                      style={{
+                        background: '#f1f5f9', color: '#64748b', border: 'none',
+                        borderRadius: 8, padding: '9px 12px', cursor: 'pointer', fontSize: 13,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Right panel ─────────────────────────────────────────────────────── */}
