@@ -1,5 +1,5 @@
 /* ============================================================
-   TwoTired — App.css  (MapLibre + Progressive Mobile UI)
+   TwoTired — App.css  (MapLibre + Progressive Mobile UI + Auth)
    ============================================================ */
 
 /* ── Reset / base ─────────────────────────────────────────── */
@@ -26,7 +26,7 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .app-shell {
   position: relative;
   width: 100vw;
-  height: 100dvh;        /* dynamic viewport height — respects mobile browser chrome */
+  height: 100dvh;
   overflow: hidden;
   display: flex;
 }
@@ -43,7 +43,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   height: 100%;
 }
 
-/* Keep maplibre attribution out of the way */
 .maplibregl-ctrl-bottom-right { bottom: 60px !important; }
 
 /* ============================================================
@@ -64,7 +63,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   overflow: hidden;
 }
 
-/* Drag handle */
 .sheet-handle {
   flex-shrink: 0;
   display: flex;
@@ -92,7 +90,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   overflow: hidden;
 }
 
-/* Hero mic button */
 .mic-hero {
   width: 60px;
   height: 60px;
@@ -116,7 +113,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   box-shadow: 0 4px 24px rgba(255,74,74,.5);
 }
 
-/* Pulse ring */
 .mic-pulse {
   position: absolute;
   inset: -4px;
@@ -211,7 +207,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   overflow: hidden;
 }
 
-/* ── Input area (bottom of expanded sheet) ───────────────── */
 .sheet-input-area {
   flex-shrink: 0;
   padding: 6px 10px 10px;
@@ -278,7 +273,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .refine-btn:active,
 .menu-btn:active { background: var(--surface); }
 
-/* Active mic */
 .mic-small.mic-listening,
 .mic-desktop.mic-listening {
   background: rgba(255,74,74,.15);
@@ -286,14 +280,12 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   color: #ff4a4a;
 }
 
-/* Refine active */
 .refine-btn.active {
   background: var(--accent-dim);
   border-color: var(--accent);
   color: var(--accent);
 }
 
-/* Send button — accent */
 .send-btn {
   background: var(--accent);
   border-color: var(--accent);
@@ -302,7 +294,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .send-btn:disabled { opacity: .35; cursor: default; }
 .send-btn:not(:disabled):active { opacity: .8; }
 
-/* Go button */
 .go-btn {
   background: var(--accent);
   border-color: var(--accent);
@@ -424,6 +415,33 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   padding: 4px 0;
 }
 
+/* ── Overflow menu — user row ─────────────────────────────── */
+.menu-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+}
+.menu-user-email {
+  font-size: .78rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-signout {
+  flex-shrink: 0;
+  font-size: .75rem;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.menu-signout:hover { background: rgba(255,255,255,.05); color: var(--text); }
+
 /* ── Conversation thread ──────────────────────────────────── */
 .messages-scroll {
   flex: 1;
@@ -438,7 +456,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .messages-scroll::-webkit-scrollbar { width: 4px; }
 .messages-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 2px; }
 
-/* Bubble base */
 .bubble {
   max-width: 88%;
   border-radius: 14px;
@@ -455,7 +472,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   border-bottom-right-radius: 4px;
 }
 
-/* Route card */
 .bubble-route {
   align-self: flex-start;
   background: var(--surface2);
@@ -503,7 +519,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 }
 .nav-link:hover { text-decoration: underline; }
 
-/* Clarify bubble */
 .bubble-clarify {
   align-self: flex-start;
   background: var(--surface2);
@@ -533,7 +548,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 }
 .clarify-opt:hover { background: rgba(74,144,255,.28); }
 
-/* Loading bubble */
 .bubble-loading {
   align-self: flex-start;
   background: var(--surface2);
@@ -594,6 +608,130 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 }
 
 /* ============================================================
+   Auth — Login screen & loading shell
+   ============================================================ */
+
+.loading-shell {
+  width: 100vw;
+  height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.login-shell {
+  width: 100vw;
+  height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.login-logo { font-size: 2.8rem; line-height: 1; margin-bottom: 4px; }
+
+.login-brand {
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: -.03em;
+  color: var(--text);
+  margin: 0;
+}
+
+.login-tagline { font-size: .9rem; color: var(--text-muted); margin: 0; }
+
+.login-title { font-size: 1.3rem; font-weight: 700; color: var(--text); margin: 0; }
+
+.login-sub { font-size: .88rem; color: var(--text-muted); line-height: 1.6; margin: 0; }
+.login-sub strong { color: var(--text); }
+
+.login-input {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: .95rem;
+  outline: none;
+  margin-top: 8px;
+  transition: border-color .15s;
+}
+.login-input:focus { border-color: rgba(74,144,255,.55); }
+.login-input::placeholder { color: var(--text-muted); }
+
+.login-error { font-size: .82rem; color: var(--error); margin: 0; }
+
+.login-btn {
+  width: 100%;
+  height: 46px;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: .95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.login-btn:disabled { opacity: .4; cursor: default; }
+.login-btn:not(:disabled):hover { opacity: .9; }
+
+.login-btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: .84rem;
+  padding: 8px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.login-btn-secondary:hover { background: rgba(255,255,255,.04); }
+
+.login-hint { font-size: .78rem; color: var(--text-muted); margin: 0; }
+
+/* ── User info in desktop sidebar ─────────────────────────── */
+.user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+.user-email {
+  font-size: .75rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.signout-btn {
+  flex-shrink: 0;
+  font-size: .72rem;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.signout-btn:hover { background: rgba(255,255,255,.05); color: var(--text); }
+
+/* ============================================================
    DESKTOP sidebar
    ============================================================ */
 @media (min-width: 701px) {
@@ -622,7 +760,7 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   }
 
   .brand {
-    padding: 18px 20px 14px;
+    padding: 16px 20px 14px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
@@ -641,10 +779,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
     border-bottom: 1px solid var(--border);
   }
 
-  .mic-desktop {
-    /* inherits icon-button base */
-  }
-
   .sidebar-scroll {
     flex: 1;
     overflow-y: auto;
@@ -655,7 +789,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   .sidebar-scroll::-webkit-scrollbar { width: 4px; }
   .sidebar-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 2px; }
 
-  /* Follow-up section below conversation */
   .desktop-followup {
     padding: 10px 12px 8px;
     border-top: 1px solid var(--border);
@@ -665,7 +798,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
     background: var(--surface);
   }
 
-  /* Empty state hints */
   .empty-state {
     padding: 20px 16px;
     display: flex;
@@ -699,7 +831,6 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   }
   .hints em { color: var(--text); font-style: normal; }
 
-  /* Bug report at bottom of sidebar */
   .sidebar-bug {
     flex-shrink: 0;
     border-top: 1px solid var(--border);
@@ -727,6 +858,5 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
     gap: 6px;
   }
 
-  /* Desktop maplibre attribution sits at bottom */
   .maplibregl-ctrl-bottom-right { bottom: 8px !important; }
 }

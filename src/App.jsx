@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createClient } from '@supabase/supabase-js';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
@@ -11,8 +12,10 @@ const MAP_STYLE         = 'https://tiles.openfreemap.org/styles/fiord';
 const DEFAULT_CENTER    = [-74.3, 41.4];
 const DEFAULT_ZOOM      = 9;
 
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 const APPROVAL_WORDS = ['looks good','perfect','great','love it','approve',
-  "let's go",'nice','yes','send it','go for it','awesome','nailed it','lets go','do it'];
+  "let's go",'nice','send it','go for it','awesome','nailed it','lets go','do it'];
 
 const REFINE_CHIPS = ['More twisty','Less highway','Add a coffee stop','Different road','Make it shorter'];
 
@@ -63,6 +66,71 @@ function useIsMobile() {
     return () => window.removeEventListener('resize', h);
   }, []);
   return mobile;
+}
+
+// ── Login screen ──────────────────────────────────────────────────────────────
+function LoginScreen() {
+  const [email, setEmail]     = useState('');
+  const [sent, setSent]       = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+
+  async function sendMagicLink() {
+    if (!email.includes('@')) return;
+    setLoading(true);
+    setError(null);
+    const { error: err } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin },
+    });
+    if (err) { setError(err.message); setLoading(false); return; }
+    setSent(true);
+    setLoading(false);
+  }
+
+  if (sent) return (
+    <div className="login-shell">
+      <div className="login-card">
+        <div className="login-logo">🏍</div>
+        <h2 className="login-title">Check your email</h2>
+        <p className="login-sub">
+          We sent a magic link to <strong>{email}</strong>.<br/>
+          Click it to sign in — no password needed.
+        </p>
+        <button className="login-btn-secondary" onClick={() => setSent(false)}>
+          Use a different email
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="login-shell">
+      <div className="login-card">
+        <div className="login-logo">🏍</div>
+        <h1 className="login-brand">TwoTired</h1>
+        <p className="login-tagline">Your AI motorcycle ride planner</p>
+        <input
+          className="login-input"
+          type="email"
+          placeholder="Enter your email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && sendMagicLink()}
+          autoFocus
+        />
+        {error && <p className="login-error">{error}</p>}
+        <button
+          className="login-btn"
+          onClick={sendMagicLink}
+          disabled={loading || !email.includes('@')}
+        >
+          {loading ? 'Sending…' : 'Continue →'}
+        </button>
+        <p className="login-hint">No password needed — we'll email you a link.</p>
+      </div>
+    </div>
+  );
 }
 
 // ── ConversationThread — module level (never inside App) ──────────────────────
@@ -122,6 +190,10 @@ function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  // Auth state
+  const [session, setSession]     = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+
   // Core state
   const [query, setQuery]               = useState('');
   const [loading, setLoading]           = useState(false);
@@ -134,15 +206,14 @@ export default function App() {
   const [routeApproved, setRouteApproved] = useState(false);
 
   // Mobile sheet UI state
-  // 'idle' | 'collapsed' | 'expanded'
-  const [sheetMode, setSheetMode]       = useState('idle');
-  const [refineOpen, setRefineOpen]     = useState(false);
-  const [menuOpen, setMenuOpen]         = useState(false);
+  const [sheetMode, setSheetMode]   = useState('idle');
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [menuOpen, setMenuOpen]     = useState(false);
 
   // Bug report
-  const [bugComment, setBugComment]     = useState('');
+  const [bugComment, setBugComment]       = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
-  const [bugDone, setBugDone]           = useState(false);
+  const [bugDone, setBugDone]             = useState(false);
 
   // Recent
   const [recent, setRecent] = useState(() => {
@@ -164,6 +235,19 @@ export default function App() {
     submitQuery(transcript);
   }, []);
   const voice = useVoice(handleVoiceResult);
+
+  // ── Auth init ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthReady(true);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setAuthReady(true);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   // ── Map init ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -197,38 +281,32 @@ export default function App() {
     const map = mapRef.current;
     if (!map || !mapLoadedRef.current) { pendingRoute.current = route; return; }
 
-    // Remove old route layer + source
     if (map.getLayer('route-line'))   map.removeLayer('route-line');
     if (map.getLayer('route-casing')) map.removeLayer('route-casing');
     if (map.getSource('route'))       map.removeSource('route');
 
-    // Remove old markers
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
 
     if (!route?.geometry) return;
 
-    // Add route as GeoJSON source
     map.addSource('route', {
       type: 'geojson',
       data: { type: 'Feature', geometry: route.geometry },
     });
 
-    // White casing for contrast on dark map
     map.addLayer({
       id: 'route-casing', type: 'line', source: 'route',
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: { 'line-color': '#fff', 'line-width': 6, 'line-opacity': 0.3 },
     });
 
-    // Main route line
     map.addLayer({
       id: 'route-line', type: 'line', source: 'route',
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: { 'line-color': '#4A90FF', 'line-width': 4, 'line-opacity': 0.95 },
     });
 
-    // Stop markers
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
       const el = document.createElement('div');
@@ -245,7 +323,6 @@ export default function App() {
       markersRef.current.push(marker);
     });
 
-    // Fit bounds
     const coords = route.geometry.coordinates;
     const bounds = coords.reduce(
       (b, c) => b.extend(c),
@@ -271,10 +348,11 @@ export default function App() {
     const ticker = setInterval(() => { ci=(ci+1)%cycle.length; setLoadingMsg(cycle[ci]); }, 2500);
 
     try {
-      const res  = await fetch(EDGE_URL, {
+      const token = session?.access_token || SUPABASE_ANON_KEY;
+      const res = await fetch(EDGE_URL, {
         method: 'POST',
-        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON_KEY}` },
-        body: JSON.stringify(payload),
+        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${token}` },
+        body: JSON.stringify({ ...payload, user_id: session?.user?.id || null }),
       });
       const data = await res.json();
       clearInterval(ticker);
@@ -299,7 +377,6 @@ export default function App() {
 
       if (isMobile) setSheetMode('collapsed');
 
-      // Save recent
       const entry = { id:Date.now(), title:r.title, distance_mi:r.distance_mi, duration_str:r.duration_str };
       const updated = [entry, ...recent.filter(x=>x.title!==entry.title)].slice(0,5);
       setRecent(updated); localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
@@ -338,13 +415,31 @@ export default function App() {
     try {
       await fetch(`${SUPABASE_URL}/rest/v1/rpc/insert_bug_report`, {
         method:'POST',
-        headers:{ 'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY,'Authorization':`Bearer ${SUPABASE_ANON_KEY}` },
-        body:JSON.stringify({ p_query:messages.find(m=>m.role==='user')?.content||'', p_route_data:routeData||null, p_comment:bugComment, p_screenshot_url:null }),
+        headers:{
+          'Content-Type':'application/json',
+          'apikey':SUPABASE_ANON_KEY,
+          'Authorization':`Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({
+          p_query: messages.find(m=>m.role==='user')?.content||'',
+          p_route_data: routeData||null,
+          p_comment: bugComment,
+          p_screenshot_url: null,
+          p_user_id: session?.user?.id || null,
+        }),
       });
       setBugDone(true); setBugComment('');
       setTimeout(() => { setMenuOpen(false); setBugDone(false); }, 2000);
     } finally { setBugSubmitting(false); }
   }
+
+  // ── Auth gates ────────────────────────────────────────────────────────────
+  if (!authReady) return (
+    <div className="loading-shell">
+      <span className="dot-spin"/>
+    </div>
+  );
+  if (!session) return <LoginScreen />;
 
   // ── Sheet height by mode ──────────────────────────────────────────────────
   const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68vh' }[sheetMode] || '160px';
@@ -364,14 +459,13 @@ export default function App() {
       {isMobile ? (
         <div className="sheet" style={{ height: sheetHeight }}>
 
-          {/* Drag handle — always tappable to toggle */}
           <div className="sheet-handle" onClick={() =>
             setSheetMode(m => m === 'expanded' ? (routeData ? 'collapsed' : 'idle') : 'expanded')
           }>
             <div className="sheet-bar"/>
           </div>
 
-          {/* ── IDLE: big mic hero ── */}
+          {/* ── IDLE ── */}
           {sheetMode === 'idle' && (
             <div className="sheet-idle">
               {voice.supported ? (
@@ -413,7 +507,7 @@ export default function App() {
             </div>
           )}
 
-          {/* ── COLLAPSED: route peek ── */}
+          {/* ── COLLAPSED ── */}
           {sheetMode === 'collapsed' && routeData && (
             <div className="sheet-collapsed-content">
               <div className="collapsed-info">
@@ -426,7 +520,7 @@ export default function App() {
             </div>
           )}
 
-          {/* ── EXPANDED: full conversation ── */}
+          {/* ── EXPANDED ── */}
           {sheetMode === 'expanded' && (
             <div className="sheet-expanded-content">
               {error && <div className="error-banner">⚠️ {error}</div>}
@@ -436,10 +530,8 @@ export default function App() {
                 messagesEndRef={messagesEnd}
               />
 
-              {/* Input area — always at bottom */}
               <div className="sheet-input-area">
 
-                {/* Refine chips — collapsed by default */}
                 {routeData && !routeApproved && refineOpen && (
                   <div className="chips-row">
                     {REFINE_CHIPS.map(c=>(
@@ -452,7 +544,6 @@ export default function App() {
                 )}
 
                 <div className="input-row">
-                  {/* Mic (small) */}
                   {voice.supported && (
                     <button
                       className={`mic-small${voice.listening?' mic-listening':''}`}
@@ -467,7 +558,6 @@ export default function App() {
                     </button>
                   )}
 
-                  {/* Text input */}
                   <input
                     className="followup-input"
                     placeholder={routeData ? 'Refine or approve…' : 'Where do you want to ride?'}
@@ -477,7 +567,6 @@ export default function App() {
                     disabled={loading}
                   />
 
-                  {/* Refine toggle (only when route exists) */}
                   {routeData && !routeApproved && (
                     <button
                       className={`refine-btn${refineOpen?' active':''}`}
@@ -490,13 +579,11 @@ export default function App() {
                     </button>
                   )}
 
-                  {/* Send */}
                   <button className="send-btn"
                     onClick={()=> routeData ? handleFollowUp() : submitQuery()}
                     disabled={loading || (routeData ? !followUpInput.trim() : !query.trim())}
                   >↑</button>
 
-                  {/* ⋯ menu */}
                   <button className="menu-btn" onClick={()=>setMenuOpen(x=>!x)} aria-label="More options">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
@@ -504,9 +591,15 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* ⋯ menu contents */}
                 {menuOpen && (
                   <div className="overflow-menu">
+                    {/* User info + sign out */}
+                    <div className="menu-user-row">
+                      <span className="menu-user-email">{session.user.email}</span>
+                      <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
+                    </div>
+                    <div className="menu-divider"/>
+
                     {recent.length > 0 && (
                       <>
                         <div className="menu-section-label">Recent rides</div>
@@ -544,6 +637,10 @@ export default function App() {
         <div className="sidebar">
           <div className="brand">
             <span className="brand-name">🏍 TwoTired</span>
+            <div className="user-row">
+              <span className="user-email">{session.user.email}</span>
+              <button className="signout-btn" onClick={() => supabase.auth.signOut()}>Sign out</button>
+            </div>
           </div>
 
           <div className="query-row">
