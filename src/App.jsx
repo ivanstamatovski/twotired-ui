@@ -40,7 +40,7 @@ function extractPath(geojson) {
     // Feature with geometry
     coords = geojson.geometry.coordinates;
   } else if (Array.isArray(geojson?.coordinates)) {
-    // Bare geometry object (v2: route.geometry is a GeoJSON LineString)
+    // Bare geometry object (v2: GraphHopper returns LineString directly)
     coords = geojson.coordinates;
   }
 
@@ -49,19 +49,6 @@ function extractPath(geojson) {
   return coords.map(([lng, lat]) => ({ lat, lng }));
 }
 
-// Format minutes → "Xh Ymin"
-function formatDuration(minutes) {
-  if (!minutes) return '';
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return h > 0 ? `${h}h ${m}min` : `${m}min`;
-}
-
-// Compatibility helpers — handle both v1 (Gemini) and v2 (GraphHopper) route shapes
-function getTitle(route) { return route.title || 'Generated Route'; }
-function getDuration(route) { return route.duration_str || formatDuration(route.time_minutes); }
-function getDistance(route) { return route.distance_mi ?? route.distance_miles; }
-
 // Build Google Maps navigation URL — full waypoint chain for turn-by-turn in Maps app
 function buildNavUrl(route) {
   if (!route) return '';
@@ -69,13 +56,29 @@ function buildNavUrl(route) {
   const toStr = wp =>
     typeof wp === 'string' ? encodeURIComponent(wp) : `${wp.lat},${wp.lng}`;
   const origin = encodeURIComponent(START);
-  // Use stored destination string, or fall back to last waypoint coords
   const dest = route.destination
     ? encodeURIComponent(route.destination)
-    : wps.length ? toStr(wps[wps.length - 1]) : origin;
+    : wps.length ? toStr(wps[wps.length - 1]) : '';
   const middle = wps.slice(0, 23).map(toStr).join('/');
   return `https://www.google.com/maps/dir/${origin}${middle ? '/' + middle : ''}/${dest}`;
 }
+
+// ── v1 / v2 compat helpers ────────────────────────────────────────────────────
+// v1: { title, duration_str, distance_mi, destination, segments, geojson }
+// v2: { time_minutes, distance_miles, narrative, stops, geometry } (no title/destination)
+function getTitle(r) {
+  return r.title || (r.destination ? `Route to ${r.destination}` : 'Generated Route');
+}
+function getDuration(r) {
+  if (r.duration_str) return r.duration_str;
+  if (r.time_minutes != null) {
+    const h = Math.floor(r.time_minutes / 60);
+    const m = r.time_minutes % 60;
+    return h > 0 ? `${h}h ${m}min` : `${m}min`;
+  }
+  return '';
+}
+function getDistance(r) { return r.distance_mi ?? r.distance_miles ?? ''; }
 
 export default function App() {
   const [query, setQuery] = useState('');
@@ -84,6 +87,13 @@ export default function App() {
   const [error, setError] = useState('');
   const [route, setRoute] = useState(null);
   const [recent, setRecent] = useState([]);
+
+  // Bug report state
+  const [bugMode, setBugMode] = useState(false);
+  const [bugComment, setBugComment] = useState('');
+  const [bugSubmitting, setBugSubmitting] = useState(false);
+  const [bugDone, setBugDone] = useState(false);
+  const [bugError, setBugError] = useState('');
 
   const mapsLoaded = useMapsLoaded();
   const mapDivRef = useRef(null); // the <div> the map renders into
@@ -119,7 +129,7 @@ export default function App() {
       return;
     }
 
-    // v2 returns route.geometry (GeoJSON LineString); v1 stored route.geojson (FeatureCollection)
+    // v2 returns route.geometry (bare LineString); v1 returns route.geojson (FeatureCollection)
     const path = extractPath(route.geojson || route.geometry);
 
     if (path.length >= 2) {
@@ -131,6 +141,7 @@ export default function App() {
         strokeWeight: 5,
         map: mapRef.current,
       });
+
       const bounds = new window.google.maps.LatLngBounds();
       path.forEach(p => bounds.extend(p));
       mapRef.current.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
@@ -181,8 +192,7 @@ export default function App() {
       const data = await res.json();
       const r = Array.isArray(data) ? data[0] : data;
       if (r?.error) throw new Error(r.error);
-      // v2 edge function wraps the route: { success: true, route: {...} }
-      // v1 returned the route object directly (or an array of them)
+      // v2 wraps response: { success: true, route: {...} }. v1 returns route directly.
       setRoute(r.route ?? r);
       loadRecent();
     } catch (err) {
@@ -204,6 +214,133 @@ export default function App() {
     } catch {}
   }
 
+  // ── Bug report: screen capture + polyline redraw + Supabase insert ─────────
+  async function submitBugReport() {
+    if (!bugComment.trim() || bugSubmitting) return;
+    setBugSubmitting(true);
+    setBugError('');
+    let stream = null;
+    try {
+      // 1. Capture current tab (Chrome shows one-click "Share this tab" dialog)
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { preferCurrentTab: true },
+        audio: false,
+      });
+      // Wait for dialog to close and page to repaint
+      await new Promise(r => setTimeout(r, 400));
+
+      // 2. Grab one video frame onto a canvas
+      const video = document.createElement('video');
+      video.muted = true;
+      video.srcObject = stream;
+      await new Promise(r => { video.onloadedmetadata = r; });
+      await video.play();
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+
+      // Stop capture stream immediately
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+
+      // 3. Redraw the route polyline on the canvas
+      //    Google Maps polylines live on a compositor layer that getDisplayMedia
+      //    may miss — this ensures the line is always visible in the screenshot.
+      if (mapRef.current && route) {
+        const path = extractPath(route.geojson || route.geometry);
+        if (path.length >= 2) {
+          const map = mapRef.current;
+          const mapDiv = mapDivRef.current;
+          const mapRect = mapDiv.getBoundingClientRect();
+          const projection = map.getProjection();
+          const scale = Math.pow(2, map.getZoom());
+          const bounds = map.getBounds();
+          // Northwest corner of the visible map in world coordinates
+          const nw = projection.fromLatLngToPoint(
+            new window.google.maps.LatLng(bounds.getNorthEast().lat(), bounds.getSouthWest().lng())
+          );
+          // Scale factors: canvas (physical px) ÷ window (CSS px)
+          const xScale = canvas.width / window.innerWidth;
+          const yScale = canvas.height / window.innerHeight;
+
+          function toCanvas(latlng) {
+            const wp = projection.fromLatLngToPoint(
+              new window.google.maps.LatLng(latlng.lat, latlng.lng)
+            );
+            return {
+              x: (mapRect.left + (wp.x - nw.x) * scale) * xScale,
+              y: (mapRect.top  + (wp.y - nw.y) * scale) * yScale,
+            };
+          }
+
+          ctx.beginPath();
+          ctx.strokeStyle = '#3b82f6';
+          ctx.lineWidth = Math.max(3, 5 * xScale);
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'round';
+          const p0 = toCanvas(path[0]);
+          ctx.moveTo(p0.x, p0.y);
+          for (let i = 1; i < path.length; i++) {
+            const p = toCanvas(path[i]);
+            ctx.lineTo(p.x, p.y);
+          }
+          ctx.stroke();
+        }
+      }
+
+      // 4. Upload PNG to Supabase Storage (bug-screenshots bucket, public)
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const fileName = `bug_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.png`;
+      const uploadRes = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/bug-screenshots/${fileName}`,
+        {
+          method: 'POST',
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            'Content-Type': 'image/png',
+          },
+          body: blob,
+        }
+      );
+      if (!uploadRes.ok) throw new Error(`Screenshot upload failed (${uploadRes.status})`);
+      const screenshotUrl = `${SUPABASE_URL}/storage/v1/object/public/bug-screenshots/${fileName}`;
+
+      // 5. Insert record via SECURITY DEFINER RPC (bypasses anon RLS)
+      const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/insert_bug_report`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({
+          p_comment:        bugComment.trim(),
+          p_screenshot_url: screenshotUrl,
+          p_route_id:       route?.id ?? null,
+          p_query:          query ?? null,
+        }),
+      });
+      if (!rpcRes.ok) {
+        const errText = await rpcRes.text();
+        throw new Error(`DB insert failed: ${errText}`);
+      }
+
+      setBugDone(true);
+      setBugComment('');
+      setTimeout(() => { setBugMode(false); setBugDone(false); }, 2500);
+    } catch (err) {
+      console.error('Bug report error:', err);
+      setBugError(err.message || 'Submission failed');
+    } finally {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      setBugSubmitting(false);
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', -apple-system, sans-serif", background: '#f1f5f9' }}>
@@ -211,7 +348,7 @@ export default function App() {
       {/* ── Left panel ──────────────────────────────────────────────────────── */}
       <div style={{ width: 260, background: '#0f172a', color: 'white', display: 'flex', flexDirection: 'column', padding: 16, gap: 12, overflowY: 'auto', flexShrink: 0 }}>
 
-        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏍️ TwoTired</div>
+        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏍️ TwistyRoute</div>
 
         <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Starting from</div>
         <div style={{ fontSize: 13, color: '#94a3b8', marginTop: -8 }}>📍 {START_LABEL}</div>
@@ -221,7 +358,7 @@ export default function App() {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); } }}
-            placeholder={'e.g. "scenic loop to Hawks Nest"\n"coffee stop via Catskills"\n"twisty roads, avoid highways"'}
+            placeholder={'e.g. "scenic loop to Hawks Nest"\n"Bears Nest coffee stop via Catskills"\n"twisty roads, avoid highways"'}
             disabled={loading}
             style={{
               background: '#1e293b', color: 'white', border: '1px solid #334155',
@@ -276,7 +413,7 @@ export default function App() {
                 onMouseEnter={e => e.currentTarget.style.background = '#334155'}
                 onMouseLeave={e => e.currentTarget.style.background = '#1e293b'}
               >
-                <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{r.title || 'Route'}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{r.title}</div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
                   ⏱ {r.duration_str} · 🛣️ {r.distance_mi} mi
                 </div>
@@ -284,6 +421,75 @@ export default function App() {
             ))}
           </>
         )}
+        {/* ── Bug report ────────────────────────────────────────────────────── */}
+        <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid #1e293b' }}>
+          {!bugMode ? (
+            <button
+              onClick={() => setBugMode(true)}
+              style={{
+                width: '100%', background: 'transparent', color: '#475569',
+                border: '1px solid #1e293b', borderRadius: 8, padding: '8px 12px',
+                cursor: 'pointer', fontSize: 12, textAlign: 'left',
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = '#334155'; }}
+              onMouseLeave={e => { e.currentTarget.style.color = '#475569'; e.currentTarget.style.borderColor = '#1e293b'; }}
+            >
+              🐛 Report routing issue
+            </button>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 11, color: '#94a3b8' }}>Describe the routing problem:</div>
+              <textarea
+                value={bugComment}
+                onChange={e => setBugComment(e.target.value)}
+                placeholder={'e.g. Route goes through Manhattan instead of using GWB'}
+                disabled={bugSubmitting}
+                style={{
+                  background: '#1e293b', color: 'white', border: '1px solid #334155',
+                  borderRadius: 8, padding: '8px 10px', resize: 'none',
+                  height: 80, fontSize: 12, lineHeight: 1.5, outline: 'none',
+                }}
+              />
+              {bugDone ? (
+                <div style={{ color: '#22c55e', fontSize: 12, textAlign: 'center', padding: '4px 0' }}>
+                  ✓ Report submitted — thanks!
+                </div>
+              ) : (
+                <>
+                  {bugError && (
+                    <div style={{ color: '#f87171', fontSize: 11, lineHeight: 1.4 }}>{bugError}</div>
+                  )}
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      onClick={submitBugReport}
+                      disabled={bugSubmitting || !bugComment.trim()}
+                      style={{
+                        flex: 1, background: bugSubmitting ? '#1d4ed8' : '#2563eb',
+                        color: 'white', border: 'none', borderRadius: 8,
+                        padding: '8px 10px', cursor: bugSubmitting ? 'default' : 'pointer',
+                        fontSize: 12, fontWeight: 600, opacity: !bugComment.trim() ? 0.5 : 1,
+                      }}
+                    >
+                      {bugSubmitting ? 'Capturing…' : '📸 Capture & Submit'}
+                    </button>
+                    <button
+                      onClick={() => { setBugMode(false); setBugComment(''); setBugError(''); setBugDone(false); }}
+                      disabled={bugSubmitting}
+                      style={{
+                        background: 'transparent', color: '#64748b', border: '1px solid #1e293b',
+                        borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontSize: 12,
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
       </div>
 
       {/* ── Map ─────────────────────────────────────────────────────────────── */}
@@ -309,44 +515,49 @@ export default function App() {
             )}
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-            {/* v2: stops + narrative */}
-            {route.narrative ? (
-              <>
-                {(route.stops || []).length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10 }}>Stops</div>
-                    {route.stops.map((stop, i) => (
-                      <div key={i} style={{ paddingLeft: 14, borderLeft: '4px solid #10b981', marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: '#065f46' }}>{stop.name}</div>
-                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{stop.address}</div>
-                        {stop.rating && <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 2 }}>⭐ {stop.rating} ({stop.ratingCount?.toLocaleString()})</div>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10 }}>The Ride</div>
-                  <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.75 }}>{route.narrative}</div>
-                </div>
-              </>
-            ) : (
-              /* v1: segments */
-              (route.segments || []).map((seg, i) => (
-                <div key={i} style={{ paddingLeft: 14, borderLeft: `4px solid ${seg.color || '#3b82f6'}` }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: seg.color || '#3b82f6', marginBottom: 2 }}>
-                    {seg.label}
-                  </div>
-                  <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>
-                    {seg.duration} &nbsp;·&nbsp; {seg.miles}
-                  </div>
-                  <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>
-                    {seg.description}
-                  </div>
-                </div>
-              ))
+            {/* v2: prose narrative */}
+            {route.narrative && (
+              <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.75 }}>
+                {route.narrative}
+              </div>
             )}
+
+            {/* v2: stop business cards */}
+            {route.stops?.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>Stops</div>
+                {route.stops.map((stop, i) => (
+                  <div key={i} style={{ background: '#f8fafc', borderRadius: 10, padding: '10px 12px', marginBottom: 8, borderLeft: '4px solid #f59e0b' }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{stop.name}</div>
+                    {stop.rating && (
+                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                        ⭐ {stop.rating} ({stop.ratingCount} reviews)
+                      </div>
+                    )}
+                    {stop.address && (
+                      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{stop.address}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* v1 fallback: segment cards */}
+            {!route.narrative && (route.segments || []).map((seg, i) => (
+              <div key={i} style={{ paddingLeft: 14, borderLeft: `4px solid ${seg.color || '#3b82f6'}` }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: seg.color || '#3b82f6', marginBottom: 2 }}>
+                  {seg.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>
+                  {seg.duration} &nbsp;·&nbsp; {seg.miles}
+                </div>
+                <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>
+                  {seg.description}
+                </div>
+              </div>
+            ))}
           </div>
 
           <div style={{ padding: '14px 20px', borderTop: '1px solid #f1f5f9', display: 'flex', gap: 8 }}>
