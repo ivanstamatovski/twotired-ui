@@ -1,19 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
-
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const EDGE_URL = `${SUPABASE_URL}/functions/v1/generate-route`;
 const START = 'Balancero cafe, Astoria, Queens, NY';
 const START_LABEL = 'Balancero cafe, Astoria';
-
 const LOADING_MSGS = [
   'Asking Claude for the best twisties…',
   'Plotting your escape from the city…',
   'Finding the scenic stuff…',
   'Almost there…',
 ];
-
 // Poll until window.google.maps is ready (loaded async in index.html)
 function useMapsLoaded() {
   const [loaded, setLoaded] = useState(!!window.google?.maps);
@@ -26,13 +23,10 @@ function useMapsLoaded() {
   }, []);
   return loaded;
 }
-
 // Extract a flat [{ lat, lng }] path from whatever GeoJSON shape the edge function returns.
-// Edge function stores coordinates as [lng, lat] (standard GeoJSON order).
 function extractPath(geojson) {
   if (!geojson) return [];
   let coords = null;
-
   if (Array.isArray(geojson?.features) && geojson.features[0]?.geometry?.coordinates) {
     coords = geojson.features[0].geometry.coordinates;
   } else if (geojson?.geometry?.coordinates) {
@@ -40,12 +34,10 @@ function extractPath(geojson) {
   } else if (Array.isArray(geojson?.coordinates)) {
     coords = geojson.coordinates;
   }
-
   if (!coords || coords.length < 2) return [];
   return coords.map(([lng, lat]) => ({ lat, lng }));
 }
-
-// Build Google Maps navigation URL — full waypoint chain for turn-by-turn in Maps app
+// Build Google Maps navigation URL
 function buildNavUrl(route) {
   if (!route) return '';
   const wps = route.waypoints || [];
@@ -58,7 +50,6 @@ function buildNavUrl(route) {
   const middle = wps.slice(0, 23).map(toStr).join('/');
   return `https://www.google.com/maps/dir/${origin}${middle ? '/' + middle : ''}/${dest}`;
 }
-
 // ── v1 / v2 compat helpers ────────────────────────────────────────────────────
 function getTitle(r) {
   return r.title || (r.destination ? `Route to ${r.destination}` : 'Generated Route');
@@ -73,7 +64,6 @@ function getDuration(r) {
   return '';
 }
 function getDistance(r) { return r.distance_mi ?? r.distance_miles ?? ''; }
-
 export default function App() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -81,18 +71,32 @@ export default function App() {
   const [error, setError] = useState('');
   const [route, setRoute] = useState(null);
   const [recent, setRecent] = useState([]);
-
   // Bug report state
   const [bugMode, setBugMode] = useState(false);
   const [bugComment, setBugComment] = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
   const [bugDone, setBugDone] = useState(false);
   const [bugError, setBugError] = useState('');
+  // Mobile state
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768);
+  const [sheetExpanded, setSheetExpanded] = useState(false);
 
   const mapsLoaded = useMapsLoaded();
   const mapDivRef = useRef(null);
   const mapRef = useRef(null);
   const polylineRef = useRef(null);
+
+  // ── Detect mobile / resize ─────────────────────────────────────────────────
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth <= 768);
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // ── Auto-expand sheet when route arrives on mobile ─────────────────────────
+  useEffect(() => {
+    if (route && isMobile) setSheetExpanded(true);
+  }, [route, isMobile]);
 
   // ── Initialize map once API is ready ──────────────────────────────────────
   useEffect(() => {
@@ -110,20 +114,16 @@ export default function App() {
   // ── Draw / clear polyline when route changes ───────────────────────────────
   useEffect(() => {
     if (!mapRef.current) return;
-
     if (polylineRef.current) {
       polylineRef.current.setMap(null);
       polylineRef.current = null;
     }
-
     if (!route) {
       mapRef.current.setCenter({ lat: 40.92, lng: -74.2 });
       mapRef.current.setZoom(9);
       return;
     }
-
     const path = extractPath(route.geojson || route.geometry);
-
     if (path.length >= 2) {
       polylineRef.current = new window.google.maps.Polyline({
         path,
@@ -133,10 +133,11 @@ export default function App() {
         strokeWeight: 5,
         map: mapRef.current,
       });
-
       const bounds = new window.google.maps.LatLngBounds();
       path.forEach(p => bounds.extend(p));
-      mapRef.current.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
+      // On mobile, add extra bottom padding so the route isn't hidden under the sheet
+      const mobile = window.innerWidth <= 768;
+      mapRef.current.fitBounds(bounds, { top: 40, right: 40, bottom: mobile ? 220 : 40, left: 40 });
     } else {
       const wps = route.waypoints || [];
       if (wps.length) {
@@ -157,7 +158,6 @@ export default function App() {
       .then(data => Array.isArray(data) && setRecent(data))
       .catch(() => {});
   }, []);
-
   useEffect(() => { loadRecent(); }, [loadRecent]);
 
   // ── Loading message rotation ───────────────────────────────────────────────
@@ -204,26 +204,20 @@ export default function App() {
     } catch {}
   }
 
-  // ── Bug report: programmatic route canvas capture → Supabase ───────────────
-  // No user interaction needed — works on mobile too.
+  // ── Bug report: programmatic canvas capture ────────────────────────────────
   async function submitBugReport() {
     if (!bugComment.trim() || bugSubmitting) return;
     setBugSubmitting(true);
     setBugError('');
     try {
-      // 1. Render the route path onto a canvas (no screen capture permission needed)
       const path = extractPath(route?.geojson || route?.geometry);
       const canvas = document.createElement('canvas');
       canvas.width = 800;
       canvas.height = 560;
       const ctx = canvas.getContext('2d');
-
-      // Background — light map-like grey
       ctx.fillStyle = '#e8eaed';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-
       if (path.length >= 2) {
-        // Find route bounds
         let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
         for (const p of path) {
           if (p.lat < minLat) minLat = p.lat;
@@ -231,21 +225,17 @@ export default function App() {
           if (p.lng < minLng) minLng = p.lng;
           if (p.lng > maxLng) maxLng = p.lng;
         }
-        // Pad bounds by 12%
         const latPad = (maxLat - minLat) * 0.12 || 0.05;
         const lngPad = (maxLng - minLng) * 0.12 || 0.05;
         minLat -= latPad; maxLat += latPad;
         minLng -= lngPad; maxLng += lngPad;
-
-        const PAD = 40; // canvas pixel padding
+        const PAD = 40;
         function toXY(p) {
           return {
             x: PAD + ((p.lng - minLng) / (maxLng - minLng)) * (canvas.width - PAD * 2),
             y: PAD + ((maxLat - p.lat) / (maxLat - minLat)) * (canvas.height - PAD * 2 - 60),
           };
         }
-
-        // Draw route line (white outline for contrast, then blue)
         ctx.beginPath();
         ctx.strokeStyle = 'white';
         ctx.lineWidth = 9;
@@ -258,7 +248,6 @@ export default function App() {
           ctx.lineTo(p.x, p.y);
         }
         ctx.stroke();
-
         ctx.beginPath();
         ctx.strokeStyle = '#3b82f6';
         ctx.lineWidth = 5;
@@ -268,31 +257,13 @@ export default function App() {
           ctx.lineTo(p.x, p.y);
         }
         ctx.stroke();
-
-        // Start dot (green)
         const start = toXY(path[0]);
-        ctx.beginPath();
-        ctx.fillStyle = 'white';
-        ctx.arc(start.x, start.y, 9, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.fillStyle = '#22c55e';
-        ctx.arc(start.x, start.y, 7, 0, Math.PI * 2);
-        ctx.fill();
-
-        // End dot (red)
+        ctx.beginPath(); ctx.fillStyle = 'white'; ctx.arc(start.x, start.y, 9, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.fillStyle = '#22c55e'; ctx.arc(start.x, start.y, 7, 0, Math.PI * 2); ctx.fill();
         const end = toXY(path[path.length - 1]);
-        ctx.beginPath();
-        ctx.fillStyle = 'white';
-        ctx.arc(end.x, end.y, 9, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.fillStyle = '#ef4444';
-        ctx.arc(end.x, end.y, 7, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.fillStyle = 'white'; ctx.arc(end.x, end.y, 9, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.fillStyle = '#ef4444'; ctx.arc(end.x, end.y, 7, 0, Math.PI * 2); ctx.fill();
       }
-
-      // Info bar at bottom
       ctx.fillStyle = '#1e293b';
       ctx.fillRect(0, canvas.height - 60, canvas.width, 60);
       ctx.fillStyle = 'white';
@@ -302,45 +273,20 @@ export default function App() {
       ctx.font = '12px -apple-system, sans-serif';
       ctx.fillStyle = '#94a3b8';
       ctx.fillText(`${getDistance(route)} mi · ${getDuration(route)} · "${(query || '').slice(0, 60)}"`, 16, canvas.height - 16);
-
-      // 2. Upload PNG to Supabase Storage
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       const fileName = `bug_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.png`;
       const uploadRes = await fetch(
         `${SUPABASE_URL}/storage/v1/object/bug-screenshots/${fileName}`,
-        {
-          method: 'POST',
-          headers: {
-            apikey: SUPABASE_ANON_KEY,
-            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-            'Content-Type': 'image/png',
-          },
-          body: blob,
-        }
+        { method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type': 'image/png' }, body: blob }
       );
       if (!uploadRes.ok) throw new Error(`Upload failed (${uploadRes.status})`);
       const screenshotUrl = `${SUPABASE_URL}/storage/v1/object/public/bug-screenshots/${fileName}`;
-
-      // 3. Insert record via SECURITY DEFINER RPC (bypasses anon RLS)
       const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/insert_bug_report`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          p_comment:        bugComment.trim(),
-          p_screenshot_url: screenshotUrl,
-          p_route_id:       route?.id ?? null,
-          p_query:          query ?? null,
-        }),
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ p_comment: bugComment.trim(), p_screenshot_url: screenshotUrl, p_route_id: route?.id ?? null, p_query: query ?? null }),
       });
-      if (!rpcRes.ok) {
-        const errText = await rpcRes.text();
-        throw new Error(`Save failed: ${errText}`);
-      }
-
+      if (!rpcRes.ok) { const errText = await rpcRes.text(); throw new Error(`Save failed: ${errText}`); }
       setBugDone(true);
       setBugComment('');
       setTimeout(() => { setBugMode(false); setBugDone(false); }, 2500);
@@ -354,90 +300,87 @@ export default function App() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', fontFamily: "'Inter', -apple-system, sans-serif", background: '#f1f5f9' }}>
+    <div style={{
+      display: 'flex',
+      height: '100vh',
+      overflow: 'hidden',
+      fontFamily: "'Inter', -apple-system, sans-serif",
+      background: '#f1f5f9',
+      flexDirection: 'row',
+    }}>
 
-      {/* ── Left panel ──────────────────────────────────────────────────────── */}
-      <div style={{ width: 260, background: '#0f172a', color: 'white', display: 'flex', flexDirection: 'column', padding: 16, gap: 12, overflowY: 'auto', flexShrink: 0 }}>
-
-        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏍️ TwistyRoute</div>
-
-        <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Starting from</div>
-        <div style={{ fontSize: 13, color: '#94a3b8', marginTop: -8 }}>📍 {START_LABEL}</div>
-
-        <form onSubmit={generate} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <textarea
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); } }}
-            placeholder={'e.g. "scenic loop to Hawks Nest"\n"Bears Nest coffee stop via Catskills"\n"twisty roads, avoid highways"'}
-            disabled={loading}
-            style={{
-              background: '#1e293b', color: 'white', border: '1px solid #334155',
-              borderRadius: 10, padding: '10px 12px', resize: 'none',
-              height: 100, fontSize: 13, lineHeight: 1.5,
-              outline: 'none', transition: 'border 0.2s',
-            }}
-          />
-          <button
-            type="submit"
-            disabled={loading || !query.trim()}
-            style={{
-              background: loading ? '#1d4ed8' : '#3b82f6',
-              color: 'white', border: 'none', borderRadius: 10,
-              padding: '11px 16px', cursor: loading ? 'default' : 'pointer',
-              fontWeight: 700, fontSize: 14, transition: 'background 0.2s',
-            }}
-          >
-            {loading ? LOADING_MSGS[loadingMsg] : '🗺️ Generate Route'}
-          </button>
-        </form>
-
-        {error && (
-          <div style={{ background: '#450a0a', border: '1px solid #7f1d1d', borderRadius: 8, padding: '8px 12px', fontSize: 12, color: '#fca5a5', lineHeight: 1.4 }}>
-            {error}
-          </div>
-        )}
-
-        {route && (
-          <div style={{ background: '#1e3a5f', border: '1px solid #2563eb', borderRadius: 10, padding: '10px 12px' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>{getTitle(route)}</div>
-            <div style={{ fontSize: 11, color: '#93c5fd', marginTop: 4 }}>
-              ⏱ {getDuration(route)} · 🛣️ {getDistance(route)} mi
+      {/* ── Left panel (desktop only) ────────────────────────────────────── */}
+      {!isMobile && (
+        <div style={{ width: 260, background: '#0f172a', color: 'white', display: 'flex', flexDirection: 'column', padding: 16, gap: 12, overflowY: 'auto', flexShrink: 0 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.5px' }}>🏍️ TwistyRoute</div>
+          <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Starting from</div>
+          <div style={{ fontSize: 13, color: '#94a3b8', marginTop: -8 }}>📍 {START_LABEL}</div>
+          <form onSubmit={generate} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <textarea
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); } }}
+              placeholder={'e.g. "scenic loop to Hawks Nest"\n"Bears Nest coffee stop via Catskills"\n"twisty roads, avoid highways"'}
+              disabled={loading}
+              style={{
+                background: '#1e293b', color: 'white', border: '1px solid #334155',
+                borderRadius: 10, padding: '10px 12px', resize: 'none',
+                height: 100, fontSize: 13, lineHeight: 1.5,
+                outline: 'none', transition: 'border 0.2s',
+              }}
+            />
+            <button
+              type="submit"
+              disabled={loading || !query.trim()}
+              style={{
+                background: loading ? '#1d4ed8' : '#3b82f6',
+                color: 'white', border: 'none', borderRadius: 10,
+                padding: '11px 16px', cursor: loading ? 'default' : 'pointer',
+                fontWeight: 700, fontSize: 14, transition: 'background 0.2s',
+              }}
+            >
+              {loading ? LOADING_MSGS[loadingMsg] : '🗺️ Generate Route'}
+            </button>
+          </form>
+          {error && (
+            <div style={{ background: '#450a0a', border: '1px solid #7f1d1d', borderRadius: 8, padding: '8px 12px', fontSize: 12, color: '#fca5a5', lineHeight: 1.4 }}>
+              {error}
             </div>
-            {route.destination && (
-              <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>📍 → {route.destination}</div>
-            )}
-          </div>
-        )}
-
-        {recent.length > 0 && (
-          <>
-            <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 4 }}>Recent</div>
-            {recent.filter(r => r.id !== route?.id).map(r => (
-              <div
-                key={r.id}
-                onClick={() => openRecentRoute(r.id)}
-                style={{
-                  background: '#1e293b', borderRadius: 10, padding: '10px 12px',
-                  cursor: 'pointer', transition: 'background 0.15s',
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = '#334155'}
-                onMouseLeave={e => e.currentTarget.style.background = '#1e293b'}
-              >
-                <div style={{
-                  fontSize: 13, fontWeight: 600, lineHeight: 1.3,
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
-                  {r.title}
-                </div>
-                <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
-                  ⏱ {r.duration_str} · 🛣️ {r.distance_mi} mi
-                </div>
+          )}
+          {route && (
+            <div style={{ background: '#1e3a5f', border: '1px solid #2563eb', borderRadius: 10, padding: '10px 12px' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.3 }}>{getTitle(route)}</div>
+              <div style={{ fontSize: 11, color: '#93c5fd', marginTop: 4 }}>
+                ⏱ {getDuration(route)} · 🛣️ {getDistance(route)} mi
               </div>
-            ))}
-          </>
-        )}
-      </div>
+              {route.destination && (
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>📍 → {route.destination}</div>
+              )}
+            </div>
+          )}
+          {recent.length > 0 && (
+            <>
+              <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 4 }}>Recent</div>
+              {recent.filter(r => r.id !== route?.id).map(r => (
+                <div
+                  key={r.id}
+                  onClick={() => openRecentRoute(r.id)}
+                  style={{ background: '#1e293b', borderRadius: 10, padding: '10px 12px', cursor: 'pointer', transition: 'background 0.15s' }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#334155'}
+                  onMouseLeave={e => e.currentTarget.style.background = '#1e293b'}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {r.title}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>
+                    ⏱ {r.duration_str} · 🛣️ {r.distance_mi} mi
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Map ─────────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: 'relative' }}>
@@ -448,7 +391,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Bug report button / panel — floating top-right ─────────────── */}
+        {/* ── Bug report button / panel — floating top-right ──────────────── */}
         <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10 }}>
           {!bugMode ? (
             <button
@@ -469,7 +412,8 @@ export default function App() {
             </button>
           ) : (
             <div style={{
-              background: 'white', borderRadius: 14, padding: 14, width: 280,
+              background: 'white', borderRadius: 14, padding: 14,
+              width: isMobile ? 'calc(100vw - 24px)' : 280,
               boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
             }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>
@@ -478,7 +422,7 @@ export default function App() {
               <textarea
                 value={bugComment}
                 onChange={e => setBugComment(e.target.value)}
-                placeholder={'e.g. Crosses GWB into NJ then immediately comes back — should escape via Goethals'}
+                placeholder="e.g. Crosses GWB into NJ then immediately comes back"
                 disabled={bugSubmitting}
                 autoFocus
                 style={{
@@ -495,9 +439,7 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  {bugError && (
-                    <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6, lineHeight: 1.4 }}>{bugError}</div>
-                  )}
+                  {bugError && <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6, lineHeight: 1.4 }}>{bugError}</div>}
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                     <button
                       onClick={submitBugReport}
@@ -506,8 +448,7 @@ export default function App() {
                         flex: 1, background: bugSubmitting ? '#93c5fd' : '#3b82f6',
                         color: 'white', border: 'none', borderRadius: 8,
                         padding: '9px 12px', cursor: bugSubmitting ? 'default' : 'pointer',
-                        fontSize: 13, fontWeight: 700,
-                        opacity: !bugComment.trim() ? 0.5 : 1,
+                        fontSize: 13, fontWeight: 700, opacity: !bugComment.trim() ? 0.5 : 1,
                       }}
                     >
                       {bugSubmitting ? 'Submitting…' : 'Submit'}
@@ -515,10 +456,7 @@ export default function App() {
                     <button
                       onClick={() => { setBugMode(false); setBugComment(''); setBugError(''); setBugDone(false); }}
                       disabled={bugSubmitting}
-                      style={{
-                        background: '#f1f5f9', color: '#64748b', border: 'none',
-                        borderRadius: 8, padding: '9px 12px', cursor: 'pointer', fontSize: 13,
-                      }}
+                      style={{ background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 8, padding: '9px 12px', cursor: 'pointer', fontSize: 13 }}
                     >
                       Cancel
                     </button>
@@ -530,8 +468,8 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Right panel ─────────────────────────────────────────────────────── */}
-      {route && (
+      {/* ── Right panel (desktop only) ───────────────────────────────────────── */}
+      {route && !isMobile && (
         <div style={{ width: 340, background: 'white', display: 'flex', flexDirection: 'column', boxShadow: '-2px 0 12px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
           <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid #f1f5f9' }}>
             <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.3, color: '#0f172a' }}>{getTitle(route)}</div>
@@ -542,64 +480,39 @@ export default function App() {
               <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>📍 → {route.destination}</div>
             )}
           </div>
-
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-            {/* v2: prose narrative */}
             {route.narrative && (
-              <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.75 }}>
-                {route.narrative}
-              </div>
+              <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.75 }}>{route.narrative}</div>
             )}
-
-            {/* v2: stop business cards */}
             {route.stops?.length > 0 && (
               <div>
                 <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>Stops</div>
                 {route.stops.map((stop, i) => (
                   <div key={i} style={{ background: '#f8fafc', borderRadius: 10, padding: '10px 12px', marginBottom: 8, borderLeft: '4px solid #f59e0b' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{stop.name}</div>
-                    {stop.rating && (
-                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                        ⭐ {stop.rating} ({stop.ratingCount} reviews)
-                      </div>
-                    )}
-                    {stop.address && (
-                      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{stop.address}</div>
-                    )}
+                    {stop.rating && <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>⭐ {stop.rating} ({stop.ratingCount} reviews)</div>}
+                    {stop.address && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{stop.address}</div>}
                   </div>
                 ))}
               </div>
             )}
-
-            {/* v1 fallback: segment cards */}
             {!route.narrative && (route.segments || []).map((seg, i) => (
               <div key={i} style={{ paddingLeft: 14, borderLeft: `4px solid ${seg.color || '#3b82f6'}` }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: seg.color || '#3b82f6', marginBottom: 2 }}>
-                  {seg.label}
-                </div>
-                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>
-                  {seg.duration} &nbsp;·&nbsp; {seg.miles}
-                </div>
-                <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>
-                  {seg.description}
-                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: seg.color || '#3b82f6', marginBottom: 2 }}>{seg.label}</div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>{seg.duration} &nbsp;·&nbsp; {seg.miles}</div>
+                <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>{seg.description}</div>
               </div>
             ))}
           </div>
-
           <div style={{ padding: '14px 20px', borderTop: '1px solid #f1f5f9', display: 'flex', gap: 8 }}>
             <a
               href={buildNavUrl(route)}
               target="_blank"
               rel="noopener noreferrer"
               style={{
-                flex: 1,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                background: '#1d4ed8', color: 'white',
-                border: 'none', borderRadius: 10, padding: '11px 16px',
-                cursor: 'pointer', fontSize: 13, fontWeight: 700,
-                textDecoration: 'none',
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                background: '#1d4ed8', color: 'white', border: 'none', borderRadius: 10,
+                padding: '11px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, textDecoration: 'none',
               }}
             >
               🧭 Open in Google Maps
@@ -611,6 +524,167 @@ export default function App() {
               ✕
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ── Mobile bottom sheet ──────────────────────────────────────────────── */}
+      {isMobile && (
+        <div style={{
+          position: 'fixed',
+          bottom: 0, left: 0, right: 0,
+          background: '#0f172a',
+          borderRadius: '20px 20px 0 0',
+          boxShadow: '0 -4px 32px rgba(0,0,0,0.4)',
+          zIndex: 100,
+          height: sheetExpanded ? '65vh' : '108px',
+          transition: 'height 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}>
+          {/* Drag handle — tap to toggle */}
+          <div
+            onClick={() => setSheetExpanded(s => !s)}
+            style={{ padding: '10px 0 6px', display: 'flex', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}
+          >
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: '#334155' }} />
+          </div>
+
+          {/* Search bar — always visible */}
+          <form onSubmit={generate} style={{ padding: '0 14px 12px', display: 'flex', gap: 8, flexShrink: 0 }}>
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder={loading ? LOADING_MSGS[loadingMsg] : 'Where do you want to ride?'}
+              disabled={loading}
+              style={{
+                flex: 1,
+                background: '#1e293b',
+                color: loading ? '#64748b' : 'white',
+                border: '1px solid #334155',
+                borderRadius: 12,
+                padding: '13px 16px',
+                fontSize: 15,
+                outline: 'none',
+                fontFamily: 'inherit',
+              }}
+            />
+            <button
+              type="submit"
+              disabled={loading || !query.trim()}
+              style={{
+                background: loading ? '#1e3a5f' : '#3b82f6',
+                color: 'white',
+                border: 'none',
+                borderRadius: 12,
+                padding: '13px 20px',
+                fontSize: 20,
+                cursor: loading ? 'default' : 'pointer',
+                fontWeight: 700,
+                flexShrink: 0,
+              }}
+            >
+              {loading ? '…' : '→'}
+            </button>
+          </form>
+
+          {/* Expanded content — route details or recent routes */}
+          {sheetExpanded && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: '4px 14px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {error && (
+                <div style={{ background: '#450a0a', border: '1px solid #7f1d1d', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: '#fca5a5', lineHeight: 1.4 }}>
+                  {error}
+                </div>
+              )}
+
+              {route ? (
+                <>
+                  {/* Route summary */}
+                  <div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: 'white', lineHeight: 1.3 }}>{getTitle(route)}</div>
+                    <div style={{ fontSize: 13, color: '#93c5fd', marginTop: 6 }}>
+                      ⏱ {getDuration(route)} &nbsp;·&nbsp; 🛣️ {getDistance(route)} mi
+                    </div>
+                    {route.destination && (
+                      <div style={{ fontSize: 12, color: '#475569', marginTop: 2 }}>📍 → {route.destination}</div>
+                    )}
+                  </div>
+
+                  {/* Narrative */}
+                  {route.narrative && (
+                    <div style={{ fontSize: 14, color: '#cbd5e1', lineHeight: 1.75 }}>{route.narrative}</div>
+                  )}
+
+                  {/* Stops */}
+                  {route.stops?.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 8 }}>Stops</div>
+                      {route.stops.map((stop, i) => (
+                        <div key={i} style={{ background: '#1e293b', borderRadius: 10, padding: '10px 12px', marginBottom: 8, borderLeft: '4px solid #f59e0b' }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: 'white' }}>{stop.name}</div>
+                          {stop.rating && <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>⭐ {stop.rating} ({stop.ratingCount} reviews)</div>}
+                          {stop.address && <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>{stop.address}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Action buttons */}
+                  <div style={{ display: 'flex', gap: 10, paddingTop: 4 }}>
+                    <a
+                      href={buildNavUrl(route)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        flex: 1,
+                        background: '#1d4ed8', color: 'white',
+                        borderRadius: 14, padding: '15px',
+                        fontSize: 15, fontWeight: 700,
+                        textDecoration: 'none', textAlign: 'center',
+                      }}
+                    >
+                      🧭 Navigate
+                    </a>
+                    <button
+                      onClick={() => { setRoute(null); setSheetExpanded(false); }}
+                      style={{
+                        background: '#1e293b', color: '#64748b',
+                        border: 'none', borderRadius: 14,
+                        padding: '15px 18px', fontSize: 18, cursor: 'pointer',
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* No route yet — show recent */}
+                  <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px' }}>📍 Starting from {START_LABEL}</div>
+                  {recent.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: 4 }}>Recent</div>
+                      {recent.map(r => (
+                        <div
+                          key={r.id}
+                          onClick={() => openRecentRoute(r.id)}
+                          style={{ background: '#1e293b', borderRadius: 12, padding: '12px 14px', cursor: 'pointer' }}
+                        >
+                          <div style={{ fontSize: 14, fontWeight: 600, color: 'white', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {r.title}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+                            ⏱ {r.duration_str} &nbsp;·&nbsp; 🛣️ {r.distance_mi} mi
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
