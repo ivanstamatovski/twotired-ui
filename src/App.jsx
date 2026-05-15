@@ -8,7 +8,7 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const EDGE_URL = `${SUPABASE_URL}/functions/v1/generate-route`;
 const RECENT_KEY = 'twistyroute_recent';
-const MAP_STYLE = 'https://tiles.openfreemap.org/styles/fiord';
+const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const DEFAULT_CENTER = [-74.3, 41.4];
 const DEFAULT_ZOOM = 9;
 
@@ -77,7 +77,7 @@ function findNextTurn(route, lat, lng) {
   return null;
 }
 
-// ── Get current GPS position (Promise wrapper) ────────────────────────────────
+// ── Get current GPS position (Promise wrapper — always resolves, never throws) ─
 function getCurrentGPS({ timeout = 6000, maximumAge = 30000 } = {}) {
   return new Promise((resolve) => {
     if (!navigator.geolocation) { resolve(null); return; }
@@ -297,7 +297,7 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Map init ──────────────────────────────────────────────────────────────
+  // ── Map init — wait for session so map-canvas is in DOM ───────────────────
   useEffect(() => {
     if (!session) return;
     if (!mapContainerRef.current || mapRef.current) return;
@@ -316,6 +316,13 @@ export default function App() {
     map.on('load', () => {
       mapLoadedRef.current = true;
       if (pendingRoute.current) { drawRouteOnMap(pendingRoute.current); pendingRoute.current = null; }
+
+      // Center on rider's actual location once map tiles are ready
+      getCurrentGPS({ timeout: 5000, maximumAge: 60000 }).then(gps => {
+        if (gps && mapRef.current) {
+          mapRef.current.flyTo({ center: [gps.lng, gps.lat], zoom: 12, duration: 1200 });
+        }
+      });
     });
 
     mapRef.current = map;
@@ -340,10 +347,10 @@ export default function App() {
     map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:route.geometry } });
     map.addLayer({ id:'route-casing', type:'line', source:'route',
       layout:{ 'line-join':'round','line-cap':'round' },
-      paint:{ 'line-color':'#fff','line-width':6,'line-opacity':0.3 } });
+      paint:{ 'line-color':'#fff','line-width':6,'line-opacity':0.4 } });
     map.addLayer({ id:'route-line', type:'line', source:'route',
       layout:{ 'line-join':'round','line-cap':'round' },
-      paint:{ 'line-color':'#4A90FF','line-width':4,'line-opacity':0.95 } });
+      paint:{ 'line-color':'#2563eb','line-width':4,'line-opacity':0.95 } });
 
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
@@ -454,7 +461,6 @@ export default function App() {
   }, [messages, loading]);
 
   // ── Generate route ────────────────────────────────────────────────────────
-  // gps = { lat, lng } | null
   async function generateRoute(payload, gps = null) {
     setLoading(true); setError(null);
     const cycle = ['Planning your ride…','Finding scenic roads…','Checking stops…','Almost there…'];
@@ -510,11 +516,10 @@ export default function App() {
     setRouteData(null); setRouteApproved(false);
     if (isMobile) setSheetMode('expanded');
 
-    // Get GPS before calling the edge function so the route starts from actual position
     setLoading(true);
     setLoadingMsg('Getting your location…');
     const gps = await getCurrentGPS({ timeout: 6000, maximumAge: 30000 });
-    setLoading(false); // generateRoute will re-set this immediately
+    setLoading(false);
 
     generateRoute({ query: text }, gps);
   }
@@ -527,7 +532,6 @@ export default function App() {
     setMessages(prev => [...prev, { role:'user', content:t }]);
     if (isMobile) setSheetMode('expanded');
 
-    // GPS for refinements too — position may have changed
     const gps = await getCurrentGPS({ timeout: 4000, maximumAge: 60000 });
     await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t }, gps);
   }
