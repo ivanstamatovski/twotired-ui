@@ -19,9 +19,9 @@ const APPROVAL_WORDS = ['looks good','perfect','great','love it','approve',
 
 const REFINE_CHIPS = ['More twisty','Less highway','Add a coffee stop','Different road','Make it shorter'];
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function isApproval(t) {
-  const s = t.toLowerCase().trim();
-  return APPROVAL_WORDS.some(w => s.includes(w));
+  return APPROVAL_WORDS.some(w => t.toLowerCase().trim().includes(w));
 }
 
 function buildNavUrl(waypoints) {
@@ -30,6 +30,59 @@ function buildNavUrl(waypoints) {
   const d = `${waypoints[waypoints.length-1].lat},${waypoints[waypoints.length-1].lng}`;
   const wps = waypoints.slice(1,-1).map(w=>`${w.lat},${w.lng}`).join('|');
   return `https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}${wps?`&waypoints=${wps}`:''}&travelmode=driving`;
+}
+
+// Haversine distance in metres between two lat/lng points
+function haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6_371_000;
+  const toR = (d) => d * Math.PI / 180;
+  const dLat = toR(lat2 - lat1), dLng = toR(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toR(lat1)) * Math.cos(toR(lat2)) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Approximate squared distance (for fast nearest-point search)
+function distSq(lat1, lng1, lat2, lng2) {
+  const dlat = lat1 - lat2;
+  const dlng = (lng1 - lng2) * Math.cos(lat1 * Math.PI / 180);
+  return dlat*dlat + dlng*dlng;
+}
+
+function formatDist(m) {
+  if (m === null || m === undefined) return '';
+  if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m)} m`;
+}
+
+// Map GraphHopper sign to arrow emoji
+function turnArrow(sign) {
+  const map = { '-7':'↰','-3':'↰','-2':'←','-1':'↖','0':'↑','1':'↗','2':'→','3':'↱','4':'🏁','5':'⟳','6':'⟲' };
+  return map[String(sign)] ?? '↑';
+}
+
+// Given current lat/lng, find which instruction is next and distance to it
+function findNextTurn(route, lat, lng) {
+  const coords = route.geometry?.coordinates;   // [[lng,lat], ...]
+  const instructions = route.instructions;
+  if (!coords?.length || !instructions?.length) return null;
+
+  // Find index of nearest coordinate
+  let nearIdx = 0, bestSq = Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    const sq = distSq(lat, lng, coords[i][1], coords[i][0]);
+    if (sq < bestSq) { bestSq = sq; nearIdx = i; }
+  }
+
+  // Find instruction whose interval contains nearIdx
+  for (let i = 0; i < instructions.length; i++) {
+    const [start, end] = instructions[i].interval;
+    if (nearIdx >= start && nearIdx <= end) {
+      const turnCoord = coords[Math.min(end, coords.length - 1)];
+      const dist = haversineM(lat, lng, turnCoord[1], turnCoord[0]);
+      return { instruction: instructions[i], dist };
+    }
+  }
+  return null;
 }
 
 // ── Voice hook ────────────────────────────────────────────────────────────────
@@ -43,9 +96,7 @@ function useVoice(onResult) {
     if (!SR) return;
     setSupported(true);
     const r = new SR();
-    r.continuous = false;
-    r.interimResults = false;
-    r.lang = 'en-US';
+    r.continuous = false; r.interimResults = false; r.lang = 'en-US';
     r.onresult = e => { onResult(e.results[0][0].transcript); setListening(false); };
     r.onerror  = () => setListening(false);
     r.onend    = () => setListening(false);
@@ -77,15 +128,12 @@ function LoginScreen() {
 
   async function sendMagicLink() {
     if (!email.includes('@')) return;
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     const { error: err } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
+      email, options: { emailRedirectTo: window.location.origin },
     });
     if (err) { setError(err.message); setLoading(false); return; }
-    setSent(true);
-    setLoading(false);
+    setSent(true); setLoading(false);
   }
 
   if (sent) return (
@@ -93,13 +141,8 @@ function LoginScreen() {
       <div className="login-card">
         <div className="login-logo">🏍</div>
         <h2 className="login-title">Check your email</h2>
-        <p className="login-sub">
-          We sent a magic link to <strong>{email}</strong>.<br/>
-          Click it to sign in — no password needed.
-        </p>
-        <button className="login-btn-secondary" onClick={() => setSent(false)}>
-          Use a different email
-        </button>
+        <p className="login-sub">We sent a magic link to <strong>{email}</strong>.<br/>Click it to sign in.</p>
+        <button className="login-btn-secondary" onClick={() => setSent(false)}>Use a different email</button>
       </div>
     </div>
   );
@@ -110,21 +153,12 @@ function LoginScreen() {
         <div className="login-logo">🏍</div>
         <h1 className="login-brand">TwoTired</h1>
         <p className="login-tagline">Your AI motorcycle ride planner</p>
-        <input
-          className="login-input"
-          type="email"
-          placeholder="Enter your email"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && sendMagicLink()}
-          autoFocus
-        />
+        <input className="login-input" type="email" placeholder="Enter your email"
+          value={email} onChange={e => setEmail(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && sendMagicLink()} autoFocus/>
         {error && <p className="login-error">{error}</p>}
-        <button
-          className="login-btn"
-          onClick={sendMagicLink}
-          disabled={loading || !email.includes('@')}
-        >
+        <button className="login-btn" onClick={sendMagicLink}
+          disabled={loading || !email.includes('@')}>
           {loading ? 'Sending…' : 'Continue →'}
         </button>
         <p className="login-hint">No password needed — we'll email you a link.</p>
@@ -146,8 +180,7 @@ function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
             <div key={i} className="bubble bubble-clarify">
               <p className="clarify-q">{msg.question}</p>
               {msg.options.map(o => (
-                <button key={o} className="clarify-opt"
-                  onClick={() => msg.onSelect(o)}>{o}</button>
+                <button key={o} className="clarify-opt" onClick={() => msg.onSelect(o)}>{o}</button>
               ))}
             </div>
           );
@@ -191,11 +224,11 @@ function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  // Auth state
+  // Auth
   const [session, setSession]     = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
-  // Core state
+  // Core
   const [query, setQuery]                 = useState('');
   const [loading, setLoading]             = useState(false);
   const [loadingMsg, setLoadingMsg]       = useState('Planning your ride…');
@@ -206,10 +239,15 @@ export default function App() {
   const [routeData, setRouteData]         = useState(null);
   const [routeApproved, setRouteApproved] = useState(false);
 
-  // Mobile sheet UI state
+  // Mobile sheet
   const [sheetMode, setSheetMode]   = useState('idle');
   const [refineOpen, setRefineOpen] = useState(false);
   const [menuOpen, setMenuOpen]     = useState(false);
+
+  // Navigation
+  const [navMode, setNavMode]               = useState(false);
+  const [nextTurn, setNextTurn]             = useState(null); // { instruction, dist }
+  const [userLocation, setUserLocation]     = useState(null); // { lat, lng }
 
   // Bug report
   const [bugComment, setBugComment]       = useState('');
@@ -222,15 +260,24 @@ export default function App() {
   });
 
   // Refs
-  const mapContainerRef = useRef(null);
-  const mapRef          = useRef(null);
-  const mapLoadedRef    = useRef(false);
-  const pendingRoute    = useRef(null);
-  const markersRef      = useRef([]);
-  const messagesEnd     = useRef(null);
-  const isMobile        = useIsMobile();
+  const mapContainerRef  = useRef(null);
+  const mapRef           = useRef(null);
+  const mapLoadedRef     = useRef(false);
+  const pendingRoute     = useRef(null);
+  const markersRef       = useRef([]);
+  const messagesEnd      = useRef(null);
+  const userMarkerRef    = useRef(null);
+  const watchIdRef       = useRef(null);
+  const wakeLockRef      = useRef(null);
+  const lastAnnouncedRef = useRef(null);
+  const routeDataRef     = useRef(null); // mirror of routeData for geolocation callback
 
-  // Voice
+  const isMobile = useIsMobile();
+
+  // Keep routeDataRef in sync
+  useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
+
+  // Voice input
   const handleVoiceResult = useCallback((transcript) => {
     setQuery(transcript);
     submitQuery(transcript);
@@ -240,19 +287,16 @@ export default function App() {
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setAuthReady(true);
+      setSession(session); setAuthReady(true);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setAuthReady(true);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setSession(session); setAuthReady(true);
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Map init — depends on session so it runs after auth resolves ──────────
+  // ── Map init — wait for session so map-canvas is in DOM ───────────────────
   useEffect(() => {
-    // Don't init until logged in (map container isn't in DOM during auth screens)
     if (!session) return;
     if (!mapContainerRef.current || mapRef.current) return;
 
@@ -269,15 +313,15 @@ export default function App() {
 
     map.on('load', () => {
       mapLoadedRef.current = true;
-      if (pendingRoute.current) {
-        drawRouteOnMap(pendingRoute.current);
-        pendingRoute.current = null;
-      }
+      if (pendingRoute.current) { drawRouteOnMap(pendingRoute.current); pendingRoute.current = null; }
     });
 
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; mapLoadedRef.current = false; };
   }, [session]);
+
+  // ── Cleanup geolocation on unmount ────────────────────────────────────────
+  useEffect(() => () => stopNavigation(), []);
 
   // ── Draw route on map ─────────────────────────────────────────────────────
   function drawRouteOnMap(route) {
@@ -287,60 +331,141 @@ export default function App() {
     if (map.getLayer('route-line'))   map.removeLayer('route-line');
     if (map.getLayer('route-casing')) map.removeLayer('route-casing');
     if (map.getSource('route'))       map.removeSource('route');
-
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
 
     if (!route?.geometry) return;
 
-    map.addSource('route', {
-      type: 'geojson',
-      data: { type: 'Feature', geometry: route.geometry },
-    });
-    map.addLayer({
-      id: 'route-casing', type: 'line', source: 'route',
-      layout: { 'line-join': 'round', 'line-cap': 'round' },
-      paint: { 'line-color': '#fff', 'line-width': 6, 'line-opacity': 0.3 },
-    });
-    map.addLayer({
-      id: 'route-line', type: 'line', source: 'route',
-      layout: { 'line-join': 'round', 'line-cap': 'round' },
-      paint: { 'line-color': '#4A90FF', 'line-width': 4, 'line-opacity': 0.95 },
-    });
+    map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:route.geometry } });
+    map.addLayer({ id:'route-casing', type:'line', source:'route',
+      layout:{ 'line-join':'round','line-cap':'round' },
+      paint:{ 'line-color':'#fff','line-width':6,'line-opacity':0.3 } });
+    map.addLayer({ id:'route-line', type:'line', source:'route',
+      layout:{ 'line-join':'round','line-cap':'round' },
+      paint:{ 'line-color':'#4A90FF','line-width':4,'line-opacity':0.95 } });
 
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
       const el = document.createElement('div');
       el.className = 'map-stop-marker';
-      const popup = new maplibregl.Popup({ offset: 14, closeButton: false })
-        .setHTML(`<div class="map-popup"><strong>${stop.name}</strong>${stop.rating ? `<br>⭐ ${stop.rating}` : ''}</div>`);
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([stop.lng, stop.lat])
-        .setPopup(popup)
-        .addTo(map);
-      markersRef.current.push(marker);
+      const popup = new maplibregl.Popup({ offset:14, closeButton:false })
+        .setHTML(`<div class="map-popup"><strong>${stop.name}</strong>${stop.rating?`<br>⭐ ${stop.rating}`:''}</div>`);
+      markersRef.current.push(
+        new maplibregl.Marker({ element:el }).setLngLat([stop.lng, stop.lat]).setPopup(popup).addTo(map)
+      );
     });
 
     const coords = route.geometry.coordinates;
-    const bounds = coords.reduce(
-      (b, c) => b.extend(c),
-      new maplibregl.LngLatBounds(coords[0], coords[0])
-    );
-    const padding = isMobile
-      ? { top: 60, right: 20, bottom: 320, left: 20 }
-      : { top: 60, right: 60, bottom: 60, left: 60 };
-    map.fitBounds(bounds, { padding, duration: 900, maxZoom: 14 });
+    const bounds = coords.reduce((b,c) => b.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+    const padding = isMobile ? { top:60, right:20, bottom:320, left:20 } : { top:60, right:60, bottom:60, left:60 };
+    map.fitBounds(bounds, { padding, duration:900, maxZoom:14 });
   }
 
-  // ── Auto scroll thread ────────────────────────────────────────────────────
+  // ── Navigation ────────────────────────────────────────────────────────────
+  function speak(text) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0; u.volume = 1.0;
+    window.speechSynthesis.speak(u);
+  }
+
+  function onGeoPosition(pos) {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    setUserLocation({ lat, lng });
+
+    const map = mapRef.current;
+    if (map) {
+      // Place / update user dot
+      if (!userMarkerRef.current) {
+        const el = document.createElement('div');
+        el.className = 'user-location-dot';
+        userMarkerRef.current = new maplibregl.Marker({ element: el, anchor: 'center' })
+          .setLngLat([lng, lat]).addTo(map);
+      } else {
+        userMarkerRef.current.setLngLat([lng, lat]);
+      }
+      // In nav mode: keep map centred on rider
+      if (navMode) {
+        map.easeTo({ center: [lng, lat], duration: 800 });
+      }
+    }
+
+    // Turn detection
+    const route = routeDataRef.current;
+    if (route && navMode) {
+      const result = findNextTurn(route, lat, lng);
+      setNextTurn(result);
+
+      if (result) {
+        const { instruction, dist } = result;
+        // Announce at ~300m and ~100m (deduplicated by key)
+        const bucket = dist < 120 ? 'close' : dist < 350 ? 'far' : null;
+        const key = `${instruction.text}-${bucket}`;
+        if (bucket && lastAnnouncedRef.current !== key) {
+          lastAnnouncedRef.current = key;
+          const distPhrase = dist < 120 ? 'Now' : `In ${formatDist(dist)}`;
+          speak(`${distPhrase}, ${instruction.text}`);
+        }
+      }
+    }
+  }
+
+  function startNavigation() {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+    setNavMode(true);
+    lastAnnouncedRef.current = null;
+
+    // Request wake lock to keep screen on
+    navigator.wakeLock?.request('screen')
+      .then(lock => { wakeLockRef.current = lock; })
+      .catch(() => {});
+
+    // Initial position
+    navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
+
+    // Watch position
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      onGeoPosition,
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+    );
+
+    // Collapse sheet so map is full-screen
+    if (isMobile) setSheetMode('collapsed');
+  }
+
+  function stopNavigation() {
+    setNavMode(false);
+    setNextTurn(null);
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    wakeLockRef.current?.release().catch(() => {});
+    wakeLockRef.current = null;
+    // Remove user dot from map
+    userMarkerRef.current?.remove();
+    userMarkerRef.current = null;
+  }
+
+  function centerOnUser() {
+    if (userLocation && mapRef.current) {
+      mapRef.current.flyTo({ center: [userLocation.lng, userLocation.lat], zoom: 14, duration: 600 });
+    }
+  }
+
+  // ── Auto scroll ───────────────────────────────────────────────────────────
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
   // ── Generate route ────────────────────────────────────────────────────────
   async function generateRoute(payload) {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     const cycle = ['Planning your ride…','Finding scenic roads…','Checking stops…','Almost there…'];
     let ci = 0; setLoadingMsg(cycle[0]);
     const ticker = setInterval(() => { ci=(ci+1)%cycle.length; setLoadingMsg(cycle[ci]); }, 2500);
@@ -358,8 +483,8 @@ export default function App() {
 
       if (data.clarify) {
         setMessages(prev => [...prev, {
-          role: 'clarify', question: data.question, options: data.options||[],
-          onSelect: (opt) => handleFollowUp(opt),
+          role:'clarify', question:data.question, options:data.options||[],
+          onSelect:(opt) => handleFollowUp(opt),
         }]);
         if (isMobile) setSheetMode('expanded');
         return;
@@ -370,7 +495,7 @@ export default function App() {
       setCurrentIntent(r.intent);
       setRouteApproved(false);
       setRefineOpen(false);
-      setMessages(prev => [...prev, { role: 'route', route: r }]);
+      setMessages(prev => [...prev, { role:'route', route:r }]);
       drawRouteOnMap(r);
       if (isMobile) setSheetMode('collapsed');
 
@@ -387,8 +512,7 @@ export default function App() {
     if (!text || loading) return;
     setQuery('');
     setMessages([{ role:'user', content:text }]);
-    setRouteData(null);
-    setRouteApproved(false);
+    setRouteData(null); setRouteApproved(false);
     if (isMobile) setSheetMode('expanded');
     generateRoute({ query: text });
   }
@@ -396,15 +520,11 @@ export default function App() {
   async function handleFollowUp(text) {
     const t = (text || followUpInput).trim();
     if (!t || loading) return;
-    setFollowUpInput('');
-    setRefineOpen(false);
+    setFollowUpInput(''); setRefineOpen(false);
     if (isApproval(t)) { setRouteApproved(true); if (isMobile) setSheetMode('collapsed'); return; }
     setMessages(prev => [...prev, { role:'user', content:t }]);
     if (isMobile) setSheetMode('expanded');
-    await generateRoute(currentIntent
-      ? { refine:true, feedback:t, intent:currentIntent }
-      : { query:t }
-    );
+    await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t });
   }
 
   async function submitBug() {
@@ -412,18 +532,11 @@ export default function App() {
     try {
       await fetch(`${SUPABASE_URL}/rest/v1/rpc/insert_bug_report`, {
         method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'apikey':SUPABASE_ANON_KEY,
-          'Authorization':`Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          p_query: messages.find(m=>m.role==='user')?.content||'',
-          p_route_data: routeData||null,
-          p_comment: bugComment,
-          p_screenshot_url: null,
-          p_user_id: session?.user?.id || null,
-        }),
+        headers:{ 'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY,
+          'Authorization':`Bearer ${session?.access_token || SUPABASE_ANON_KEY}` },
+        body: JSON.stringify({ p_query:messages.find(m=>m.role==='user')?.content||'',
+          p_route_data:routeData||null, p_comment:bugComment, p_screenshot_url:null,
+          p_user_id:session?.user?.id||null }),
       });
       setBugDone(true); setBugComment('');
       setTimeout(() => { setMenuOpen(false); setBugDone(false); }, 2000);
@@ -431,41 +544,70 @@ export default function App() {
   }
 
   // ── Auth gates ────────────────────────────────────────────────────────────
-  if (!authReady) return (
-    <div className="loading-shell"><span className="dot-spin"/></div>
-  );
-  if (!session) return <LoginScreen />;
+  if (!authReady) return <div className="loading-shell"><span className="dot-spin"/></div>;
+  if (!session)   return <LoginScreen />;
 
-  // ── Sheet height ──────────────────────────────────────────────────────────
   const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68vh' }[sheetMode] || '160px';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app-shell">
 
-      {/* Map */}
+      {/* Map — always rendered */}
       <div className="map-panel">
         <div ref={mapContainerRef} className="map-canvas"/>
       </div>
 
-      {/* ── MOBILE bottom sheet ── */}
-      {isMobile ? (
+      {/* ── Navigation overlay ── */}
+      {navMode && (
+        <div className="nav-overlay">
+          {/* Turn banner */}
+          <div className="nav-turn-banner">
+            <span className="nav-turn-arrow">
+              {nextTurn ? turnArrow(nextTurn.instruction.sign) : '↑'}
+            </span>
+            <div className="nav-turn-info">
+              {nextTurn ? (
+                <>
+                  <span className="nav-turn-dist">{formatDist(nextTurn.dist)}</span>
+                  <span className="nav-turn-text">{nextTurn.instruction.text}</span>
+                </>
+              ) : (
+                <span className="nav-turn-text">Follow the route</span>
+              )}
+            </div>
+            <button className="nav-stop-btn" onClick={stopNavigation} aria-label="Stop navigation">✕</button>
+          </div>
+
+          {/* Bottom bar */}
+          <div className="nav-bottom-bar">
+            <span className="nav-route-title">{routeData?.title}</span>
+            <button className="nav-locate-btn" onClick={centerOnUser} aria-label="Center on my location">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════ MOBILE bottom sheet ════════════════ */}
+      {isMobile && !navMode ? (
         <div className="sheet" style={{ height: sheetHeight }}>
 
           <div className="sheet-handle" onClick={() =>
-            setSheetMode(m => m === 'expanded' ? (routeData ? 'collapsed' : 'idle') : 'expanded')
+            setSheetMode(m => m==='expanded' ? (routeData?'collapsed':'idle') : 'expanded')
           }>
             <div className="sheet-bar"/>
           </div>
 
+          {/* IDLE */}
           {sheetMode === 'idle' && (
             <div className="sheet-idle">
               {voice.supported ? (
-                <button
-                  className={`mic-hero${voice.listening?' mic-listening':''}`}
-                  onClick={voice.listening ? voice.stop : voice.start}
-                  aria-label="Speak your route"
-                >
+                <button className={`mic-hero${voice.listening?' mic-listening':''}`}
+                  onClick={voice.listening?voice.stop:voice.start} aria-label="Speak your route">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
@@ -476,45 +618,44 @@ export default function App() {
                 </button>
               ) : null}
               <div className="idle-input-row">
-                <input
-                  className="query-input"
+                <input className="query-input"
                   placeholder={voice.listening ? 'Listening…' : 'Where do you want to ride?'}
-                  value={query}
-                  onChange={e=>setQuery(e.target.value)}
+                  value={query} onChange={e=>setQuery(e.target.value)}
                   onKeyDown={e=>e.key==='Enter'&&submitQuery()}
                   onFocus={()=>setSheetMode('expanded')}
-                  disabled={loading||voice.listening}
-                />
+                  disabled={loading||voice.listening}/>
                 <button className="go-btn" onClick={()=>submitQuery()} disabled={loading||!query.trim()}>→</button>
               </div>
               {recent.length > 0 && !voice.listening && (
                 <div className="recent-peek">
                   {recent.slice(0,2).map(r=>(
-                    <button key={r.id} className="recent-chip" onClick={()=>{ setQuery(r.title); submitQuery(r.title); }}>
-                      {r.title}
-                    </button>
+                    <button key={r.id} className="recent-chip"
+                      onClick={()=>{ setQuery(r.title); submitQuery(r.title); }}>{r.title}</button>
                   ))}
                 </div>
               )}
             </div>
           )}
 
+          {/* COLLAPSED */}
           {sheetMode === 'collapsed' && routeData && (
             <div className="sheet-collapsed-content">
               <div className="collapsed-info">
                 <span className="collapsed-title">{routeData.title}</span>
                 <span className="collapsed-meta">{routeData.duration_str} · {routeData.distance_mi?.toFixed(0)} mi</span>
               </div>
-              <a className="open-maps-btn" href={buildNavUrl(routeData.waypoints)} target="_blank" rel="noreferrer">
-                Navigate →
-              </a>
+              <div className="collapsed-actions">
+                <button className="start-nav-btn" onClick={startNavigation}>▶ Navigate</button>
+              </div>
             </div>
           )}
 
+          {/* EXPANDED */}
           {sheetMode === 'expanded' && (
             <div className="sheet-expanded-content">
               {error && <div className="error-banner">⚠️ {error}</div>}
-              <ConversationThread messages={messages} loading={loading} loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
+              <ConversationThread messages={messages} loading={loading}
+                loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
               <div className="sheet-input-area">
                 {routeData && !routeApproved && refineOpen && (
                   <div className="chips-row">
@@ -527,7 +668,7 @@ export default function App() {
                 <div className="input-row">
                   {voice.supported && (
                     <button className={`mic-small${voice.listening?' mic-listening':''}`}
-                      onClick={voice.listening ? voice.stop : voice.start} aria-label="Voice input">
+                      onClick={voice.listening?voice.stop:voice.start} aria-label="Voice input">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
                         <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
@@ -540,8 +681,7 @@ export default function App() {
                     value={followUpInput || query}
                     onChange={e => routeData ? setFollowUpInput(e.target.value) : setQuery(e.target.value)}
                     onKeyDown={e => e.key==='Enter' && (routeData ? handleFollowUp() : submitQuery())}
-                    disabled={loading}
-                  />
+                    disabled={loading}/>
                   {routeData && !routeApproved && (
                     <button className={`refine-btn${refineOpen?' active':''}`}
                       onClick={()=>setRefineOpen(x=>!x)} aria-label="Refine options">
@@ -570,7 +710,8 @@ export default function App() {
                       <>
                         <div className="menu-section-label">Recent rides</div>
                         {recent.slice(0,3).map(r=>(
-                          <button key={r.id} className="menu-item" onClick={()=>{ setMenuOpen(false); setQuery(r.title); submitQuery(r.title); }}>
+                          <button key={r.id} className="menu-item"
+                            onClick={()=>{ setMenuOpen(false); setQuery(r.title); submitQuery(r.title); }}>
                             {r.title}<span className="menu-item-meta">{r.distance_mi?.toFixed(0)} mi</span>
                           </button>
                         ))}
@@ -593,8 +734,8 @@ export default function App() {
           )}
         </div>
 
-      ) : (
-        /* ── DESKTOP sidebar ── */
+      ) : !navMode ? (
+        /* ════════════════ DESKTOP sidebar ════════════════ */
         <div className="sidebar">
           <div className="brand">
             <span className="brand-name">🏍 TwoTired</span>
@@ -605,11 +746,9 @@ export default function App() {
           </div>
 
           <div className="query-row">
-            <input className="query-input"
-              placeholder="Where do you want to ride?"
+            <input className="query-input" placeholder="Where do you want to ride?"
               value={query} onChange={e=>setQuery(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&submitQuery()} disabled={loading}
-            />
+              onKeyDown={e=>e.key==='Enter'&&submitQuery()} disabled={loading}/>
             {voice.supported && (
               <button className={`mic-desktop${voice.listening?' mic-listening':''}`}
                 onClick={voice.listening?voice.stop:voice.start} aria-label="Voice">
@@ -630,8 +769,13 @@ export default function App() {
               <>
                 <ConversationThread messages={messages} loading={loading}
                   loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
+
                 {routeData && !routeApproved && (
                   <div className="desktop-followup">
+                    {/* Start navigation button */}
+                    <button className="start-nav-btn-desktop" onClick={startNavigation}>
+                      ▶ Start Navigation
+                    </button>
                     <div className="chips-row">
                       {REFINE_CHIPS.map(c=>(
                         <button key={c} className="chip" onClick={()=>handleFollowUp(c)}>{c}</button>
@@ -646,7 +790,12 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                {routeApproved && <div className="approved-banner">✅ Route approved — ride safe!</div>}
+                {routeApproved && (
+                  <div className="desktop-followup">
+                    <button className="start-nav-btn-desktop" onClick={startNavigation}>▶ Start Navigation</button>
+                    <div className="approved-banner">✅ Route approved — ride safe!</div>
+                  </div>
+                )}
               </>
             ) : (
               <div className="empty-state">
@@ -654,7 +803,8 @@ export default function App() {
                   <>
                     <div className="recent-label">Recent rides</div>
                     {recent.map(r=>(
-                      <div key={r.id} className="recent-item" onClick={()=>{ setQuery(r.title); submitQuery(r.title); }}>
+                      <div key={r.id} className="recent-item"
+                        onClick={()=>{ setQuery(r.title); submitQuery(r.title); }}>
                         <span className="recent-title">{r.title}</span>
                         <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
                       </div>
@@ -686,7 +836,7 @@ export default function App() {
             )}
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
