@@ -313,18 +313,21 @@ async function loadBugs() {
       const query   = r.query   || r.p_query  || '';
       const routeTitle = r.route_data?.title || r.p_route_data?.title || '';
       const userId  = r.user_id ? r.user_id.slice(0,8)+'…' : 'anon';
-      const hasDetail = query || routeTitle || r.route_data || r.p_route_data;
+      const hasImage = !!r.image_data;
+      const hasDetail = query || routeTitle || r.route_data || r.p_route_data || hasImage;
       const routeJson = JSON.stringify(r.route_data || r.p_route_data || {}, null, 2);
+      const imgSrc = hasImage ? (r.image_data.startsWith('data:') ? r.image_data : 'data:image/png;base64,' + r.image_data) : '';
       return `
         <tr>
           <td class="cell-mono">${timeSince(r.created_at)}<br><span style="font-size:10px;color:var(--text-muted)">${fmtDate(r.created_at)}</span></td>
           <td><span class="cell-mono" style="font-size:11px">${userId}</span></td>
           <td><div class="bug-comment">${comment || '<span style="color:var(--text-muted)">—</span>'}</div>${query ? `<div class="bug-query">Query: "${query}"</div>` : ''}</td>
           <td>${routeTitle ? `<span class="bug-route">${routeTitle}</span>` : '<span style="color:var(--text-muted)">—</span>'}</td>
-          <td>${hasDetail ? `<button class="expand-btn" onclick="toggleDetail(${i})">Details</button>` : ''}</td>
+          <td style="text-align:center">${hasImage ? `<span title="Has screenshot" style="font-size:16px;cursor:pointer" onclick="toggleDetail(${i})">📷</span> ` : ''}${hasDetail ? `<button class="expand-btn" onclick="toggleDetail(${i})">Details</button>` : ''}</td>
         </tr>
         <tr class="detail-row" id="detail-${i}">
           <td class="detail-cell" colspan="5">
+            ${hasImage ? `<div class="detail-label">Screenshot</div><img src="${imgSrc}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);margin-bottom:12px" alt="screenshot"/>` : ''}
             ${query ? `<div class="detail-label">Route Query</div><div class="detail-block">${escHtml(query)}</div>` : ''}
             ${routeJson !== '{}' ? `<div class="detail-label">Route Data</div><div class="detail-block">${escHtml(routeJson)}</div>` : ''}
           </td>
