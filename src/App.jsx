@@ -691,7 +691,7 @@ export default function App() {
   if (!authReady) return <div className="loading-shell"><span className="dot-spin"/></div>;
   if (!session) return <LoginScreen />;
 
-  const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68dvh' }[sheetMode] || '160px';
+  const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68%' }[sheetMode] || '160px';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (

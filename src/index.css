@@ -1,29 +1,19 @@
 @import "tailwindcss";
 
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 /*
- * iOS Safari viewport height fix.
- * 100vh on iOS includes the browser chrome (URL bar + toolbar),
- * causing overflow when those are visible.
- * Fix: use -webkit-fill-available for older iOS, dvh for modern browsers.
+ * position:fixed is the only universally reliable way to fill exactly
+ * the visible viewport on every iOS/Android version.
+ * vh/dvh/-webkit-fill-available all have edge cases on various OS versions.
+ * Fixed inset:0 always = the visible screen area, browser chrome excluded.
  */
-html {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-  height: -webkit-fill-available;
-}
-
-body {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  min-height: 100%;
-  min-height: -webkit-fill-available;
-}
-
 #root {
-  width: 100%;
-  height: 100%;
-  height: 100dvh; /* dynamic viewport height — excludes browser chrome, updates live */
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
 }
