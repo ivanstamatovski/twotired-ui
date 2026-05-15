@@ -77,6 +77,38 @@ function findNextTurn(route, lat, lng) {
   return null;
 }
 
+// Motorcycle front-view SVG for user location marker
+function makeMotoMarkerEl() {
+  const el = document.createElement('div');
+  el.className = 'user-moto-marker';
+  el.innerHTML = `<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
+    <!-- Pulse ring -->
+    <circle cx="22" cy="22" r="20" fill="rgba(249,115,22,0.12)" stroke="rgba(249,115,22,0.35)" stroke-width="1.5"/>
+    <!-- Handlebars -->
+    <line x1="4" y1="18" x2="16" y2="18" stroke="#1f2937" stroke-width="3" stroke-linecap="round"/>
+    <line x1="28" y1="18" x2="40" y2="18" stroke="#1f2937" stroke-width="3" stroke-linecap="round"/>
+    <!-- Grips -->
+    <rect x="3" y="15.5" width="5" height="5" rx="2.5" fill="#374151"/>
+    <rect x="36" y="15.5" width="5" height="5" rx="2.5" fill="#374151"/>
+    <!-- Handlebar risers -->
+    <line x1="16" y1="18" x2="16" y2="21" stroke="#1f2937" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="28" y1="18" x2="28" y2="21" stroke="#1f2937" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Fairing body -->
+    <path d="M15 21 Q15 13 22 12 Q29 13 29 21 L28 26 Q22 28 16 26 Z" fill="#f97316"/>
+    <!-- Headlight -->
+    <ellipse cx="22" cy="17" rx="4.5" ry="3.5" fill="#fef9c3" opacity="0.95"/>
+    <ellipse cx="22" cy="17" rx="2.5" ry="2" fill="#fef08a"/>
+    <!-- Front forks -->
+    <line x1="17" y1="26" x2="16" y2="34" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/>
+    <line x1="27" y1="26" x2="28" y2="34" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/>
+    <!-- Front wheel -->
+    <ellipse cx="22" cy="35" rx="8" ry="5" fill="#1f2937"/>
+    <ellipse cx="22" cy="35" rx="4.5" ry="2.5" fill="#374151"/>
+    <circle cx="22" cy="35" r="1.5" fill="#6b7280"/>
+  </svg>`;
+  return el;
+}
+
 // ── Get current GPS position (Promise wrapper — always resolves, never throws) ─
 function getCurrentGPS({ timeout = 6000, maximumAge = 30000 } = {}) {
   return new Promise((resolve) => {
@@ -271,14 +303,16 @@ export default function App() {
   const markersRef = useRef([]);
   const messagesEnd = useRef(null);
   const userMarkerRef = useRef(null);
-  const watchIdRef = useRef(null);
+  const locationWatchRef = useRef(null); // always-on position watch
   const wakeLockRef = useRef(null);
   const lastAnnouncedRef = useRef(null);
   const routeDataRef = useRef(null);
+  const navModeRef = useRef(false); // mirror of navMode for geolocation callback
 
   const isMobile = useIsMobile();
 
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
+  useEffect(() => { navModeRef.current = navMode; }, [navMode]);
 
   const handleVoiceResult = useCallback((transcript) => {
     setQuery(transcript);
@@ -317,19 +351,74 @@ export default function App() {
       mapLoadedRef.current = true;
       if (pendingRoute.current) { drawRouteOnMap(pendingRoute.current); pendingRoute.current = null; }
 
-      // Center on rider's actual location once map tiles are ready
+      // Center on user location once on startup
       getCurrentGPS({ timeout: 5000, maximumAge: 60000 }).then(gps => {
         if (gps && mapRef.current) {
           mapRef.current.flyTo({ center: [gps.lng, gps.lat], zoom: 12, duration: 1200 });
         }
       });
+
+      // Start always-on position watch for live marker
+      if (navigator.geolocation) {
+        locationWatchRef.current = navigator.geolocation.watchPosition(
+          onGeoPosition,
+          () => {},
+          { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+        );
+      }
     });
 
     mapRef.current = map;
-    return () => { map.remove(); mapRef.current = null; mapLoadedRef.current = false; };
+    return () => {
+      if (locationWatchRef.current !== null) {
+        navigator.geolocation.clearWatch(locationWatchRef.current);
+        locationWatchRef.current = null;
+      }
+      map.remove();
+      mapRef.current = null;
+      mapLoadedRef.current = false;
+    };
   }, [session]);
 
-  useEffect(() => () => stopNavigation(), []);
+  // ── Position callback — always-on, refs avoid stale closures ─────────────
+  function onGeoPosition(pos) {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    setUserLocation({ lat, lng });
+
+    const map = mapRef.current;
+    if (map) {
+      if (!userMarkerRef.current) {
+        userMarkerRef.current = new maplibregl.Marker({
+          element: makeMotoMarkerEl(),
+          anchor: 'center',
+        }).setLngLat([lng, lat]).addTo(map);
+      } else {
+        userMarkerRef.current.setLngLat([lng, lat]);
+      }
+      // Only centre map on rider during active navigation
+      if (navModeRef.current) {
+        map.easeTo({ center: [lng, lat], duration: 800 });
+      }
+    }
+
+    // Turn-by-turn announcements (nav mode only)
+    const route = routeDataRef.current;
+    if (route && navModeRef.current) {
+      const result = findNextTurn(route, lat, lng);
+      setNextTurn(result);
+
+      if (result) {
+        const { instruction, dist } = result;
+        const bucket = dist < 120 ? 'close' : dist < 350 ? 'far' : null;
+        const key = `${instruction.text}-${bucket}`;
+        if (bucket && lastAnnouncedRef.current !== key) {
+          lastAnnouncedRef.current = key;
+          const distPhrase = dist < 120 ? 'Now' : `In ${formatDist(dist)}`;
+          speak(`${distPhrase}, ${instruction.text}`);
+        }
+      }
+    }
+  }
 
   // ── Draw route on map ─────────────────────────────────────────────────────
   function drawRouteOnMap(route) {
@@ -378,75 +467,29 @@ export default function App() {
     window.speechSynthesis.speak(u);
   }
 
-  function onGeoPosition(pos) {
-    const { latitude: lat, longitude: lng } = pos.coords;
-    setUserLocation({ lat, lng });
-
-    const map = mapRef.current;
-    if (map) {
-      if (!userMarkerRef.current) {
-        const el = document.createElement('div');
-        el.className = 'user-location-dot';
-        userMarkerRef.current = new maplibregl.Marker({ element: el, anchor: 'center' })
-          .setLngLat([lng, lat]).addTo(map);
-      } else {
-        userMarkerRef.current.setLngLat([lng, lat]);
-      }
-      if (navMode) {
-        map.easeTo({ center: [lng, lat], duration: 800 });
-      }
-    }
-
-    const route = routeDataRef.current;
-    if (route && navMode) {
-      const result = findNextTurn(route, lat, lng);
-      setNextTurn(result);
-
-      if (result) {
-        const { instruction, dist } = result;
-        const bucket = dist < 120 ? 'close' : dist < 350 ? 'far' : null;
-        const key = `${instruction.text}-${bucket}`;
-        if (bucket && lastAnnouncedRef.current !== key) {
-          lastAnnouncedRef.current = key;
-          const distPhrase = dist < 120 ? 'Now' : `In ${formatDist(dist)}`;
-          speak(`${distPhrase}, ${instruction.text}`);
-        }
-      }
-    }
-  }
-
   function startNavigation() {
-    if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser.');
-      return;
-    }
     setNavMode(true);
+    navModeRef.current = true;
     lastAnnouncedRef.current = null;
 
     navigator.wakeLock?.request('screen')
       .then(lock => { wakeLockRef.current = lock; })
       .catch(() => {});
 
-    navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      onGeoPosition, () => {},
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
-    );
+    // Trigger an immediate position fix to centre the map right away
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
+    }
 
     if (isMobile) setSheetMode('collapsed');
   }
 
   function stopNavigation() {
     setNavMode(false);
+    navModeRef.current = false;
     setNextTurn(null);
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
-    userMarkerRef.current?.remove();
-    userMarkerRef.current = null;
   }
 
   function centerOnUser() {
@@ -507,7 +550,6 @@ export default function App() {
     finally { setLoading(false); }
   }
 
-  // ── Submit query — gets GPS first, then routes ────────────────────────────
   async function submitQuery(q) {
     const text = (q || query).trim();
     if (!text || loading) return;
@@ -562,9 +604,20 @@ export default function App() {
   return (
     <div className="app-shell">
 
-      {/* Map — always rendered */}
+      {/* Map panel — always-visible locate button lives here */}
       <div className="map-panel">
         <div ref={mapContainerRef} className="map-canvas"/>
+        {/* Always-visible centre-on-me button */}
+        <button
+          className={`map-locate-btn${userLocation ? '' : ' map-locate-btn--dim'}`}
+          onClick={centerOnUser}
+          aria-label="Centre on my location"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+          </svg>
+        </button>
       </div>
 
       {/* ── Navigation overlay ── */}
@@ -589,12 +642,6 @@ export default function App() {
 
           <div className="nav-bottom-bar">
             <span className="nav-route-title">{routeData?.title}</span>
-            <button className="nav-locate-btn" onClick={centerOnUser} aria-label="Center on my location">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
-              </svg>
-            </button>
           </div>
         </div>
       )}
@@ -609,7 +656,6 @@ export default function App() {
             <div className="sheet-bar"/>
           </div>
 
-          {/* IDLE */}
           {sheetMode === 'idle' && (
             <div className="sheet-idle">
               {voice.supported ? (
@@ -644,7 +690,6 @@ export default function App() {
             </div>
           )}
 
-          {/* COLLAPSED */}
           {sheetMode === 'collapsed' && routeData && (
             <div className="sheet-collapsed-content">
               <div className="collapsed-info">
@@ -657,7 +702,6 @@ export default function App() {
             </div>
           )}
 
-          {/* EXPANDED */}
           {sheetMode === 'expanded' && (
             <div className="sheet-expanded-content">
               {error && <div className="error-banner">⚠️ {error}</div>}
@@ -742,7 +786,6 @@ export default function App() {
         </div>
 
       ) : !navMode ? (
-        /* ════════════════ DESKTOP sidebar ════════════════ */
         <div className="sidebar">
           <div className="brand">
             <span className="brand-name">🏍 TwoTired</span>
@@ -776,12 +819,9 @@ export default function App() {
               <>
                 <ConversationThread messages={messages} loading={loading}
                   loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
-
                 {routeData && !routeApproved && (
                   <div className="desktop-followup">
-                    <button className="start-nav-btn-desktop" onClick={startNavigation}>
-                      ▶ Start Navigation
-                    </button>
+                    <button className="start-nav-btn-desktop" onClick={startNavigation}>▶ Start Navigation</button>
                     <div className="chips-row">
                       {REFINE_CHIPS.map(c=>(
                         <button key={c} className="chip" onClick={()=>handleFollowUp(c)}>{c}</button>
