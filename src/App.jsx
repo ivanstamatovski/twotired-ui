@@ -342,6 +342,7 @@ export default function App() {
       center: DEFAULT_CENTER,
       zoom: DEFAULT_ZOOM,
       attributionControl: false,
+      preserveDrawingBuffer: true,
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
