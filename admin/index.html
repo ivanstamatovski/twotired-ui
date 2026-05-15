@@ -221,14 +221,14 @@ function doLogin() {
     return;
   }
   SERVICE_KEY = key;
-  sessionStorage.setItem('tt_admin_key', key);
+  localStorage.setItem('tt_admin_key', key);
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   loadAll();
 }
 
 function doLogout() {
-  sessionStorage.removeItem('tt_admin_key');
+  localStorage.removeItem('tt_admin_key');
   SERVICE_KEY = '';
   document.getElementById('login').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
@@ -238,7 +238,7 @@ function doLogout() {
 
 // Auto-login if key is in sessionStorage
 window.addEventListener('DOMContentLoaded', () => {
-  const saved = sessionStorage.getItem('tt_admin_key');
+  const saved = localStorage.getItem('tt_admin_key');
   if (saved) {
     SERVICE_KEY = saved;
     document.getElementById('login').style.display = 'none';
