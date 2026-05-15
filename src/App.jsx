@@ -77,23 +77,6 @@ function findNextTurn(route, lat, lng) {
   return null;
 }
 
-// ── Bearing helpers ───────────────────────────────────────────────────────────
-// True bearing (degrees, 0-360) from point A to point B
-function calcBearing(lat1, lng1, lat2, lng2) {
-  const toR = d => d * Math.PI / 180;
-  const dLng = toR(lng2 - lng1);
-  const y = Math.sin(dLng) * Math.cos(toR(lat2));
-  const x = Math.cos(toR(lat1)) * Math.sin(toR(lat2)) -
-            Math.sin(toR(lat1)) * Math.cos(toR(lat2)) * Math.cos(dLng);
-  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-}
-
-// Exponential moving average — handles 359→1 wrap-around correctly
-function smoothBearing(current, target, alpha = 0.18) {
-  const diff = ((target - current + 540) % 360) - 180;
-  return (current + diff * alpha + 360) % 360;
-}
-
 // Motorcycle front-view SVG for user location marker
 function makeMotoMarkerEl() {
   const el = document.createElement('div');
@@ -324,10 +307,7 @@ export default function App() {
   const wakeLockRef = useRef(null);
   const lastAnnouncedRef = useRef(null);
   const routeDataRef = useRef(null);
-  const navModeRef = useRef(false);       // mirror of navMode for geolocation callback
-  const compassHeadingRef = useRef(null); // latest heading from device compass (degrees)
-  const currentBearingRef = useRef(0);   // smoothed map bearing currently applied
-  const prevPositionRef = useRef(null);  // previous GPS fix for bearing fallback
+  const navModeRef = useRef(false); // mirror of navMode for geolocation callback
 
   const isMobile = useIsMobile();
 
@@ -402,7 +382,7 @@ export default function App() {
 
   // ── Position callback — always-on, refs avoid stale closures ─────────────
   function onGeoPosition(pos) {
-    const { latitude: lat, longitude: lng, speed } = pos.coords;
+    const { latitude: lat, longitude: lng } = pos.coords;
     setUserLocation({ lat, lng });
 
     const map = mapRef.current;
@@ -415,34 +395,11 @@ export default function App() {
       } else {
         userMarkerRef.current.setLngLat([lng, lat]);
       }
-
+      // Only centre map on rider during active navigation
       if (navModeRef.current) {
-        // Pick best heading source:
-        // 1. Compass (webkitCompassHeading / DeviceOrientationEvent) — preferred
-        // 2. GPS-derived bearing from prev→current fix (trust when speed > 2 m/s ~4 mph)
-        let targetBearing = currentBearingRef.current;
-
-        if (compassHeadingRef.current !== null) {
-          targetBearing = compassHeadingRef.current;
-        } else if (prevPositionRef.current && (speed == null || speed > 2)) {
-          const { lat: pLat, lng: pLng } = prevPositionRef.current;
-          targetBearing = calcBearing(pLat, pLng, lat, lng);
-        }
-
-        const smoothed = smoothBearing(currentBearingRef.current, targetBearing);
-        currentBearingRef.current = smoothed;
-
-        map.easeTo({
-          center: [lng, lat],
-          bearing: smoothed,
-          pitch: 50,
-          zoom: 17,
-          duration: 300,
-        });
+        map.easeTo({ center: [lng, lat], duration: 800 });
       }
     }
-
-    prevPositionRef.current = { lat, lng };
 
     // Turn-by-turn announcements (nav mode only)
     const route = routeDataRef.current;
@@ -460,17 +417,6 @@ export default function App() {
           speak(`${distPhrase}, ${instruction.text}`);
         }
       }
-    }
-  }
-
-  // ── Device orientation (compass) ──────────────────────────────────────────
-  function handleDeviceOrientation(e) {
-    // iOS Safari: webkitCompassHeading is absolute from true north (0-360)
-    // Android Chrome: alpha + absolute=true means north-referenced
-    if (typeof e.webkitCompassHeading === 'number' && e.webkitCompassHeading >= 0) {
-      compassHeadingRef.current = e.webkitCompassHeading;
-    } else if (e.absolute && typeof e.alpha === 'number') {
-      compassHeadingRef.current = (360 - e.alpha) % 360;
     }
   }
 
@@ -521,44 +467,16 @@ export default function App() {
     window.speechSynthesis.speak(u);
   }
 
-  async function startNavigation() {
+  function startNavigation() {
     setNavMode(true);
     navModeRef.current = true;
     lastAnnouncedRef.current = null;
-    currentBearingRef.current = 0;
 
     navigator.wakeLock?.request('screen')
       .then(lock => { wakeLockRef.current = lock; })
       .catch(() => {});
 
-    // Request DeviceOrientation permission (required on iOS 13+)
-    // Must be called from a user-gesture context — this function is triggered by a button tap
-    try {
-      if (typeof DeviceOrientationEvent !== 'undefined' &&
-          typeof DeviceOrientationEvent.requestPermission === 'function') {
-        const permission = await DeviceOrientationEvent.requestPermission();
-        if (permission === 'granted') {
-          window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-        }
-      } else if (typeof DeviceOrientationEvent !== 'undefined') {
-        // Android / desktop — no permission needed
-        window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-      }
-    } catch { /* compass unavailable — fall back to GPS bearing */ }
-
-    // Zoom in, tilt, and orient to current heading
-    if (mapRef.current && userLocation) {
-      mapRef.current.easeTo({
-        center: [userLocation.lng, userLocation.lat],
-        zoom: 17,
-        pitch: 50,
-        bearing: compassHeadingRef.current ?? 0,
-        duration: 800,
-      });
-      currentBearingRef.current = compassHeadingRef.current ?? 0;
-    }
-
-    // Immediate fix to snap marker + camera right away
+    // Trigger an immediate position fix to centre the map right away
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
     }
@@ -570,17 +488,6 @@ export default function App() {
     setNavMode(false);
     navModeRef.current = false;
     setNextTurn(null);
-    compassHeadingRef.current = null;
-
-    // Remove compass listener
-    window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
-
-    // Reset map to north-up flat view
-    if (mapRef.current) {
-      mapRef.current.easeTo({ bearing: 0, pitch: 0, zoom: DEFAULT_ZOOM, duration: 600 });
-      currentBearingRef.current = 0;
-    }
-
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
   }
@@ -691,7 +598,7 @@ export default function App() {
   if (!authReady) return <div className="loading-shell"><span className="dot-spin"/></div>;
   if (!session) return <LoginScreen />;
 
-  const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68%' }[sheetMode] || '160px';
+  const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68vh' }[sheetMode] || '160px';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (

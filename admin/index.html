@@ -113,12 +113,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <label>Admin Password</label>
       <input id="inp-pass" type="password" placeholder="Enter password" autocomplete="current-password"/>
     </div>
-    <div class="field">
-      <label>Supabase Service Role Key</label>
-      <input id="inp-key" type="password" placeholder="eyJ..." autocomplete="off"/>
-    </div>
     <button class="btn" id="login-btn" onclick="doLogin()">Sign In</button>
-    <div class="login-err" id="login-err">Incorrect password or key.</div>
+    <div class="login-err" id="login-err">Incorrect password.</div>
   </div>
 </div>
 
@@ -206,47 +202,39 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <script>
 // ── Config ────────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://ujvfwzcjgxupvtiwllhw.supabase.co';
-const ADMIN_PASSWORD = 'TwoTired2026!'; // change this to your preferred password
-
-let SERVICE_KEY = '';
+const ADMIN_PASSWORD = 'TwoTired2026!';
+const SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqdmZ3emNqZ3h1cHZ0aXdsbGh3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NDQ5MDE2OCwiZXhwIjoyMDkwMDY2MTY4fQ.GX50wbDudRN7KubXvpZOHLTxTHbnv0EAPcH6hhmKO1s';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 function doLogin() {
   const pass = document.getElementById('inp-pass').value;
-  const key  = document.getElementById('inp-key').value.trim();
   const err  = document.getElementById('login-err');
   err.style.display = 'none';
-  if (pass !== ADMIN_PASSWORD || !key.startsWith('eyJ')) {
+  if (pass !== ADMIN_PASSWORD) {
     err.style.display = 'block';
     return;
   }
-  SERVICE_KEY = key;
-  localStorage.setItem('tt_admin_key', key);
+  localStorage.setItem('tt_admin_authed', '1');
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   loadAll();
 }
 
 function doLogout() {
-  localStorage.removeItem('tt_admin_key');
-  SERVICE_KEY = '';
+  localStorage.removeItem('tt_admin_authed');
   document.getElementById('login').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
   document.getElementById('inp-pass').value = '';
-  document.getElementById('inp-key').value = '';
 }
 
-// Auto-login if key is in sessionStorage
+// Auto-login if already authenticated
 window.addEventListener('DOMContentLoaded', () => {
-  const saved = localStorage.getItem('tt_admin_key');
-  if (saved) {
-    SERVICE_KEY = saved;
+  if (localStorage.getItem('tt_admin_authed') === '1') {
     document.getElementById('login').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
     loadAll();
   }
   document.getElementById('inp-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
-  document.getElementById('inp-key').addEventListener('keydown',  e => { if(e.key==='Enter') doLogin(); });
 });
 
 // ── Navigation ────────────────────────────────────────────────────────────────
