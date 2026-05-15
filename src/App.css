@@ -140,10 +140,15 @@ html, body, #root {
   position: relative;
   flex: 1;
   min-width: 0;
-  height: 100%;
+  /* no explicit height — flex stretch fills it automatically */
 }
 
-.map-canvas { width: 100%; height: 100%; }
+/* absolute inset so the canvas always fills map-panel exactly,
+   regardless of how map-panel gets its height */
+.map-canvas {
+  position: absolute;
+  inset: 0;
+}
 
 .maplibregl-ctrl-attrib { display: none !important; }
 
@@ -299,7 +304,7 @@ html, body, #root {
 
 /* ─── Mobile bottom sheet ───────────────────────────────────────── */
 .sheet {
-  position: absolute;
+  position: fixed;  /* fixed to viewport, not map-panel — immune to layout shifts */
   bottom: 0;
   left: 0;
   right: 0;
