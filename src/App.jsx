@@ -586,10 +586,23 @@ export default function App() {
       let imageData = null;
       try {
         if (mapRef.current) {
+          // Trigger a fresh render and wait for it
+          mapRef.current.triggerRepaint();
+          await new Promise(resolve => {
+            const done = () => resolve();
+            mapRef.current.once('render', done);
+            setTimeout(done, 600); // fallback
+          });
           const canvas = mapRef.current.getCanvas();
-          imageData = canvas.toDataURL('image/jpeg', 0.7);
+          console.log('[screenshot] canvas', canvas.width, 'x', canvas.height);
+          imageData = canvas.toDataURL('image/jpeg', 0.6);
+          console.log('[screenshot] result length:', imageData?.length, 'prefix:', imageData?.slice(0, 40));
+          if (!imageData || imageData === 'data:,' || imageData.length < 100) {
+            console.warn('[screenshot] blank or empty canvas');
+            imageData = null;
+          }
         }
-      } catch(e) { console.warn('[submitBug] screenshot failed:', e); }
+      } catch(e) { console.error('[submitBug] screenshot error:', e.name, e.message); }
 
       const query = messages.find(m=>m.role==='user')?.content || '';
       await fetch(`${SUPABASE_URL}/rest/v1/bug_reports`, {
