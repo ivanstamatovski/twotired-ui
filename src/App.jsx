@@ -581,13 +581,29 @@ export default function App() {
   async function submitBug() {
     setBugSubmitting(true);
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/rpc/insert_bug_report`, {
+      // Capture map screenshot
+      let imageData = null;
+      try {
+        if (mapRef.current) {
+          const canvas = mapRef.current.getCanvas();
+          imageData = canvas.toDataURL('image/jpeg', 0.7);
+        }
+      } catch(e) { console.warn('[submitBug] screenshot failed:', e); }
+
+      const query = messages.find(m=>m.role==='user')?.content || '';
+      await fetch(`${SUPABASE_URL}/rest/v1/bug_reports`, {
         method:'POST',
-        headers:{ 'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY,
-          'Authorization':`Bearer ${session?.access_token || SUPABASE_ANON_KEY}` },
-        body: JSON.stringify({ p_query:messages.find(m=>m.role==='user')?.content||'',
-          p_route_data:routeData||null, p_comment:bugComment, p_screenshot_url:null,
-          p_user_id:session?.user?.id||null }),
+        headers:{ 'Content-Type':'application/json', 'apikey':SUPABASE_ANON_KEY,
+          'Authorization':`Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
+          'Prefer':'return=minimal' },
+        body: JSON.stringify({
+          user_id: session?.user?.id || null,
+          route_id: routeData?.id || null,
+          comment: bugComment,
+          image_data: imageData,
+          page_context: query || null,
+          created_at: new Date().toISOString(),
+        }),
       });
       setBugDone(true); setBugComment('');
       setTimeout(() => { setMenuOpen(false); setBugDone(false); }, 2000);
