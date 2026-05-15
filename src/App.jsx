@@ -4,13 +4,13 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
 
-const SUPABASE_URL      = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const EDGE_URL          = `${SUPABASE_URL}/functions/v1/generate-route`;
-const RECENT_KEY        = 'twistyroute_recent';
-const MAP_STYLE         = 'https://tiles.openfreemap.org/styles/fiord';
-const DEFAULT_CENTER    = [-74.3, 41.4];
-const DEFAULT_ZOOM      = 9;
+const EDGE_URL = `${SUPABASE_URL}/functions/v1/generate-route`;
+const RECENT_KEY = 'twistyroute_recent';
+const MAP_STYLE = 'https://tiles.openfreemap.org/styles/fiord';
+const DEFAULT_CENTER = [-74.3, 41.4];
+const DEFAULT_ZOOM = 9;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -32,7 +32,6 @@ function buildNavUrl(waypoints) {
   return `https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}${wps?`&waypoints=${wps}`:''}&travelmode=driving`;
 }
 
-// Haversine distance in metres between two lat/lng points
 function haversineM(lat1, lng1, lat2, lng2) {
   const R = 6_371_000;
   const toR = (d) => d * Math.PI / 180;
@@ -41,7 +40,6 @@ function haversineM(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Approximate squared distance (for fast nearest-point search)
 function distSq(lat1, lng1, lat2, lng2) {
   const dlat = lat1 - lat2;
   const dlng = (lng1 - lng2) * Math.cos(lat1 * Math.PI / 180);
@@ -54,26 +52,20 @@ function formatDist(m) {
   return `${Math.round(m)} m`;
 }
 
-// Map GraphHopper sign to arrow emoji
 function turnArrow(sign) {
   const map = { '-7':'↰','-3':'↰','-2':'←','-1':'↖','0':'↑','1':'↗','2':'→','3':'↱','4':'🏁','5':'⟳','6':'⟲' };
   return map[String(sign)] ?? '↑';
 }
 
-// Given current lat/lng, find which instruction is next and distance to it
 function findNextTurn(route, lat, lng) {
-  const coords = route.geometry?.coordinates;   // [[lng,lat], ...]
+  const coords = route.geometry?.coordinates;
   const instructions = route.instructions;
   if (!coords?.length || !instructions?.length) return null;
-
-  // Find index of nearest coordinate
   let nearIdx = 0, bestSq = Infinity;
   for (let i = 0; i < coords.length; i++) {
     const sq = distSq(lat, lng, coords[i][1], coords[i][0]);
     if (sq < bestSq) { bestSq = sq; nearIdx = i; }
   }
-
-  // Find instruction whose interval contains nearIdx
   for (let i = 0; i < instructions.length; i++) {
     const [start, end] = instructions[i].interval;
     if (nearIdx >= start && nearIdx <= end) {
@@ -83,6 +75,18 @@ function findNextTurn(route, lat, lng) {
     }
   }
   return null;
+}
+
+// ── Get current GPS position (Promise wrapper) ────────────────────────────────
+function getCurrentGPS({ timeout = 6000, maximumAge = 30000 } = {}) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout, maximumAge }
+    );
+  });
 }
 
 // ── Voice hook ────────────────────────────────────────────────────────────────
@@ -98,13 +102,13 @@ function useVoice(onResult) {
     const r = new SR();
     r.continuous = false; r.interimResults = false; r.lang = 'en-US';
     r.onresult = e => { onResult(e.results[0][0].transcript); setListening(false); };
-    r.onerror  = () => setListening(false);
-    r.onend    = () => setListening(false);
+    r.onerror = () => setListening(false);
+    r.onend = () => setListening(false);
     recogRef.current = r;
   }, [onResult]);
 
-  const start = useCallback(() => { recogRef.current?.start(); setListening(true);  }, []);
-  const stop  = useCallback(() => { recogRef.current?.stop();  setListening(false); }, []);
+  const start = useCallback(() => { recogRef.current?.start(); setListening(true); }, []);
+  const stop = useCallback(() => { recogRef.current?.stop(); setListening(false); }, []);
   return { listening, supported, start, stop };
 }
 
@@ -121,10 +125,10 @@ function useIsMobile() {
 
 // ── Login screen ──────────────────────────────────────────────────────────────
 function LoginScreen() {
-  const [email, setEmail]     = useState('');
-  const [sent, setSent]       = useState(false);
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState(null);
+  const [error, setError] = useState(null);
 
   async function sendMagicLink() {
     if (!email.includes('@')) return;
@@ -167,7 +171,7 @@ function LoginScreen() {
   );
 }
 
-// ── ConversationThread — module level ─────────────────────────────────────────
+// ── ConversationThread ────────────────────────────────────────────────────────
 function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
   return (
     <div className="messages-scroll">
@@ -225,34 +229,34 @@ function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
 
 export default function App() {
   // Auth
-  const [session, setSession]     = useState(null);
+  const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
   // Core
-  const [query, setQuery]                 = useState('');
-  const [loading, setLoading]             = useState(false);
-  const [loadingMsg, setLoadingMsg]       = useState('Planning your ride…');
-  const [error, setError]                 = useState(null);
-  const [messages, setMessages]           = useState([]);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState('Planning your ride…');
+  const [error, setError] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [currentIntent, setCurrentIntent] = useState(null);
   const [followUpInput, setFollowUpInput] = useState('');
-  const [routeData, setRouteData]         = useState(null);
+  const [routeData, setRouteData] = useState(null);
   const [routeApproved, setRouteApproved] = useState(false);
 
   // Mobile sheet
-  const [sheetMode, setSheetMode]   = useState('idle');
+  const [sheetMode, setSheetMode] = useState('idle');
   const [refineOpen, setRefineOpen] = useState(false);
-  const [menuOpen, setMenuOpen]     = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigation
-  const [navMode, setNavMode]               = useState(false);
-  const [nextTurn, setNextTurn]             = useState(null); // { instruction, dist }
-  const [userLocation, setUserLocation]     = useState(null); // { lat, lng }
+  const [navMode, setNavMode] = useState(false);
+  const [nextTurn, setNextTurn] = useState(null);
+  const [userLocation, setUserLocation] = useState(null);
 
   // Bug report
-  const [bugComment, setBugComment]       = useState('');
+  const [bugComment, setBugComment] = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
-  const [bugDone, setBugDone]             = useState(false);
+  const [bugDone, setBugDone] = useState(false);
 
   // Recent
   const [recent, setRecent] = useState(() => {
@@ -260,24 +264,22 @@ export default function App() {
   });
 
   // Refs
-  const mapContainerRef  = useRef(null);
-  const mapRef           = useRef(null);
-  const mapLoadedRef     = useRef(false);
-  const pendingRoute     = useRef(null);
-  const markersRef       = useRef([]);
-  const messagesEnd      = useRef(null);
-  const userMarkerRef    = useRef(null);
-  const watchIdRef       = useRef(null);
-  const wakeLockRef      = useRef(null);
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const mapLoadedRef = useRef(false);
+  const pendingRoute = useRef(null);
+  const markersRef = useRef([]);
+  const messagesEnd = useRef(null);
+  const userMarkerRef = useRef(null);
+  const watchIdRef = useRef(null);
+  const wakeLockRef = useRef(null);
   const lastAnnouncedRef = useRef(null);
-  const routeDataRef     = useRef(null); // mirror of routeData for geolocation callback
+  const routeDataRef = useRef(null);
 
   const isMobile = useIsMobile();
 
-  // Keep routeDataRef in sync
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
 
-  // Voice input
   const handleVoiceResult = useCallback((transcript) => {
     setQuery(transcript);
     submitQuery(transcript);
@@ -295,7 +297,7 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Map init — wait for session so map-canvas is in DOM ───────────────────
+  // ── Map init ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!session) return;
     if (!mapContainerRef.current || mapRef.current) return;
@@ -320,7 +322,6 @@ export default function App() {
     return () => { map.remove(); mapRef.current = null; mapLoadedRef.current = false; };
   }, [session]);
 
-  // ── Cleanup geolocation on unmount ────────────────────────────────────────
   useEffect(() => () => stopNavigation(), []);
 
   // ── Draw route on map ─────────────────────────────────────────────────────
@@ -328,9 +329,9 @@ export default function App() {
     const map = mapRef.current;
     if (!map || !mapLoadedRef.current) { pendingRoute.current = route; return; }
 
-    if (map.getLayer('route-line'))   map.removeLayer('route-line');
+    if (map.getLayer('route-line')) map.removeLayer('route-line');
     if (map.getLayer('route-casing')) map.removeLayer('route-casing');
-    if (map.getSource('route'))       map.removeSource('route');
+    if (map.getSource('route')) map.removeSource('route');
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
 
@@ -376,7 +377,6 @@ export default function App() {
 
     const map = mapRef.current;
     if (map) {
-      // Place / update user dot
       if (!userMarkerRef.current) {
         const el = document.createElement('div');
         el.className = 'user-location-dot';
@@ -385,13 +385,11 @@ export default function App() {
       } else {
         userMarkerRef.current.setLngLat([lng, lat]);
       }
-      // In nav mode: keep map centred on rider
       if (navMode) {
         map.easeTo({ center: [lng, lat], duration: 800 });
       }
     }
 
-    // Turn detection
     const route = routeDataRef.current;
     if (route && navMode) {
       const result = findNextTurn(route, lat, lng);
@@ -399,7 +397,6 @@ export default function App() {
 
       if (result) {
         const { instruction, dist } = result;
-        // Announce at ~300m and ~100m (deduplicated by key)
         const bucket = dist < 120 ? 'close' : dist < 350 ? 'far' : null;
         const key = `${instruction.text}-${bucket}`;
         if (bucket && lastAnnouncedRef.current !== key) {
@@ -419,22 +416,16 @@ export default function App() {
     setNavMode(true);
     lastAnnouncedRef.current = null;
 
-    // Request wake lock to keep screen on
     navigator.wakeLock?.request('screen')
       .then(lock => { wakeLockRef.current = lock; })
       .catch(() => {});
 
-    // Initial position
     navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
-
-    // Watch position
     watchIdRef.current = navigator.geolocation.watchPosition(
-      onGeoPosition,
-      () => {},
+      onGeoPosition, () => {},
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
     );
 
-    // Collapse sheet so map is full-screen
     if (isMobile) setSheetMode('collapsed');
   }
 
@@ -447,7 +438,6 @@ export default function App() {
     }
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
-    // Remove user dot from map
     userMarkerRef.current?.remove();
     userMarkerRef.current = null;
   }
@@ -464,7 +454,8 @@ export default function App() {
   }, [messages, loading]);
 
   // ── Generate route ────────────────────────────────────────────────────────
-  async function generateRoute(payload) {
+  // gps = { lat, lng } | null
+  async function generateRoute(payload, gps = null) {
     setLoading(true); setError(null);
     const cycle = ['Planning your ride…','Finding scenic roads…','Checking stops…','Almost there…'];
     let ci = 0; setLoadingMsg(cycle[0]);
@@ -472,10 +463,13 @@ export default function App() {
 
     try {
       const token = session?.access_token || SUPABASE_ANON_KEY;
+      const body = { ...payload, user_id: session?.user?.id || null };
+      if (gps) { body.userLat = gps.lat; body.userLng = gps.lng; }
+
       const res = await fetch(EDGE_URL, {
         method: 'POST',
         headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${token}` },
-        body: JSON.stringify({ ...payload, user_id: session?.user?.id || null }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       clearInterval(ticker);
@@ -507,14 +501,22 @@ export default function App() {
     finally { setLoading(false); }
   }
 
-  function submitQuery(q) {
+  // ── Submit query — gets GPS first, then routes ────────────────────────────
+  async function submitQuery(q) {
     const text = (q || query).trim();
     if (!text || loading) return;
     setQuery('');
     setMessages([{ role:'user', content:text }]);
     setRouteData(null); setRouteApproved(false);
     if (isMobile) setSheetMode('expanded');
-    generateRoute({ query: text });
+
+    // Get GPS before calling the edge function so the route starts from actual position
+    setLoading(true);
+    setLoadingMsg('Getting your location…');
+    const gps = await getCurrentGPS({ timeout: 6000, maximumAge: 30000 });
+    setLoading(false); // generateRoute will re-set this immediately
+
+    generateRoute({ query: text }, gps);
   }
 
   async function handleFollowUp(text) {
@@ -524,7 +526,10 @@ export default function App() {
     if (isApproval(t)) { setRouteApproved(true); if (isMobile) setSheetMode('collapsed'); return; }
     setMessages(prev => [...prev, { role:'user', content:t }]);
     if (isMobile) setSheetMode('expanded');
-    await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t });
+
+    // GPS for refinements too — position may have changed
+    const gps = await getCurrentGPS({ timeout: 4000, maximumAge: 60000 });
+    await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t }, gps);
   }
 
   async function submitBug() {
@@ -545,7 +550,7 @@ export default function App() {
 
   // ── Auth gates ────────────────────────────────────────────────────────────
   if (!authReady) return <div className="loading-shell"><span className="dot-spin"/></div>;
-  if (!session)   return <LoginScreen />;
+  if (!session) return <LoginScreen />;
 
   const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68vh' }[sheetMode] || '160px';
 
@@ -561,7 +566,6 @@ export default function App() {
       {/* ── Navigation overlay ── */}
       {navMode && (
         <div className="nav-overlay">
-          {/* Turn banner */}
           <div className="nav-turn-banner">
             <span className="nav-turn-arrow">
               {nextTurn ? turnArrow(nextTurn.instruction.sign) : '↑'}
@@ -579,7 +583,6 @@ export default function App() {
             <button className="nav-stop-btn" onClick={stopNavigation} aria-label="Stop navigation">✕</button>
           </div>
 
-          {/* Bottom bar */}
           <div className="nav-bottom-bar">
             <span className="nav-route-title">{routeData?.title}</span>
             <button className="nav-locate-btn" onClick={centerOnUser} aria-label="Center on my location">
@@ -772,7 +775,6 @@ export default function App() {
 
                 {routeData && !routeApproved && (
                   <div className="desktop-followup">
-                    {/* Start navigation button */}
                     <button className="start-nav-btn-desktop" onClick={startNavigation}>
                       ▶ Start Navigation
                     </button>
