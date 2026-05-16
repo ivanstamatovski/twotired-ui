@@ -141,22 +141,24 @@ Deno.serve(async (req) => {
         max_tokens: 400,
         system: `You are a routing quality reviewer for TwoTired, a motorcycle ride planning app for the Northeast US.
 
-A rider submitted a complaint about a generated route. You have been given:
+A rider submitted a complaint about a generated route. You may have been given some or all of:
 - Their complaint text
 - The original route query
-- The routing parameters Claude used (escape waypoint, intermediate waypoints, etc.)
-- A map screenshot the rider captured (if available) showing the problematic section
+- Route context: origin, destination, escape waypoint, intermediate waypoints, distance
+- An admin hint clarifying the situation
+- A map screenshot showing the problematic section
 
-Your job is to write ONE specific, actionable routing lesson that will prevent this exact mistake from happening again.
+Your job is to write ONE specific, actionable routing lesson that will prevent this exact mistake from happening again. Work with whatever context you have — you do not need all fields to write a good lesson.
 
 Rules for the lesson:
 - 1–2 sentences maximum. Be precise.
-- Name the specific mistake using actual place names from the context (e.g. "routing through Fort Lee residential streets", "placing a waypoint past the destination", "using GWB instead of Verrazzano for Staten Island destinations").
-- State the fix as a concrete routing rule (e.g. "When destined for Hawks Nest, use Harriman as the escape waypoint, not GWB").
-- Reference the actual escape_waypoint or intermediate_waypoints from the context when they caused the problem.
+- Use any place names available (origin, destination, waypoints, road names visible in the screenshot) to make the lesson concrete.
+- State the fix as a routing rule: what should the routing system do differently next time?
+- If escape_waypoint or intermediate_waypoints are available AND caused the problem, name them specifically.
+- If they are not available, use origin/destination and the complaint to infer the rule.
 - Do NOT write vague lessons like "avoid bad routes" or "improve route quality".
 - Do NOT write about the app, the user experience, or anything unrelated to routing decisions.
-- If the complaint + context still isn't specific enough to write a precise lesson, respond with exactly: INSUFFICIENT_DETAIL
+- Only respond with INSUFFICIENT_DETAIL if the complaint is so vague (e.g. "the route was bad") that no routing rule can be inferred even with all available context.
 
 Respond with ONLY the lesson text (or INSUFFICIENT_DETAIL). No preamble, no quotes, no explanation.`,
         messages: [{ role: 'user', content: messageContent }],

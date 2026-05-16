@@ -448,18 +448,31 @@ async function analyzeBugReport(i) {
       // Refresh just the lesson section
       document.getElementById('lesson-section-' + i).innerHTML = renderLessonSection(_bugReports[i], i);
     } else if (data.reason === 'INSUFFICIENT_DETAIL') {
+      // Show message + hint input so admin can add context and retry
       document.getElementById('lesson-section-' + i).innerHTML = `
         <div class="lesson-header"><div class="lesson-title">🧠 Routing Lesson</div></div>
-        <div class="lesson-insufficient">Comment is too vague to extract a specific routing lesson. No action needed.</div>`;
+        <div class="lesson-insufficient">Not enough detail to extract a specific lesson. Add context below and re-analyze.</div>
+        <div class="lesson-actions" style="margin-top:8px">
+          <input class="notes-input" id="notes-${i}" placeholder="Add context: origin, destination, what went wrong…" value="${escHtml(_bugReports[i].admin_notes || '')}"/>
+          <button class="lesson-btn lesson-btn-reanalyze" onclick="reanalyze(${i})">↺ Re-analyze</button>
+        </div>`;
     } else {
       document.getElementById('lesson-section-' + i).innerHTML = `
         <div class="lesson-header"><div class="lesson-title">🧠 Routing Lesson</div></div>
-        <div class="lesson-insufficient" style="color:var(--red)">Analysis failed: ${escHtml(data.error || 'Unknown error')}</div>`;
+        <div class="lesson-insufficient" style="color:var(--red)">Analysis failed: ${escHtml(data.error || 'Unknown error')}</div>
+        <div class="lesson-actions" style="margin-top:8px">
+          <input class="notes-input" id="notes-${i}" placeholder="Add context and retry…" value="${escHtml(_bugReports[i].admin_notes || '')}"/>
+          <button class="lesson-btn lesson-btn-reanalyze" onclick="reanalyze(${i})">↺ Re-analyze</button>
+        </div>`;
     }
   } catch(e) {
     document.getElementById('lesson-section-' + i).innerHTML = `
       <div class="lesson-header"><div class="lesson-title">🧠 Routing Lesson</div></div>
-      <div class="lesson-insufficient" style="color:var(--red)">Network error: ${escHtml(e.message)}</div>`;
+      <div class="lesson-insufficient" style="color:var(--red)">Network error: ${escHtml(e.message)}</div>
+      <div class="lesson-actions" style="margin-top:8px">
+        <input class="notes-input" id="notes-${i}" placeholder="Add context and retry…" value="${escHtml(_bugReports[i]?.admin_notes || '')}"/>
+        <button class="lesson-btn lesson-btn-reanalyze" onclick="reanalyze(${i})">↺ Re-analyze</button>
+      </div>`;
   }
 }
 
