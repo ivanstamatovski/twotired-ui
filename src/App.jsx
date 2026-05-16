@@ -627,8 +627,9 @@ export default function App() {
             escape_via_waypoints: routeData.intent?.escape_via_waypoints || null,
             intermediate_waypoints: routeData.intent?.intermediate_waypoints || null,
             curviness: routeData.intent?.curviness || null,
-            origin_query: routeData.intent?.origin?.query || null,
-            destination_query: routeData.intent?.destination?.query || null,
+            // rawIntent.origin and .destination are plain strings, not {query} objects
+            origin_query: routeData.intent?.origin || null,
+            destination_query: routeData.intent?.destination || null,
           } : null,
         }),
       });
