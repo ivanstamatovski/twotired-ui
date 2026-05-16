@@ -495,10 +495,18 @@ async function approveLesson(i, approved) {
 async function reanalyze(i) {
   const r = _bugReports[i];
   if (!r || !r.id) return;
-  // Reset proposed_lesson so analysis re-runs
-  await sbPatch(`/rest/v1/bug_reports?id=eq.${r.id}`, { proposed_lesson: null, lesson_approved: null });
+  // Save any hint the admin typed in the notes field before re-running —
+  // the edge function fetches admin_notes from the DB and includes it in the prompt
+  const notesEl = document.getElementById('notes-' + i);
+  const adminNotes = notesEl ? notesEl.value.trim() : null;
+  await sbPatch(`/rest/v1/bug_reports?id=eq.${r.id}`, {
+    proposed_lesson: null,
+    lesson_approved: null,
+    admin_notes: adminNotes || null,
+  });
   _bugReports[i].proposed_lesson = null;
   _bugReports[i].lesson_approved = null;
+  _bugReports[i].admin_notes = adminNotes || null;
   document.getElementById('lesson-section-' + i).innerHTML = renderLessonSection(_bugReports[i], i);
   analyzeBugReport(i);
 }
