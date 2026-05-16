@@ -617,6 +617,19 @@ export default function App() {
           image_data: imageData,
           page_context: query || null,
           created_at: new Date().toISOString(),
+          route_context: routeData ? {
+            title: routeData.title || null,
+            destination: routeData.destination || null,
+            distance_mi: routeData.distance_mi || null,
+            duration_str: routeData.duration_str || null,
+            // Claude's routing decisions — the most useful context for lesson extraction
+            escape_waypoint: routeData.intent?.escape_waypoint || null,
+            escape_via_waypoints: routeData.intent?.escape_via_waypoints || null,
+            intermediate_waypoints: routeData.intent?.intermediate_waypoints || null,
+            curviness: routeData.intent?.curviness || null,
+            origin_query: routeData.intent?.origin?.query || null,
+            destination_query: routeData.intent?.destination?.query || null,
+          } : null,
         }),
       });
       setBugDone(true); setBugComment('');
