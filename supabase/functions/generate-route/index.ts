@@ -1,4 +1,4 @@
-// generate-route edge function — v2.19
+// generate-route edge function — v2.20
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -253,13 +253,14 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2): Promise
   };
 }
 
-// ── Fetch routing lessons from recent bug reports (v2.19) ────────────────────
-// Pulls the last 50 bug reports, filters to meaningful ones, formats as routing
-// lessons for Claude's system prompt. Best-effort — empty string on any error.
+// ── Fetch routing lessons from approved bug reports (v2.20) ──────────────────
+// Only fetches lessons that have been reviewed and approved by the admin.
+// Uses proposed_lesson (Claude's curated version) not raw comment.
+// Best-effort — empty string on any error, never blocks routing.
 async function fetchRoutingLessons(): Promise<string> {
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/bug_reports?select=comment,page_context&order=created_at.desc&limit=50`,
+      `${SUPABASE_URL}/rest/v1/bug_reports?select=proposed_lesson,page_context,admin_notes&lesson_approved=eq.true&order=created_at.desc&limit=20`,
       {
         headers: {
           'apikey': SUPABASE_SERVICE_ROLE_KEY,
@@ -272,30 +273,23 @@ async function fetchRoutingLessons(): Promise<string> {
       return '';
     }
     const reports: any[] = await res.json();
+    const valid = reports.filter((r) => r.proposed_lesson && r.proposed_lesson.trim().length > 10);
+    if (valid.length === 0) return '';
 
-    // Filter out test entries and very short/empty comments
-    const TEST_PATTERN = /^test[\s\d]*$/i;
-    const meaningful = reports.filter((r) =>
-      r.comment &&
-      r.comment.trim().length > 15 &&
-      !TEST_PATTERN.test(r.comment.trim())
-    ).slice(0, 15); // cap at 15 to avoid bloating the prompt
-
-    if (meaningful.length === 0) return '';
-
-    const lines = meaningful.map((r, i) => {
-      const ctx = r.page_context ? ` [query: "${r.page_context.slice(0, 80)}"]` : '';
-      return `${i + 1}. "${r.comment.trim()}"${ctx}`;
+    const lines = valid.map((r, i) => {
+      // Admin notes (if any) are appended as context for Claude
+      const notes = r.admin_notes ? ` [Admin note: ${r.admin_notes.trim()}]` : '';
+      return `${i + 1}. ${r.proposed_lesson.trim()}${notes}`;
     }).join('\n');
 
-    console.log(`[fetchRoutingLessons] injecting ${meaningful.length} lessons`);
-    return `\n\n━━ ROUTING LESSONS FROM REAL RIDER FEEDBACK ━━
-These are actual complaints submitted by riders after seeing generated routes.
-Study them carefully — each one is a real mistake that happened. Do not repeat these patterns.
+    console.log(`[fetchRoutingLessons] injecting ${valid.length} approved lessons`);
+    return `\n\n━━ ROUTING LESSONS FROM REVIEWED RIDER FEEDBACK ━━
+These lessons were extracted from real rider complaints and reviewed by the TwoTired team.
+Each one describes a specific routing mistake that actually happened. Do not repeat these patterns.
 
 ${lines}
 
-When generating the current route, check each lesson for relevance and weight it heavily if it applies.`;
+Apply any relevant lessons to the current route before generating waypoints.`;
   } catch (e: any) {
     console.warn('[fetchRoutingLessons] error:', e.message);
     return '';

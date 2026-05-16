@@ -10,7 +10,7 @@
   --bg:#0f0f0f;--surface:#1a1a1a;--surface2:#222;--border:#2a2a2a;
   --text:#f0f0f0;--text-dim:#888;--text-muted:#555;
   --accent:#f97316;--accent-dim:rgba(249,115,22,.15);--accent-hover:#ea6c0a;
-  --red:#ef4444;--green:#22c55e;--blue:#3b82f6;
+  --red:#ef4444;--green:#22c55e;--blue:#3b82f6;--yellow:#eab308;
   --radius:10px;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;-webkit-font-smoothing:antialiased}
@@ -78,6 +78,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .badge-blue{background:rgba(59,130,246,.15);color:var(--blue)}
 .badge-orange{background:var(--accent-dim);color:var(--accent)}
 .badge-gray{background:var(--surface2);color:var(--text-muted)}
+.badge-yellow{background:rgba(234,179,8,.15);color:var(--yellow)}
+.badge-red{background:rgba(239,68,68,.15);color:var(--red)}
 
 /* ── Bug detail ── */
 .bug-comment{color:var(--text);font-style:italic;margin-bottom:4px}
@@ -96,10 +98,31 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .expand-btn:hover{border-color:var(--accent);color:var(--accent)}
 .detail-row{display:none;background:var(--surface2)}
 .detail-row.open{display:table-row}
-.detail-cell{padding:12px 16px 16px;border-bottom:1px solid var(--border)}
+.detail-cell{padding:16px 16px 20px;border-bottom:1px solid var(--border)}
 .detail-block{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--text-dim);white-space:pre-wrap;word-break:break-all;max-height:200px;overflow-y:auto;margin-top:8px}
-.detail-label{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:10px}
+.detail-label{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:14px}
 .detail-label:first-child{margin-top:0}
+
+/* ── Lesson review panel ── */
+.lesson-section{margin-top:16px;border-top:1px solid var(--border);padding-top:16px}
+.lesson-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.lesson-title{font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.5px}
+.lesson-status-badge{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600}
+.lesson-analyzing{display:flex;align-items:center;gap:8px;color:var(--text-dim);font-size:13px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px}
+.lesson-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;color:var(--text);font-size:13px;line-height:1.6;font-style:italic}
+.lesson-box.approved{border-color:rgba(34,197,94,.3);background:rgba(34,197,94,.05)}
+.lesson-box.rejected{border-color:rgba(239,68,68,.2);opacity:.6}
+.lesson-insufficient{color:var(--text-muted);font-size:12px;font-style:italic;padding:10px;background:var(--bg);border:1px dashed var(--border);border-radius:6px}
+.lesson-actions{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
+.lesson-btn{border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:opacity .15s}
+.lesson-btn:hover{opacity:.85}
+.lesson-btn-approve{background:rgba(34,197,94,.2);color:var(--green)}
+.lesson-btn-reject{background:rgba(239,68,68,.15);color:var(--red)}
+.lesson-btn-reanalyze{background:var(--surface2);color:var(--text-dim);border:1px solid var(--border)}
+.notes-input{flex:1;min-width:200px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:12px;font-family:var(--font);outline:none}
+.notes-input:focus{border-color:var(--accent)}
+.notes-input::placeholder{color:var(--text-muted)}
+.lesson-done-msg{font-size:12px;color:var(--green);margin-left:4px}
 </style>
 </head>
 <body>
@@ -154,9 +177,9 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>Time</th><th>User</th><th>Comment</th><th>Route</th><th></th>
+              <th>Time</th><th>Comment</th><th>Lesson</th><th></th>
             </tr></thead>
-            <tbody id="bugs-body"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody>
+            <tbody id="bugs-body"><tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -210,24 +233,18 @@ function doLogin() {
   const pass = document.getElementById('inp-pass').value;
   const err  = document.getElementById('login-err');
   err.style.display = 'none';
-  if (pass !== ADMIN_PASSWORD) {
-    err.style.display = 'block';
-    return;
-  }
+  if (pass !== ADMIN_PASSWORD) { err.style.display = 'block'; return; }
   localStorage.setItem('tt_admin_authed', '1');
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   loadAll();
 }
-
 function doLogout() {
   localStorage.removeItem('tt_admin_authed');
   document.getElementById('login').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
   document.getElementById('inp-pass').value = '';
 }
-
-// Auto-login if already authenticated
 window.addEventListener('DOMContentLoaded', () => {
   if (localStorage.getItem('tt_admin_authed') === '1') {
     document.getElementById('login').style.display = 'none';
@@ -245,19 +262,22 @@ function showPanel(name, btn) {
   btn.classList.add('active');
 }
 
-// ── Fetch helper ─────────────────────────────────────────────────────────────
+// ── Fetch helpers ─────────────────────────────────────────────────────────────
 async function sb(path, opts = {}) {
   const res = await fetch(SUPABASE_URL + path, {
     ...opts,
-    headers: {
-      'apikey': SERVICE_KEY,
-      'Authorization': 'Bearer ' + SERVICE_KEY,
-      'Content-Type': 'application/json',
-      ...(opts.headers || {}),
-    },
+    headers: { 'apikey': SERVICE_KEY, 'Authorization': 'Bearer ' + SERVICE_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+async function sbPatch(path, body) {
+  await fetch(SUPABASE_URL + path, {
+    method: 'PATCH',
+    headers: { 'apikey': SERVICE_KEY, 'Authorization': 'Bearer ' + SERVICE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+    body: JSON.stringify(body),
+  });
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
@@ -272,13 +292,12 @@ function fmtDate(iso) {
 }
 function fmtDateShort(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+  return new Date(iso).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
 }
 function timeSince(iso) {
   if (!iso) return '—';
   const s = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (s < 60)  return s + 's ago';
+  if (s < 60)   return s + 's ago';
   if (s < 3600) return Math.floor(s/60) + 'm ago';
   if (s < 86400) return Math.floor(s/3600) + 'h ago';
   return Math.floor(s/86400) + 'd ago';
@@ -286,61 +305,202 @@ function timeSince(iso) {
 function statCard(value, label, accent=false) {
   return `<div class="stat-card"><div class="stat-value ${accent?'stat-accent':''}">${value}</div><div class="stat-label">${label}</div></div>`;
 }
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 
 // ── Bug Reports ───────────────────────────────────────────────────────────────
+// Store report data keyed by index for use in callbacks
+const _bugReports = {};
+
 async function loadBugs() {
   const tbody = document.getElementById('bugs-body');
-  tbody.innerHTML = '<tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr>';
+  tbody.innerHTML = '<tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr>';
   try {
     const data = await sb('/rest/v1/bug_reports?select=*&order=created_at.desc&limit=200');
     document.getElementById('badge-bugs').textContent = data.length;
 
-    // Stats
-    const today = data.filter(r => new Date(r.created_at) > new Date(Date.now()-86400000)).length;
-    const week  = data.filter(r => new Date(r.created_at) > new Date(Date.now()-7*86400000)).length;
+    const today   = data.filter(r => new Date(r.created_at) > new Date(Date.now()-86400000)).length;
+    const week    = data.filter(r => new Date(r.created_at) > new Date(Date.now()-7*86400000)).length;
+    const approved = data.filter(r => r.lesson_approved === true).length;
+    const pending  = data.filter(r => r.proposed_lesson && r.lesson_approved === null).length;
     document.getElementById('bug-stats').innerHTML =
       statCard(data.length, 'Total Reports') +
       statCard(today, 'Last 24h', today>0) +
-      statCard(week,  'Last 7 days');
+      statCard(approved, 'Lessons Approved', approved>0) +
+      statCard(pending,  'Lessons Pending', pending>0);
 
     if (!data.length) {
-      tbody.innerHTML = '<tr><td colspan="5"><div class="empty"><div class="empty-icon">🎉</div>No bug reports yet</div></td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4"><div class="empty"><div class="empty-icon">🎉</div>No bug reports yet</div></td></tr>';
       return;
     }
 
-    tbody.innerHTML = data.map((r,i) => {
-      const comment = r.comment || r.p_comment || '';
-      const query   = r.query   || r.p_query  || '';
-      const routeTitle = r.route_data?.title || r.p_route_data?.title || '';
-      const userId  = r.user_id ? r.user_id.slice(0,8)+'…' : 'anon';
+    tbody.innerHTML = data.map((r, i) => {
+      _bugReports[i] = r; // cache for callbacks
+      const comment  = r.comment || '';
+      const query    = r.page_context || '';
       const hasImage = !!r.image_data;
-      const hasDetail = query || routeTitle || r.route_data || r.p_route_data || hasImage;
-      const routeJson = JSON.stringify(r.route_data || r.p_route_data || {}, null, 2);
-      const imgSrc = hasImage ? (r.image_data.startsWith('data:') ? r.image_data : 'data:image/png;base64,' + r.image_data) : '';
+
+      // Lesson status badge for the row
+      let lessonBadge = '';
+      if (r.lesson_approved === true)       lessonBadge = '<span class="badge badge-green">✓ Approved</span>';
+      else if (r.lesson_approved === false) lessonBadge = '<span class="badge badge-red">✗ Rejected</span>';
+      else if (r.proposed_lesson)           lessonBadge = '<span class="badge badge-yellow">⏳ Pending</span>';
+      else                                  lessonBadge = '<span class="badge badge-gray">—</span>';
+
       return `
         <tr>
           <td class="cell-mono">${timeSince(r.created_at)}<br><span style="font-size:10px;color:var(--text-muted)">${fmtDate(r.created_at)}</span></td>
-          <td><span class="cell-mono" style="font-size:11px">${userId}</span></td>
-          <td><div class="bug-comment">${comment || '<span style="color:var(--text-muted)">—</span>'}</div>${query ? `<div class="bug-query">Query: "${query}"</div>` : ''}</td>
-          <td>${routeTitle ? `<span class="bug-route">${routeTitle}</span>` : '<span style="color:var(--text-muted)">—</span>'}</td>
-          <td style="text-align:center">${hasImage ? `<span title="Has screenshot" style="font-size:16px;cursor:pointer" onclick="toggleDetail(${i})">📷</span> ` : ''}${hasDetail ? `<button class="expand-btn" onclick="toggleDetail(${i})">Details</button>` : ''}</td>
+          <td>
+            <div class="bug-comment">${comment || '<span style="color:var(--text-muted)">—</span>'}</div>
+            ${query ? `<div class="bug-query">Query: "${escHtml(query)}"</div>` : ''}
+          </td>
+          <td>${lessonBadge}</td>
+          <td style="text-align:right;white-space:nowrap">
+            ${hasImage ? `<span title="Has screenshot" style="font-size:15px;margin-right:6px;cursor:pointer" onclick="toggleDetail(${i})">📷</span>` : ''}
+            <button class="expand-btn" onclick="toggleDetail(${i})">Review</button>
+          </td>
         </tr>
         <tr class="detail-row" id="detail-${i}">
-          <td class="detail-cell" colspan="5">
-            ${hasImage ? `<div class="detail-label">Screenshot</div><img src="${imgSrc}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);margin-bottom:12px" alt="screenshot"/>` : ''}
-            ${query ? `<div class="detail-label">Route Query</div><div class="detail-block">${escHtml(query)}</div>` : ''}
-            ${routeJson !== '{}' ? `<div class="detail-label">Route Data</div><div class="detail-block">${escHtml(routeJson)}</div>` : ''}
+          <td class="detail-cell" colspan="4" id="detail-cell-${i}">
+            ${renderDetailStatic(r, i)}
           </td>
         </tr>`;
     }).join('');
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
   }
 }
 
+function renderDetailStatic(r, i) {
+  const imgSrc = r.image_data
+    ? (r.image_data.startsWith('data:') ? r.image_data : 'data:image/png;base64,' + r.image_data)
+    : '';
+  const routeJson = JSON.stringify(r.route_data || {}, null, 2);
+  return `
+    ${imgSrc ? `<div class="detail-label">Screenshot</div><img src="${imgSrc}" style="max-width:100%;border-radius:8px;border:1px solid var(--border);margin-bottom:4px" alt="screenshot"/>` : ''}
+    ${r.page_context ? `<div class="detail-label">Route Query</div><div class="detail-block">${escHtml(r.page_context)}</div>` : ''}
+    ${routeJson !== '{}' ? `<div class="detail-label">Route Data</div><div class="detail-block">${escHtml(routeJson)}</div>` : ''}
+    <div class="lesson-section" id="lesson-section-${i}">
+      ${renderLessonSection(r, i)}
+    </div>`;
+}
+
+function renderLessonSection(r, i) {
+  let statusBadge = '';
+  if (r.lesson_approved === true)       statusBadge = '<span class="lesson-status-badge badge-green">✓ Approved — routing uses this lesson</span>';
+  else if (r.lesson_approved === false) statusBadge = '<span class="lesson-status-badge badge-red">✗ Rejected</span>';
+  else if (r.proposed_lesson)           statusBadge = '<span class="lesson-status-badge badge-yellow">⏳ Awaiting your review</span>';
+
+  const notesVal = escHtml(r.admin_notes || '');
+
+  let lessonBody = '';
+  if (r.proposed_lesson) {
+    const boxClass = r.lesson_approved === true ? 'approved' : r.lesson_approved === false ? 'rejected' : '';
+    lessonBody = `
+      <div class="lesson-box ${boxClass}">${escHtml(r.proposed_lesson)}</div>
+      ${r.lesson_approved !== true ? `
+      <div class="lesson-actions">
+        <button class="lesson-btn lesson-btn-approve" onclick="approveLesson(${i}, true)">✓ Approve</button>
+        <button class="lesson-btn lesson-btn-reject"  onclick="approveLesson(${i}, false)">✗ Reject</button>
+        <input class="notes-input" id="notes-${i}" placeholder="Add context for Claude (optional)…" value="${notesVal}"/>
+        <button class="lesson-btn lesson-btn-reanalyze" onclick="reanalyze(${i})">↺ Re-analyze</button>
+        <span class="lesson-done-msg" id="lesson-done-${i}" style="display:none"></span>
+      </div>` : `
+      <div class="lesson-actions">
+        <button class="lesson-btn lesson-btn-reject" onclick="approveLesson(${i}, false)">✗ Revoke approval</button>
+        ${r.admin_notes ? `<div style="font-size:12px;color:var(--text-muted);margin-left:4px">Note: ${escHtml(r.admin_notes)}</div>` : ''}
+      </div>`}`;
+  } else {
+    lessonBody = `<div class="lesson-analyzing" id="lesson-analyzing-${i}"><span class="spinner"></span>Analyzing with Claude…</div>`;
+  }
+
+  return `
+    <div class="lesson-header">
+      <div class="lesson-title">🧠 Routing Lesson</div>
+      ${statusBadge}
+    </div>
+    ${lessonBody}`;
+}
+
+// Called when detail row is opened — triggers analysis if needed
 function toggleDetail(i) {
-  const row = document.getElementById('detail-' + i);
-  row.classList.toggle('open');
+  const row  = document.getElementById('detail-' + i);
+  const open = row.classList.toggle('open');
+  if (open && _bugReports[i] && !_bugReports[i].proposed_lesson) {
+    // Trigger analysis — panel already shows the spinner via renderLessonSection
+    analyzeBugReport(i);
+  }
+}
+
+async function analyzeBugReport(i) {
+  const r = _bugReports[i];
+  if (!r || !r.id) return;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-bug-report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SERVICE_KEY },
+      body: JSON.stringify({ bug_report_id: r.id }),
+    });
+    const data = await res.json();
+    if (data.success && data.proposed_lesson) {
+      _bugReports[i].proposed_lesson = data.proposed_lesson;
+      // Refresh just the lesson section
+      document.getElementById('lesson-section-' + i).innerHTML = renderLessonSection(_bugReports[i], i);
+    } else if (data.reason === 'INSUFFICIENT_DETAIL') {
+      document.getElementById('lesson-section-' + i).innerHTML = `
+        <div class="lesson-header"><div class="lesson-title">🧠 Routing Lesson</div></div>
+        <div class="lesson-insufficient">Comment is too vague to extract a specific routing lesson. No action needed.</div>`;
+    } else {
+      document.getElementById('lesson-section-' + i).innerHTML = `
+        <div class="lesson-header"><div class="lesson-title">🧠 Routing Lesson</div></div>
+        <div class="lesson-insufficient" style="color:var(--red)">Analysis failed: ${escHtml(data.error || 'Unknown error')}</div>`;
+    }
+  } catch(e) {
+    document.getElementById('lesson-section-' + i).innerHTML = `
+      <div class="lesson-header"><div class="lesson-title">🧠 Routing Lesson</div></div>
+      <div class="lesson-insufficient" style="color:var(--red)">Network error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function approveLesson(i, approved) {
+  const r = _bugReports[i];
+  if (!r || !r.id) return;
+  const notesEl = document.getElementById('notes-' + i);
+  const adminNotes = notesEl ? notesEl.value.trim() : (r.admin_notes || '');
+  try {
+    await sbPatch(`/rest/v1/bug_reports?id=eq.${r.id}`, {
+      lesson_approved: approved,
+      admin_notes: adminNotes || null,
+    });
+    _bugReports[i].lesson_approved = approved;
+    _bugReports[i].admin_notes = adminNotes || null;
+    // Refresh the lesson section
+    document.getElementById('lesson-section-' + i).innerHTML = renderLessonSection(_bugReports[i], i);
+    // Update the row badge
+    const rows = document.querySelectorAll('#bugs-body tr:not(.detail-row)');
+    if (rows[i]) {
+      const badgeCell = rows[i].querySelectorAll('td')[2];
+      if (badgeCell) {
+        if (approved)  badgeCell.innerHTML = '<span class="badge badge-green">✓ Approved</span>';
+        else           badgeCell.innerHTML = '<span class="badge badge-red">✗ Rejected</span>';
+      }
+    }
+  } catch(e) {
+    const doneEl = document.getElementById('lesson-done-' + i);
+    if (doneEl) { doneEl.style.color = 'var(--red)'; doneEl.textContent = 'Save failed: ' + e.message; doneEl.style.display = 'inline'; }
+  }
+}
+
+async function reanalyze(i) {
+  const r = _bugReports[i];
+  if (!r || !r.id) return;
+  // Reset proposed_lesson so analysis re-runs
+  await sbPatch(`/rest/v1/bug_reports?id=eq.${r.id}`, { proposed_lesson: null, lesson_approved: null });
+  _bugReports[i].proposed_lesson = null;
+  _bugReports[i].lesson_approved = null;
+  document.getElementById('lesson-section-' + i).innerHTML = renderLessonSection(_bugReports[i], i);
+  analyzeBugReport(i);
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -351,7 +511,6 @@ async function loadUsers() {
     const data = await sb('/auth/v1/admin/users?per_page=500');
     const users = data.users || data;
     document.getElementById('badge-users').textContent = users.length;
-
     const today = users.filter(u => new Date(u.created_at) > new Date(Date.now()-86400000)).length;
     const week  = users.filter(u => new Date(u.created_at) > new Date(Date.now()-7*86400000)).length;
     const confirmed = users.filter(u => u.email_confirmed_at || u.confirmed_at).length;
@@ -360,24 +519,19 @@ async function loadUsers() {
       statCard(confirmed, 'Confirmed') +
       statCard(today, 'Joined Today', today>0) +
       statCard(week, 'Joined This Week');
-
     if (!users.length) {
       tbody.innerHTML = '<tr><td colspan="5"><div class="empty"><div class="empty-icon">👻</div>No users yet</div></td></tr>';
       return;
     }
-
-    // Sort newest first
     users.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
-
     tbody.innerHTML = users.map(u => {
       const provider  = u.app_metadata?.provider || 'email';
       const confirmed = u.email_confirmed_at || u.confirmed_at;
-      const lastSeen  = u.last_sign_in_at;
       return `
         <tr>
           <td class="cell-main">${u.email || '—'}</td>
           <td class="cell-mono" style="font-size:12px">${fmtDateShort(u.created_at)}</td>
-          <td class="cell-mono" style="font-size:12px">${lastSeen ? timeSince(lastSeen) : '—'}</td>
+          <td class="cell-mono" style="font-size:12px">${u.last_sign_in_at ? timeSince(u.last_sign_in_at) : '—'}</td>
           <td><span class="badge ${provider==='google'?'badge-blue':'badge-gray'}">${provider}</span></td>
           <td><span class="badge ${confirmed?'badge-green':'badge-gray'}">${confirmed?'confirmed':'pending'}</span></td>
         </tr>`;
@@ -394,7 +548,6 @@ async function loadRoutes() {
   try {
     const data = await sb('/rest/v1/routes?select=id,title,destination,distance_mi,duration_str,group_name,community_score,is_stale,created_at&order=created_at.desc&limit=300');
     document.getElementById('badge-routes').textContent = data.length;
-
     const today  = data.filter(r => r.created_at && new Date(r.created_at) > new Date(Date.now()-86400000)).length;
     const week   = data.filter(r => r.created_at && new Date(r.created_at) > new Date(Date.now()-7*86400000)).length;
     const totalMi = data.reduce((s,r) => s + (r.distance_mi||0), 0);
@@ -403,12 +556,10 @@ async function loadRoutes() {
       statCard(today, 'Today', today>0) +
       statCard(week,  'This Week') +
       statCard(Math.round(totalMi).toLocaleString() + ' mi', 'Total Miles Routed', true);
-
     if (!data.length) {
       tbody.innerHTML = '<tr><td colspan="6"><div class="empty"><div class="empty-icon">🗺️</div>No routes yet</div></td></tr>';
       return;
     }
-
     tbody.innerHTML = data.map(r => {
       const score = r.community_score || 0;
       return `
@@ -424,11 +575,6 @@ async function loadRoutes() {
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
   }
-}
-
-// ── Utils ─────────────────────────────────────────────────────────────────────
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
 </body>
