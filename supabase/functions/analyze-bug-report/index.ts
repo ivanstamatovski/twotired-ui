@@ -1,4 +1,4 @@
-// analyze-bug-report edge function — v1.1
+// analyze-bug-report edge function — v1.2
 // Called by admin portal when a bug report detail panel is opened.
 // Fetches the report + route context, asks Claude Haiku (with vision) to write
 // a specific routing lesson, saves it back to bug_reports.proposed_lesson.
@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
 
     // Fetch the bug report — include route_context and image_data (v1.1)
     const fetchRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bug_reports?id=eq.${bug_report_id}&select=comment,page_context,proposed_lesson,lesson_approved,route_context,image_data`,
+      `${SUPABASE_URL}/rest/v1/bug_reports?id=eq.${bug_report_id}&select=comment,page_context,proposed_lesson,lesson_approved,route_context,image_data,admin_notes`,
       {
         headers: {
           'apikey': SUPABASE_SERVICE_ROLE_KEY,
@@ -93,6 +93,11 @@ Deno.serve(async (req) => {
       ? `\nOriginal query: "${report.page_context}"`
       : '';
 
+    // Admin hint — if the reviewer typed context before clicking Re-analyze, include it
+    const adminHint = report.admin_notes && report.admin_notes.trim()
+      ? `\nAdmin hint: "${report.admin_notes.trim()}"`
+      : '';
+
     // ── Build Claude message — use vision if image_data available ─────────────
     // image_data is stored as a full data URI: "data:image/jpeg;base64,..."
     const imageData = report.image_data;
@@ -112,14 +117,14 @@ Deno.serve(async (req) => {
         },
         {
           type: 'text',
-          text: `Rider complaint: "${report.comment.trim()}"${queryContext}${routeContextBlock}\n\nThe screenshot above shows the map view the rider was looking at when they filed this report (they may have zoomed in on the problem area).`,
+          text: `Rider complaint: "${report.comment.trim()}"${queryContext}${routeContextBlock}${adminHint}\n\nThe screenshot above shows the map view the rider was looking at when they filed this report (they may have zoomed in on the problem area).`,
         },
       ];
     } else {
       messageContent = [
         {
           type: 'text',
-          text: `Rider complaint: "${report.comment.trim()}"${queryContext}${routeContextBlock}`,
+          text: `Rider complaint: "${report.comment.trim()}"${queryContext}${routeContextBlock}${adminHint}`,
         },
       ];
     }
