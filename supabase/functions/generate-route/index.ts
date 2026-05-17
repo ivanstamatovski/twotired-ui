@@ -1,4 +1,4 @@
-// generate-route edge function — v2.28
+// generate-route edge function — v2.29
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -573,10 +573,10 @@ Examples:
 → Keep escape_waypoint appropriate for the direction. Do NOT add escape_via_waypoints.
 
 9W threading guide (NYC origin, escape_waypoint: "Piermont, NY"):
-  Destination = Bear Mountain, NY    → intermediate_waypoints: []  (Piermont→Bear Mtn is direct on 9W)
-  Destination = Cornwall / Storm King → intermediate_waypoints: ["Bear Mountain, NY"]
-  Destination = Newburgh, NY          → intermediate_waypoints: ["Bear Mountain, NY", "Cornwall, NY"]
-  Destination = anywhere beyond Newburgh → intermediate_waypoints: ["Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
+  Destination = Bear Mountain, NY     → intermediate_waypoints: ["Nyack, NY"]
+  Destination = Cornwall / Storm King → intermediate_waypoints: ["Nyack, NY", "Bear Mountain, NY"]
+  Destination = Newburgh, NY          → intermediate_waypoints: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY"]
+  Destination = anywhere beyond Newburgh → intermediate_waypoints: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
 
 NY-28 threading guide (escape_waypoint: "Harriman, NY"):
   Destination = Woodstock, NY   → intermediate_waypoints: ["Kingston, NY"]
@@ -588,7 +588,7 @@ NY-97 threading guide (escape_waypoint: "Harriman, NY"):
 
 Examples:
 "take me to Hawks Nest via 9W"      → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
-"take me to Bear Mountain along 9W" → escape: "Piermont, NY", intermediates: []
+"take me to Bear Mountain along 9W" → escape: "Piermont, NY", intermediates: ["Nyack, NY"]
 "go to Woodstock taking NY-28"      → escape: "Harriman, NY", intermediates: ["Kingston, NY"]
 "ride 9W to Newburgh"               → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
 
