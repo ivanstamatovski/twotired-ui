@@ -1,4 +1,4 @@
-// generate-route edge function — v2.21
+// generate-route edge function — v2.22
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -321,10 +321,13 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
   CRITICAL — corridor depends on where the rider actually is:
 
   Origin is NYC or south of GWB (Manhattan, Brooklyn, Bronx, Queens, NJ below the bridge):
-    escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
+    escape_waypoint: "Englewood Cliffs, NJ"
     intermediate_waypoints: ["Alpine, NJ"]
+    WHY Englewood Cliffs: geocodes reliably to a named town just north of GWB on 9W — the car
+    profile from Manhattan naturally crosses via GWB to reach it. Do NOT use "George Washington
+    Bridge, Fort Lee, NJ" — it geocodes to a parking lot and creates a U-turn at the bridge.
     WHY Alpine: Palisades Pkwy is tagged as motorway (avoided by bike profile). Anchoring at
-    Alpine (15mi north of bridge) forces the route north through NJ, enters NY near Nyack.
+    Alpine (15mi north) forces the route north through NJ, enters NY near Nyack.
 
   Origin is NORTH of GWB (Westchester, Yonkers, White Plains, Tarrytown, or any Hudson Valley town):
     NEVER use GWB — it forces the rider south past their destination and back north (double loop).
@@ -337,9 +340,10 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
   If the user explicitly mentions 9W, west bank, or wants to avoid NJ entirely:
 
   Origin is NYC or south of GWB (Manhattan, Brooklyn, Bronx, Queens, NJ):
-    escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
+    escape_waypoint: "Englewood Cliffs, NJ"
     intermediate_waypoints: ["Piermont, NY"]
-    WHY Piermont: first town on 9W in NY north of the bridge — no NJ detour.
+    WHY Englewood Cliffs: geocodes to a real town; car profile crosses via GWB naturally.
+    WHY Piermont: first town on 9W in NY north of the bridge — anchors route to NY side.
 
   Origin is NORTH of GWB (Westchester, Yonkers, White Plains, Tarrytown, etc.):
     NEVER use GWB for 9W — already handled by the 9W rider vocabulary rule.
@@ -372,7 +376,7 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
   NEVER use "Florida, NY" as an intermediate — causes west-then-east zigzag.
 
 ── NORTHWEST: Delaware Water Gap, Stroudsburg PA, NJ Highlands ──
-  escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
+  escape_waypoint: "Englewood Cliffs, NJ"
   intermediate_waypoints: ["Mahwah, NJ"] — routes onto NJ-17 / NJ-23 NJ highlands corridor
 
 ── WEST / SOUTHWEST: Trenton, Princeton, Philadelphia, Delaware ──
@@ -438,7 +442,7 @@ Examples:
 "take me to Bear Mountain via BQE"
   → BQE (I-278) is a city highway through Brooklyn/Queens.
   → escape_via_waypoints: ["I-278/BQE, Brooklyn, NY"]
-  → escape_waypoint: "George Washington Bridge, Fort Lee, NJ" (unchanged — correct exit for Bear Mountain)
+  → escape_waypoint: "Englewood Cliffs, NJ" (unchanged — correct exit for Bear Mountain)
   → intermediate_waypoints: ["Alpine, NJ"] (unchanged)
 
 "go to the shore through the Belt Parkway"
@@ -447,7 +451,7 @@ Examples:
 
 "take the FDR Drive to Bear Mountain"
   → escape_via_waypoints: ["FDR Drive/96th St, Manhattan, NY"]
-  → escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
+  → escape_waypoint: "Englewood Cliffs, NJ"
 
 ── SCENIC / RURAL ROADS ──
 (9W, NY-97, NY-218, NY-28, NJ-94, NJ-23, Route 6, Route 44, Route 209, Palisades Pkwy, etc.)
@@ -594,7 +598,7 @@ NJ-94 / NJ-23 — NJ Highlands backroads (High Point, Delaware Water Gap from NJ
 
 NJ Route 29 — Delaware River road (Milford NJ, Frenchtown, Lambertville):
   For destinations along the NJ side of the Delaware River south of Port Jervis:
-  escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
+  escape_waypoint: "Englewood Cliffs, NJ"
   intermediate_waypoints: ["Mahwah, NJ", "Milford, NJ"] — routes down NJ-23 → NJ-29 riverside run.
 
 ━━ STOPS ━━
