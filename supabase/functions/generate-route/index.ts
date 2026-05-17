@@ -1,4 +1,4 @@
-// generate-route edge function — v2.30
+// generate-route edge function — v2.31
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -190,6 +190,7 @@ const KNOWN_WAYPOINTS: Record<string, LatLng> = {
   'ellenville, ny':                     { lat: 41.717875, lng: -74.394670 }, // US-209 / N Main St — OSM way 20223282
   'kingston, ny':                       { lat: 41.932782, lng: -74.011393 }, // NY-28 / Colonel Chandler Dr — OSM way 44036320
   // ── 9W scenic corridor ──
+  'haverstraw, ny':                     { lat: 41.197694, lng: -73.962861 }, // US 9W / Broadway, Haverstraw — OSM way 20693452
   'bear mountain, ny':                  { lat: 41.320894, lng: -73.991726 }, // US 9W at Bear Mountain circle — OSM way 20691455
   'bear mountain state park, ny':       { lat: 41.320894, lng: -73.991726 },
   'cornwall, ny':                       { lat: 41.439746, lng: -73.999997 }, // NY-218 / Bay View Ave — OSM way 605157171
@@ -598,10 +599,10 @@ Examples:
 → Keep escape_waypoint appropriate for the direction. Do NOT add escape_via_waypoints.
 
 9W threading guide (NYC origin, escape_waypoint: "Piermont, NY"):
-  Destination = Bear Mountain, NY     → intermediate_waypoints: ["Nyack, NY"]
-  Destination = Cornwall / Storm King → intermediate_waypoints: ["Nyack, NY", "Bear Mountain, NY"]
-  Destination = Newburgh, NY          → intermediate_waypoints: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY"]
-  Destination = anywhere beyond Newburgh → intermediate_waypoints: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
+  Destination = Bear Mountain, NY     → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY"]
+  Destination = Cornwall / Storm King → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY"]
+  Destination = Newburgh, NY          → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY"]
+  Destination = anywhere beyond Newburgh → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
 
 NY-28 threading guide (escape_waypoint: "Harriman, NY"):
   Destination = Woodstock, NY   → intermediate_waypoints: ["Kingston, NY"]
@@ -613,7 +614,7 @@ NY-97 threading guide (escape_waypoint: "Harriman, NY"):
 
 Examples:
 "take me to Hawks Nest via 9W"      → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
-"take me to Bear Mountain along 9W" → escape: "Piermont, NY", intermediates: ["Nyack, NY"]
+"take me to Bear Mountain along 9W" → escape: "Piermont, NY", intermediates: ["Nyack, NY", "Haverstraw, NY"]
 "go to Woodstock taking NY-28"      → escape: "Harriman, NY", intermediates: ["Kingston, NY"]
 "ride 9W to Newburgh"               → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
 
