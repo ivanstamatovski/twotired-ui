@@ -1,4 +1,4 @@
-// generate-route edge function — v2.24
+// generate-route edge function — v2.25
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -63,6 +63,36 @@ interface RouteRequest {
   intermediate_waypoints?: string[];  // 1-2 scenic corridor anchors between escape and stops
 }
 
+// ── Palisades Pkwy avoidance zone ─────────────────────────────────────────────
+// v2.25: The Palisades Interstate Pkwy (NJ/NY) is a motorway in OSM data.
+// The global motorway penalty (0.1 for tier 2) is sometimes not enough — the Pkwy's
+// high speed still makes it win over Route 9W (primary, 0.7 weight) on longer legs.
+// This area applies an ADDITIONAL 0.1 multiply_by factor to motorways in the corridor,
+// making combined priority 0.1 * 0.1 = 0.01 — effectively impassable for scenic routing.
+// Route 9W (primary) is unaffected by this zone → GraphHopper must take 9W.
+// Used in curviness tiers 2 and 3 only. Tier 1 (direct/spirited) uses highways lightly.
+const PALISADES_ZONE_AREAS = {
+  type: 'FeatureCollection',
+  features: [{
+    type: 'Feature',
+    id: 'palisades_pkwy',
+    properties: {},
+    geometry: {
+      type: 'Polygon',
+      // Rectangle covering NJ Palisades + lower Hudson Valley where Pkwy runs.
+      // W edge: -74.050 (past Mahwah), E edge: -73.880 (Hudson River bank).
+      // S edge: 40.840 (Fort Lee/GWB), N edge: 41.200 (Bear Mountain area).
+      coordinates: [[
+        [-74.050, 40.840],
+        [-73.880, 40.840],
+        [-73.880, 41.200],
+        [-74.050, 41.200],
+        [-74.050, 40.840],
+      ]],
+    },
+  }],
+};
+
 // ── Curviness tiers ───────────────────────────────────────────────────────────
 // distance_influence minimum is 90 in LM/flexible mode. All tiers use 90.
 // Differentiation comes from priority penalty weights only.
@@ -78,6 +108,7 @@ const CURVINESS_MODELS = [
   },
   // Tier 2: Scenic — avoids highways, prefers secondary/tertiary
   // Note: multiply_by max is 1.0 in LM mode. Preference via relative penalties only.
+  // Palisades zone: in_palisades_pkwy && MOTORWAY → extra 0.1 factor → combined 0.01.
   {
     speed: [],
     priority: [
@@ -86,10 +117,13 @@ const CURVINESS_MODELS = [
       { if: 'road_class == PRIMARY', multiply_by: '0.7' },
       { if: 'road_class == SECONDARY', multiply_by: '1.0' },
       { if: 'road_class == TERTIARY', multiply_by: '1.0' },
+      { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
     ],
+    areas: PALISADES_ZONE_AREAS,
     distance_influence: 90,
   },
   // Tier 3: Backroads — maximally avoids highways, strongly prefers small roads
+  // Palisades zone: in_palisades_pkwy && MOTORWAY → extra 0.1 factor → combined 0.005.
   {
     speed: [],
     priority: [
@@ -99,7 +133,9 @@ const CURVINESS_MODELS = [
       { if: 'road_class == SECONDARY', multiply_by: '1.0' },
       { if: 'road_class == TERTIARY', multiply_by: '1.0' },
       { if: 'road_class == UNCLASSIFIED', multiply_by: '1.0' },
+      { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
     ],
+    areas: PALISADES_ZONE_AREAS,
     distance_influence: 90,
   },
 ];
@@ -120,42 +156,44 @@ function haversineKm(a: LatLng, b: LatLng): number {
 // Fall back to Places API only for names not in this table.
 const KNOWN_WAYPOINTS: Record<string, LatLng> = {
   // ── GWB corridor — NJ side (escape via GWB from NYC) ──
-  // Coordinates are on Route 9W (cliff-edge road), NOT inland residential streets.
-  // Alpine interior (residential) is at lng ≈ -73.930 — WRONG. 9W is at lng ≈ -73.924.
-  'alpine, nj':                         { lat: 40.9553, lng: -73.9240 }, // Route 9W at Alpine (cliff-edge road)
-  'mahwah, nj':                         { lat: 41.0883, lng: -74.1468 }, // NJ-17 at Mahwah
-  'milford, nj':                        { lat: 40.5723, lng: -75.0948 }, // NJ-29 Milford
+  // v2.25: all coordinates at 6 decimal places for improved snap accuracy.
+  // Alpine: moved east to lng -73.9211 — cliff-edge position on Route 9W.
+  // Previous value -73.9240 was snapping to Warren Lane (inland residential).
+  // Route 9W runs at the top of the Palisades cliffs, distinctly east of residential streets.
+  'alpine, nj':                         { lat: 40.956700, lng: -73.921100 }, // Route 9W at Alpine — cliff-edge, NOT Warren Lane
+  'mahwah, nj':                         { lat: 41.088300, lng: -74.146800 }, // NJ-17 at Mahwah
+  'milford, nj':                        { lat: 40.572300, lng: -75.094800 }, // NJ-29 Milford
   // Englewood Cliffs kept for edge cases but no longer used as a routing waypoint:
-  'englewood cliffs, nj':               { lat: 40.8831, lng: -73.9470 }, // 9W/Palisade Ave (NOT Marjorie Terrace)
+  'englewood cliffs, nj':               { lat: 40.883100, lng: -73.947000 }, // 9W/Palisade Ave (NOT Marjorie Terrace)
   // ── GWB corridor — NY side ──
-  'piermont, ny':                       { lat: 41.0423, lng: -73.9130 }, // 9W at Piermont (main road)
-  'nyack, ny':                          { lat: 41.0906, lng: -73.9150 }, // 9W at Nyack/Tappan Zee
+  'piermont, ny':                       { lat: 41.042300, lng: -73.913000 }, // 9W at Piermont (main road)
+  'nyack, ny':                          { lat: 41.090600, lng: -73.915000 }, // 9W at Nyack/Tappan Zee
   // ── Mario Cuomo Bridge (Tappan Zee) — Westchester escape ──
-  'mario cuomo bridge, tarrytown, ny':  { lat: 41.0694, lng: -73.8790 }, // Tarrytown on-ramp
+  'mario cuomo bridge, tarrytown, ny':  { lat: 41.069400, lng: -73.879000 }, // Tarrytown on-ramp
   // ── Harriman (Thruway exit 16) — far north escape ──
-  'harriman, ny':                       { lat: 41.2091, lng: -74.1355 }, // NY-17 at Harriman
+  'harriman, ny':                       { lat: 41.209100, lng: -74.135500 }, // NY-17 at Harriman
   // ── Far north / Catskill intermediates ──
-  'middletown, ny':                     { lat: 41.4459, lng: -74.4229 }, // US-6/NY-17M
-  'goshen, ny':                         { lat: 41.4001, lng: -74.3263 }, // NY-17M/NY-94
-  'ellenville, ny':                     { lat: 41.7179, lng: -74.3923 }, // US-209
-  'kingston, ny':                       { lat: 41.9270, lng: -73.9974 }, // NY-28 entry
+  'middletown, ny':                     { lat: 41.445900, lng: -74.422900 }, // US-6/NY-17M
+  'goshen, ny':                         { lat: 41.400100, lng: -74.326300 }, // NY-17M/NY-94
+  'ellenville, ny':                     { lat: 41.717900, lng: -74.392300 }, // US-209
+  'kingston, ny':                       { lat: 41.927000, lng: -73.997400 }, // NY-28 entry
   // ── 9W scenic corridor ──
-  'bear mountain, ny':                  { lat: 41.3145, lng: -74.0063 }, // Bear Mountain SP
-  'bear mountain state park, ny':       { lat: 41.3145, lng: -74.0063 },
-  'cornwall, ny':                       { lat: 41.4320, lng: -74.0035 }, // NY-218/9W junction
-  'cornwall-on-hudson, ny':             { lat: 41.4320, lng: -74.0035 },
-  'newburgh, ny':                       { lat: 41.5034, lng: -74.0104 }, // NY-9W at Newburgh
+  'bear mountain, ny':                  { lat: 41.314500, lng: -74.006300 }, // Bear Mountain SP
+  'bear mountain state park, ny':       { lat: 41.314500, lng: -74.006300 },
+  'cornwall, ny':                       { lat: 41.432000, lng: -74.003500 }, // NY-218/9W junction
+  'cornwall-on-hudson, ny':             { lat: 41.432000, lng: -74.003500 },
+  'newburgh, ny':                       { lat: 41.503400, lng: -74.010400 }, // NY-9W at Newburgh
   // ── Staten Island crossings ──
-  'goethals bridge, staten island, ny': { lat: 40.6411, lng: -74.2006 }, // SI approach
-  'verrazano-narrows bridge, staten island, ny': { lat: 40.6065, lng: -74.0446 },
-  'perth amboy, nj':                    { lat: 40.5067, lng: -74.2654 }, // NJ-35
+  'goethals bridge, staten island, ny': { lat: 40.641100, lng: -74.200600 }, // SI approach
+  'verrazano-narrows bridge, staten island, ny': { lat: 40.606500, lng: -74.044600 },
+  'perth amboy, nj':                    { lat: 40.506700, lng: -74.265400 }, // NJ-35
   // ── Shore intermediates ──
-  'freehold, nj':                       { lat: 40.2593, lng: -74.2731 }, // NJ-9
-  'toms river, nj':                     { lat: 39.9534, lng: -74.1979 }, // NJ-37/US-9
+  'freehold, nj':                       { lat: 40.259300, lng: -74.273100 }, // NJ-9
+  'toms river, nj':                     { lat: 39.953400, lng: -74.197900 }, // NJ-37/US-9
   // ── Escape via waypoints (city highways — car profile only) ──
-  'i-278/bqe, brooklyn, ny':           { lat: 40.6928, lng: -73.9900 }, // BQE at Atlantic
-  'belt parkway/flatbush ave, brooklyn, ny': { lat: 40.6289, lng: -73.9443 },
-  'fdr drive/96th st, manhattan, ny':  { lat: 40.7847, lng: -73.9473 },
+  'i-278/bqe, brooklyn, ny':           { lat: 40.692800, lng: -73.990000 }, // BQE at Atlantic
+  'belt parkway/flatbush ave, brooklyn, ny': { lat: 40.628900, lng: -73.944300 },
+  'fdr drive/96th st, manhattan, ny':  { lat: 40.784700, lng: -73.947300 },
 };
 
 function lookupWaypoint(name: string): LatLng | null {
@@ -290,12 +328,17 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2): Promise
     };
   } else {
     // Motorcycle profile — LM flexible mode with scenic custom_model
+    // v2.25: snap_prevention stops waypoints from snapping to motorways/motorway_links.
+    // This ensures e.g. Alpine, NJ snaps to Route 9W (primary) not Palisades Pkwy (motorway).
+    // Combined with the PALISADES_ZONE_AREAS penalty in custom_model, motorways in the
+    // Palisades corridor are effectively ruled out for all scenic routing tiers (2 and 3).
     const model = CURVINESS_MODELS[curviness - 1];
     body = {
       points: points.map(p => [p.lng, p.lat]),
       profile: 'motorcycle',
       custom_model: model,
       'ch.disable': true,
+      snap_prevention: ['motorway', 'motorway_link'],
       points_encoded: false,
       instructions: true,
       locale: 'en',
