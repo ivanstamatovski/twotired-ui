@@ -1,4 +1,4 @@
-// generate-route edge function — v2.23
+// generate-route edge function — v2.24
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -120,13 +120,16 @@ function haversineKm(a: LatLng, b: LatLng): number {
 // Fall back to Places API only for names not in this table.
 const KNOWN_WAYPOINTS: Record<string, LatLng> = {
   // ── GWB corridor — NJ side (escape via GWB from NYC) ──
-  'englewood cliffs, nj':               { lat: 40.8831, lng: -73.9529 }, // 9W at Palisade Ave
-  'alpine, nj':                         { lat: 40.9553, lng: -73.9305 }, // 9W at Alpine
+  // Coordinates are on Route 9W (cliff-edge road), NOT inland residential streets.
+  // Alpine interior (residential) is at lng ≈ -73.930 — WRONG. 9W is at lng ≈ -73.924.
+  'alpine, nj':                         { lat: 40.9553, lng: -73.9240 }, // Route 9W at Alpine (cliff-edge road)
   'mahwah, nj':                         { lat: 41.0883, lng: -74.1468 }, // NJ-17 at Mahwah
   'milford, nj':                        { lat: 40.5723, lng: -75.0948 }, // NJ-29 Milford
+  // Englewood Cliffs kept for edge cases but no longer used as a routing waypoint:
+  'englewood cliffs, nj':               { lat: 40.8831, lng: -73.9470 }, // 9W/Palisade Ave (NOT Marjorie Terrace)
   // ── GWB corridor — NY side ──
-  'piermont, ny':                       { lat: 41.0423, lng: -73.9158 }, // 9W at Piermont
-  'nyack, ny':                          { lat: 41.0906, lng: -73.9179 }, // 9W at Nyack/Tappan Zee
+  'piermont, ny':                       { lat: 41.0423, lng: -73.9130 }, // 9W at Piermont (main road)
+  'nyack, ny':                          { lat: 41.0906, lng: -73.9150 }, // 9W at Nyack/Tappan Zee
   // ── Mario Cuomo Bridge (Tappan Zee) — Westchester escape ──
   'mario cuomo bridge, tarrytown, ny':  { lat: 41.0694, lng: -73.8790 }, // Tarrytown on-ramp
   // ── Harriman (Thruway exit 16) — far north escape ──
@@ -386,13 +389,12 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
   CRITICAL — corridor depends on where the rider actually is:
 
   Origin is NYC or south of GWB (Manhattan, Brooklyn, Bronx, Queens, NJ below the bridge):
-    escape_waypoint: "Englewood Cliffs, NJ"
-    intermediate_waypoints: ["Alpine, NJ"]
-    WHY Englewood Cliffs: geocodes reliably to a named town just north of GWB on 9W — the car
-    profile from Manhattan naturally crosses via GWB to reach it. Do NOT use "George Washington
-    Bridge, Fort Lee, NJ" — it geocodes to a parking lot and creates a U-turn at the bridge.
-    WHY Alpine: Palisades Pkwy is tagged as motorway (avoided by bike profile). Anchoring at
-    Alpine (15mi north) forces the route north through NJ, enters NY near Nyack.
+    escape_waypoint: "Alpine, NJ"
+    intermediate_waypoints: []   ← empty, no intermediate needed
+    WHY Alpine only: one waypoint is enough. The car profile from any NYC origin naturally crosses
+    via GWB and reaches Alpine on Route 9W. The motorcycle then continues north on 9W — Palisades
+    Pkwy is tagged as motorway (penalized/avoided), so GraphHopper takes 9W naturally.
+    Do NOT add Englewood Cliffs as a second waypoint — it creates an extra residential detour.
 
   Origin is NORTH of GWB (Westchester, Yonkers, White Plains, Tarrytown, or any Hudson Valley town):
     NEVER use GWB — it forces the rider south past their destination and back north (double loop).
@@ -405,10 +407,10 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
   If the user explicitly mentions 9W, west bank, or wants to avoid NJ entirely:
 
   Origin is NYC or south of GWB (Manhattan, Brooklyn, Bronx, Queens, NJ):
-    escape_waypoint: "Englewood Cliffs, NJ"
-    intermediate_waypoints: ["Piermont, NY"]
-    WHY Englewood Cliffs: geocodes to a real town; car profile crosses via GWB naturally.
-    WHY Piermont: first town on 9W in NY north of the bridge — anchors route to NY side.
+    escape_waypoint: "Piermont, NY"
+    intermediate_waypoints: []   ← empty
+    WHY Piermont only: car profile crosses via GWB and continues to Piermont (first NY town on 9W).
+    Motorcycle then follows 9W north naturally. No second waypoint needed.
 
   Origin is NORTH of GWB (Westchester, Yonkers, White Plains, Tarrytown, etc.):
     NEVER use GWB for 9W — already handled by the 9W rider vocabulary rule.
@@ -441,8 +443,8 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
   NEVER use "Florida, NY" as an intermediate — causes west-then-east zigzag.
 
 ── NORTHWEST: Delaware Water Gap, Stroudsburg PA, NJ Highlands ──
-  escape_waypoint: "Englewood Cliffs, NJ"
-  intermediate_waypoints: ["Mahwah, NJ"] — routes onto NJ-17 / NJ-23 NJ highlands corridor
+  escape_waypoint: "Mahwah, NJ"
+  intermediate_waypoints: []   ← one waypoint only; car profile crosses GWB → NJ-17 to Mahwah naturally
 
 ── WEST / SOUTHWEST: Trenton, Princeton, Philadelphia, Delaware ──
   escape_waypoint: "Goethals Bridge, Staten Island, NY"
