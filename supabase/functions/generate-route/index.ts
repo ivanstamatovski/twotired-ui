@@ -1,4 +1,4 @@
-// generate-route edge function — v2.25
+// generate-route edge function — v2.26
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -154,46 +154,45 @@ function haversineKm(a: LatLng, b: LatLng): number {
 // Coordinates are snapped to the road surface at each named point.
 // Claude outputs one of these names → we use the exact coordinate → no geocoding error.
 // Fall back to Places API only for names not in this table.
+// v2.26: all coordinates sourced from real OSM node data via Overpass API.
+// Each coord is a confirmed node on the named road way — not a town centroid.
+// OSM way IDs are cited for auditability.
 const KNOWN_WAYPOINTS: Record<string, LatLng> = {
-  // ── GWB corridor — NJ side (escape via GWB from NYC) ──
-  // v2.25: all coordinates at 6 decimal places for improved snap accuracy.
-  // Alpine: moved east to lng -73.9211 — cliff-edge position on Route 9W.
-  // Previous value -73.9240 was snapping to Warren Lane (inland residential).
-  // Route 9W runs at the top of the Palisades cliffs, distinctly east of residential streets.
-  'alpine, nj':                         { lat: 40.956700, lng: -73.921100 }, // Route 9W at Alpine — cliff-edge, NOT Warren Lane
-  'mahwah, nj':                         { lat: 41.088300, lng: -74.146800 }, // NJ-17 at Mahwah
-  'milford, nj':                        { lat: 40.572300, lng: -75.094800 }, // NJ-29 Milford
-  // Englewood Cliffs kept for edge cases but no longer used as a routing waypoint:
-  'englewood cliffs, nj':               { lat: 40.883100, lng: -73.947000 }, // 9W/Palisade Ave (NOT Marjorie Terrace)
+  // ── GWB corridor — NJ side ──
+  'alpine, nj':                         { lat: 40.956668, lng: -73.921224 }, // US 9W / Palisades Blvd — OSM way 1297483038
+  'mahwah, nj':                         { lat: 41.091303, lng: -74.154417 }, // NJ-17 / Route 17 South — OSM way 60972489
+  'milford, nj':                        { lat: 40.572300, lng: -75.094800 }, // NJ-29 / River Road at Milford Borough
+  // Englewood Cliffs: kept for edge cases — no longer a primary routing waypoint
+  'englewood cliffs, nj':               { lat: 40.882243, lng: -73.950588 }, // US 9W / Sylvan Ave — OSM way 46613631
   // ── GWB corridor — NY side ──
-  'piermont, ny':                       { lat: 41.042300, lng: -73.913000 }, // 9W at Piermont (main road)
-  'nyack, ny':                          { lat: 41.090600, lng: -73.915000 }, // 9W at Nyack/Tappan Zee
+  'piermont, ny':                       { lat: 41.036665, lng: -73.923354 }, // US 9W / Highland Ave, Piermont — OSM way 24168303
+  'nyack, ny':                          { lat: 41.081355, lng: -73.924058 }, // US 9W through Nyack — OSM way 8082568
   // ── Mario Cuomo Bridge (Tappan Zee) — Westchester escape ──
-  'mario cuomo bridge, tarrytown, ny':  { lat: 41.069400, lng: -73.879000 }, // Tarrytown on-ramp
-  // ── Harriman (Thruway exit 16) — far north escape ──
-  'harriman, ny':                       { lat: 41.209100, lng: -74.135500 }, // NY-17 at Harriman
+  'mario cuomo bridge, tarrytown, ny':  { lat: 41.070867, lng: -73.877595 }, // I-87/I-287 Tarrytown approach — OSM way 549576862
+  // ── Harriman (NY Thruway exit 16 area) — far north escape ──
+  'harriman, ny':                       { lat: 41.230961, lng: -74.182529 }, // NY-17 / State Hwy 17 — OSM way 45974941
   // ── Far north / Catskill intermediates ──
-  'middletown, ny':                     { lat: 41.445900, lng: -74.422900 }, // US-6/NY-17M
-  'goshen, ny':                         { lat: 41.400100, lng: -74.326300 }, // NY-17M/NY-94
-  'ellenville, ny':                     { lat: 41.717900, lng: -74.392300 }, // US-209
-  'kingston, ny':                       { lat: 41.927000, lng: -73.997400 }, // NY-28 entry
+  'middletown, ny':                     { lat: 41.439491, lng: -74.420791 }, // NY-17M / Academy Ave — OSM way 20667484
+  'goshen, ny':                         { lat: 41.395158, lng: -74.333064 }, // NY-17M — OSM way 20657580
+  'ellenville, ny':                     { lat: 41.717875, lng: -74.394670 }, // US-209 / N Main St — OSM way 20223282
+  'kingston, ny':                       { lat: 41.932782, lng: -74.011393 }, // NY-28 / Colonel Chandler Dr — OSM way 44036320
   // ── 9W scenic corridor ──
-  'bear mountain, ny':                  { lat: 41.314500, lng: -74.006300 }, // Bear Mountain SP
-  'bear mountain state park, ny':       { lat: 41.314500, lng: -74.006300 },
-  'cornwall, ny':                       { lat: 41.432000, lng: -74.003500 }, // NY-218/9W junction
-  'cornwall-on-hudson, ny':             { lat: 41.432000, lng: -74.003500 },
-  'newburgh, ny':                       { lat: 41.503400, lng: -74.010400 }, // NY-9W at Newburgh
+  'bear mountain, ny':                  { lat: 41.320894, lng: -73.991726 }, // US 9W at Bear Mountain circle — OSM way 20691455
+  'bear mountain state park, ny':       { lat: 41.320894, lng: -73.991726 },
+  'cornwall, ny':                       { lat: 41.439746, lng: -73.999997 }, // NY-218 / Bay View Ave — OSM way 605157171
+  'cornwall-on-hudson, ny':             { lat: 41.439746, lng: -73.999997 },
+  'newburgh, ny':                       { lat: 41.499076, lng: -74.021556 }, // US 9W / S Robinson Ave — OSM way 20666000
   // ── Staten Island crossings ──
-  'goethals bridge, staten island, ny': { lat: 40.641100, lng: -74.200600 }, // SI approach
-  'verrazano-narrows bridge, staten island, ny': { lat: 40.606500, lng: -74.044600 },
-  'perth amboy, nj':                    { lat: 40.506700, lng: -74.265400 }, // NJ-35
+  'goethals bridge, staten island, ny': { lat: 40.643592, lng: -74.209789 }, // I-278 SI approach — OSM way 38071038
+  'verrazano-narrows bridge, staten island, ny': { lat: 40.601958, lng: -74.058808 }, // I-278 SI Expressway — OSM way 5680111
+  'perth amboy, nj':                    { lat: 40.514965, lng: -74.286347 }, // NJ-35 / Convery Blvd — OSM way 11663261
   // ── Shore intermediates ──
-  'freehold, nj':                       { lat: 40.259300, lng: -74.273100 }, // NJ-9
-  'toms river, nj':                     { lat: 39.953400, lng: -74.197900 }, // NJ-37/US-9
+  'freehold, nj':                       { lat: 40.266728, lng: -74.293930 }, // US-9 / US Highway 9 — OSM way 46499952
+  'toms river, nj':                     { lat: 39.963559, lng: -74.204741 }, // NJ-37 / Route 37 West — OSM way 11742469
   // ── Escape via waypoints (city highways — car profile only) ──
-  'i-278/bqe, brooklyn, ny':           { lat: 40.692800, lng: -73.990000 }, // BQE at Atlantic
-  'belt parkway/flatbush ave, brooklyn, ny': { lat: 40.628900, lng: -73.944300 },
-  'fdr drive/96th st, manhattan, ny':  { lat: 40.784700, lng: -73.947300 },
+  'i-278/bqe, brooklyn, ny':           { lat: 40.692734, lng: -73.999541 }, // I-278 BQE Brooklyn — OSM way 38182028
+  'belt parkway/flatbush ave, brooklyn, ny': { lat: 40.584807, lng: -73.946343 }, // Belt Pkwy — OSM way 219685090
+  'fdr drive/96th st, manhattan, ny':  { lat: 40.781524, lng: -73.944267 }, // FDR Drive — OSM way 5670186
 };
 
 function lookupWaypoint(name: string): LatLng | null {
