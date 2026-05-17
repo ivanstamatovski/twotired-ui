@@ -1,4 +1,4 @@
-// generate-route edge function — v2.26
+// generate-route edge function — v2.27
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -638,18 +638,23 @@ Interpret these before geocoding anything. These override generic Places results
     profile will follow 9W naturally. Do not pin Bear Mountain, Cornwall, or other towns along the
     road — they become forced detours, not natural passages.
   → CRITICAL — anchor depends on origin location:
-    • Origin is NYC (Manhattan, Brooklyn, Bronx, Queens, NJ): escape via GWB, intermediate: "Piermont, NY"
+    • Origin is NYC (Manhattan, Brooklyn, Bronx, Queens, NJ):
+      escape_waypoint: "Piermont, NY", intermediate_waypoints: []
+      NEVER output "George Washington Bridge" as escape_waypoint — it geocodes to wrong NJ coordinates
+      and causes tunnel detours. The car profile crosses GWB automatically en route to Piermont.
     • Origin is NORTH of GWB (Tarrytown, Westchester, Yonkers, White Plains, Hudson Valley):
-      intermediate: "Nyack, NY" only — sits on 9W at the west end of Mario Cuomo (Tappan Zee) Bridge.
+      escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY", intermediate_waypoints: ["Nyack, NY"]
       NEVER use Piermont for north-of-GWB origins (forces 40-mile southward detour).
-  → "9W to [place]": intermediate: ["Nyack, NY"] only (or Piermont for NYC origins). Destination: [place].
-    The engine routes along 9W from there. No extra waypoints needed.
+  → "9W to [place]": escape_waypoint: "Piermont, NY" (NYC) or "Mario Cuomo Bridge, Tarrytown, NY" (north).
+    Destination: [place]. The engine routes along 9W from there. No extra waypoints needed.
 
 "Bear Mountain" or "Bear"
   → destination: "Bear Mountain State Park, NY"
   → use CLOSE NORTH corridor — but origin-dependent:
-    • NYC/south of GWB: GWB escape → Alpine, NJ intermediate (Palisades Pkwy corridor)
-    • North of GWB (Westchester, Yonkers, etc.): Mario Cuomo Bridge escape → Nyack, NY intermediate
+    • NYC/south of GWB: escape_waypoint: "Alpine, NJ", intermediate_waypoints: []
+      Car crosses GWB automatically — NEVER set "George Washington Bridge" as escape_waypoint.
+    • North of GWB (Westchester, Yonkers, etc.): escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY",
+      intermediate_waypoints: ["Nyack, NY"]
     NEVER send a north-of-GWB rider south to GWB for Bear Mountain — that's a double loop.
 
 "The Gunks" or "Gunks" or "Shawangunks"
@@ -679,11 +684,14 @@ If the user HAS stops, add a road anchor only if it's naturally on the way (no d
 
 US-9W — Hudson River west bank (Bear Mountain, Storm King, West Point, Cold Spring, Newburgh by river):
   ANCHOR DEPENDS ON ORIGIN — this is the most common mistake, read carefully:
-  • NYC-origin (Manhattan, Brooklyn, Bronx, Queens, NJ): escape_waypoint "George Washington Bridge",
-    intermediate "Piermont, NY" — first town on 9W north of GWB, perfect entry from below.
+  • NYC-origin (Manhattan, Brooklyn, Bronx, Queens, NJ):
+    escape_waypoint: "Piermont, NY", intermediate_waypoints: []
+    The car profile crosses GWB automatically when routing from NYC to Piermont — do NOT set
+    "George Washington Bridge" as the escape_waypoint. It is not in the hardcoded table and
+    will geocode to wrong coordinates (NJ toll plaza / parking lot), causing tunnel detours.
   • North-of-GWB origin (Tarrytown, Westchester, Yonkers, White Plains, Hudson Valley, NJ above GWB):
-    NO GWB escape. intermediate "Nyack, NY" — sits on 9W right at the west end of Mario Cuomo Bridge.
-    WHY: Mario Cuomo Bridge connects Tarrytown (east) → Nyack (west, directly on 9W). No south detour at all.
+    escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY", intermediate_waypoints: ["Nyack, NY"]
+    WHY: Mario Cuomo Bridge drops directly onto 9W at Nyack. No south detour at all.
     Using Piermont for a Tarrytown-origin forces 40 miles south to the GWB and back — a 4h38min disaster.
   Full 9W run north to Newburgh: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
 
