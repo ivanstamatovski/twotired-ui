@@ -1,4 +1,4 @@
-// generate-route edge function — v2.27
+// generate-route edge function — v2.28
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -564,17 +564,33 @@ Examples:
 
 ── SCENIC / RURAL ROADS ──
 (9W, NY-97, NY-218, NY-28, NJ-94, NJ-23, Route 6, Route 44, Route 209, Palisades Pkwy, etc.)
-→ The rider is specifying the scenic CORRIDOR. Handle identically to CORRIDOR REPLACEMENT.
-→ Pick ONE entry waypoint that puts the route onto the named road.
-→ Set as intermediate_waypoints (motorcycle profile follows scenic roads naturally).
-→ Keep escape_waypoint appropriate for the direction. Adjust curviness if needed.
-→ Do NOT add escape_via_waypoints for scenic roads — the motorcycle profile handles them.
-→ Do NOT stack additional corridor waypoints — one entry point is enough, GraphHopper follows the road.
+→ "Via [road]" means FOLLOW that road as far as it goes toward the destination, then exit.
+→ ONE entry waypoint is only enough when the destination is the FIRST town on the road.
+  For any destination further along, you must THREAD the road with multiple intermediate waypoints
+  so GraphHopper doesn't cut across to the destination on other roads.
+→ Use towns that sit directly ON the named road. Pick all towns between the entry point and where
+  the road naturally diverges toward the destination — then stop.
+→ Keep escape_waypoint appropriate for the direction. Do NOT add escape_via_waypoints.
+
+9W threading guide (NYC origin, escape_waypoint: "Piermont, NY"):
+  Destination = Bear Mountain, NY    → intermediate_waypoints: []  (Piermont→Bear Mtn is direct on 9W)
+  Destination = Cornwall / Storm King → intermediate_waypoints: ["Bear Mountain, NY"]
+  Destination = Newburgh, NY          → intermediate_waypoints: ["Bear Mountain, NY", "Cornwall, NY"]
+  Destination = anywhere beyond Newburgh → intermediate_waypoints: ["Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
+
+NY-28 threading guide (escape_waypoint: "Harriman, NY"):
+  Destination = Woodstock, NY   → intermediate_waypoints: ["Kingston, NY"]
+  Destination = Phoenicia, NY   → intermediate_waypoints: ["Kingston, NY", "Woodstock, NY"]
+  Destination = Margaretville   → intermediate_waypoints: ["Kingston, NY", "Woodstock, NY"]
+
+NY-97 threading guide (escape_waypoint: "Harriman, NY"):
+  Destination = Hawks Nest / Sparrowbush → intermediate_waypoints: ["Middletown, NY"]
 
 Examples:
-"take me to Hawks Nest via 9W" → intermediate_waypoints: ["Piermont, NY"] (9W entry from NYC)
-"take me to Bear Mountain along Route 9W" → same as above
-"go to Woodstock taking NY-28" → intermediate_waypoints: ["Kingston, NY"] (NY-28 entry)
+"take me to Hawks Nest via 9W"      → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
+"take me to Bear Mountain along 9W" → escape: "Piermont, NY", intermediates: []
+"go to Woodstock taking NY-28"      → escape: "Harriman, NY", intermediates: ["Kingston, NY"]
+"ride 9W to Newburgh"               → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
 
 ━━ REFINEMENT INTERPRETATION ━━
 When the query starts with "[Refining existing route —...]" you are modifying an existing route.
@@ -631,22 +647,30 @@ Interpret these before geocoding anything. These override generic Places results
   → destination: "Delaware Water Gap, PA"
   → use NORTHWEST corridor (GWB → Mahwah, NJ → NJ-23 → NJ-94)
 
-"9W" or "Route 9W" or "riding 9W"
-  → the road itself, not a destination. User wants the 9W experience.
-  → destination: "Bear Mountain, NY" (northern end of 9W's best section) unless they say otherwise
-  → ONE anchor waypoint gets you onto 9W — then stop adding waypoints. GraphHopper's motorcycle
-    profile will follow 9W naturally. Do not pin Bear Mountain, Cornwall, or other towns along the
-    road — they become forced detours, not natural passages.
-  → CRITICAL — anchor depends on origin location:
-    • Origin is NYC (Manhattan, Brooklyn, Bronx, Queens, NJ):
-      escape_waypoint: "Piermont, NY", intermediate_waypoints: []
-      NEVER output "George Washington Bridge" as escape_waypoint — it geocodes to wrong NJ coordinates
-      and causes tunnel detours. The car profile crosses GWB automatically en route to Piermont.
-    • Origin is NORTH of GWB (Tarrytown, Westchester, Yonkers, White Plains, Hudson Valley):
-      escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY", intermediate_waypoints: ["Nyack, NY"]
-      NEVER use Piermont for north-of-GWB origins (forces 40-mile southward detour).
-  → "9W to [place]": escape_waypoint: "Piermont, NY" (NYC) or "Mario Cuomo Bridge, Tarrytown, NY" (north).
-    Destination: [place]. The engine routes along 9W from there. No extra waypoints needed.
+"9W" or "Route 9W" or "riding 9W" or "via 9W" or "along 9W"
+  → the road itself. User wants to FOLLOW 9W — not just enter it.
+  → destination: "Bear Mountain, NY" unless they say otherwise.
+  → FOLLOW 9W = thread intermediate waypoints along the road so GraphHopper stays on it.
+    A single entry point only works when Bear Mountain IS the destination. Any further destination
+    requires additional waypoints or GraphHopper cuts across on other roads.
+  → NEVER output "George Washington Bridge" as escape_waypoint — geocodes to NJ coordinates,
+    causes tunnel detours. The car finds GWB automatically en route to Piermont.
+
+  Origin is NYC (Manhattan, Brooklyn, Bronx, Queens, NJ):
+    escape_waypoint: "Piermont, NY" always.
+    intermediate_waypoints — thread based on destination:
+      To Bear Mountain, NY        → []
+      To Cornwall / Storm King    → ["Bear Mountain, NY"]
+      To Newburgh, NY             → ["Bear Mountain, NY", "Cornwall, NY"]
+      To anywhere beyond Newburgh → ["Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
+
+  Origin is NORTH of GWB (Tarrytown, Westchester, Yonkers, White Plains, Hudson Valley):
+    escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY"
+    intermediate_waypoints — always starts with "Nyack, NY", then add:
+      To Bear Mountain, NY   → ["Nyack, NY"]
+      To Cornwall            → ["Nyack, NY", "Bear Mountain, NY"]
+      To Newburgh            → ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY"]
+    NEVER use Piermont for north-of-GWB origins (forces 40-mile southward detour).
 
 "Bear Mountain" or "Bear"
   → destination: "Bear Mountain State Park, NY"
@@ -683,17 +707,21 @@ always anchor intermediate_waypoints through the town(s) listed — they sit dir
 If the user HAS stops, add a road anchor only if it's naturally on the way (no detour).
 
 US-9W — Hudson River west bank (Bear Mountain, Storm King, West Point, Cold Spring, Newburgh by river):
-  ANCHOR DEPENDS ON ORIGIN — this is the most common mistake, read carefully:
-  • NYC-origin (Manhattan, Brooklyn, Bronx, Queens, NJ):
-    escape_waypoint: "Piermont, NY", intermediate_waypoints: []
-    The car profile crosses GWB automatically when routing from NYC to Piermont — do NOT set
-    "George Washington Bridge" as the escape_waypoint. It is not in the hardcoded table and
-    will geocode to wrong coordinates (NJ toll plaza / parking lot), causing tunnel detours.
-  • North-of-GWB origin (Tarrytown, Westchester, Yonkers, White Plains, Hudson Valley, NJ above GWB):
-    escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY", intermediate_waypoints: ["Nyack, NY"]
-    WHY: Mario Cuomo Bridge drops directly onto 9W at Nyack. No south detour at all.
-    Using Piermont for a Tarrytown-origin forces 40 miles south to the GWB and back — a 4h38min disaster.
-  Full 9W run north to Newburgh: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
+  "Via 9W" = thread these towns in order — they sit directly ON Route 9W:
+  Piermont → Nyack → Bear Mountain → Cornwall → Newburgh
+  Pick the towns between your entry point and where 9W diverges toward the destination.
+
+  NYC-origin: escape_waypoint: "Piermont, NY". NEVER "George Washington Bridge".
+    To Bear Mountain          → intermediates: []
+    To Cornwall / Storm King  → intermediates: ["Bear Mountain, NY"]
+    To Newburgh               → intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
+    To beyond Newburgh        → intermediates: ["Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
+
+  North-of-GWB origin (Tarrytown, Westchester, etc.):
+    escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY"
+    To Bear Mountain   → intermediates: ["Nyack, NY"]
+    To Cornwall        → intermediates: ["Nyack, NY", "Bear Mountain, NY"]
+    To Newburgh        → intermediates: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY"]
 
 PALISADES INTERSTATE PKWY — ridge road above Hudson (NJ side, Bear Mountain approach):
   Anchor: "Alpine, NJ" (handled in CLOSE NORTH corridor). No trucks. Stunning.
