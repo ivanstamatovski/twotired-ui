@@ -1,4 +1,4 @@
-// generate-route edge function — v2.32
+// generate-route edge function — v2.33
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -57,10 +57,11 @@ interface RouteRequest {
   stops?: StopRequest[];
   curviness?: 1 | 2 | 3;
   round_trip?: boolean;
-  // v2.4: Claude-planned route structure
-  escape_waypoint?: string;           // Named city-exit point (geocoded via Places)
-  escape_via_waypoints?: string[];    // v2.18: forced city highways WITHIN the escape leg (curviness=0)
-  intermediate_waypoints?: string[];  // 1-2 scenic corridor anchors between escape and stops
+  escape_waypoint?: string;        // City-exit handoff point (car→motorcycle profile switch)
+  escape_via_waypoints?: string[]; // City highways/bridges explicitly named by rider
+  road_corridor?: string;          // v2.33: named road to follow (e.g. "9W", "NY-97", "NY-28").
+                                   // When set: single-phase routing with corridor custom_model area —
+                                   // no intermediate waypoints needed, GraphHopper follows the road naturally.
 }
 
 // ── Palisades Pkwy avoidance zone ─────────────────────────────────────────────
@@ -92,6 +93,71 @@ const PALISADES_ZONE_AREAS = {
     },
   }],
 };
+
+// ── 9W corridor area ──────────────────────────────────────────────────────────
+// v2.33: Used when rider requests "via 9W" or similar named-road routing.
+// The corridor covers the Hudson River west bank from Alpine/Fort Lee to Newburgh,
+// including the Harriman area where GraphHopper normally cuts shortcuts.
+// Within this zone: secondary/tertiary roads are heavily penalized so the
+// primary road (US Route 9W) becomes the highest-scoring option for the optimizer.
+// Combined with distance_influence=70 (vs. default 90), the corridor model gives
+// road-type preferences enough weight to actually steer the route along 9W.
+const NINE_W_CORRIDOR_AREA = {
+  type: 'FeatureCollection',
+  features: [{
+    type: 'Feature',
+    id: 'nine_w_corridor',
+    properties: {},
+    geometry: {
+      type: 'Polygon',
+      // Rectangle: Hudson River (E) to well past Harriman (W), Alpine to Newburgh (N/S).
+      // Wide enough that any Harriman shortcut falls inside and gets penalized.
+      coordinates: [[
+        [-74.20, 40.94],
+        [-73.88, 40.94],
+        [-73.88, 41.52],
+        [-74.20, 41.52],
+        [-74.20, 40.94],
+      ]],
+    },
+  }],
+};
+
+// ── Build corridor-biased custom_model ─────────────────────────────────────────
+// For named-road requests (road_corridor field). Takes the base curviness model and
+// adds area-specific rules that invert the secondary/primary preference within the
+// corridor zone. Result: primary roads (9W = 0.7x base) beat secondary/tertiary
+// (1.0x base × 0.15 corridor penalty = 0.15x). GraphHopper stays on 9W.
+function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
+  const base = CURVINESS_MODELS[curviness - 1];
+
+  if (corridor === '9W') {
+    return {
+      speed: base.speed,
+      priority: [
+        ...base.priority,
+        // Within the 9W corridor: heavily penalize secondary/tertiary so primary wins.
+        // primary: 0.7x (unchanged) >> secondary: 1.0 × 0.15 = 0.15x
+        { if: 'in_nine_w_corridor && road_class == SECONDARY',    multiply_by: '0.15' },
+        { if: 'in_nine_w_corridor && road_class == TERTIARY',     multiply_by: '0.15' },
+        { if: 'in_nine_w_corridor && road_class == UNCLASSIFIED', multiply_by: '0.15' },
+      ],
+      areas: {
+        type: 'FeatureCollection',
+        features: [
+          ...(base.areas?.features || []),
+          ...NINE_W_CORRIDOR_AREA.features,
+        ],
+      },
+      // Lower distance_influence so road-type priorities carry more weight.
+      // Default 90 = 90% distance, 10% priorities. At 70: more balanced.
+      // Rider explicitly asked for 9W — extra distance along the river is expected.
+      distance_influence: 70,
+    };
+  }
+
+  return base; // unknown corridor — fall back to standard model
+}
 
 // ── Curviness tiers ───────────────────────────────────────────────────────────
 // distance_influence minimum is 90 in LM/flexible mode. All tiers use 90.
@@ -332,7 +398,7 @@ async function findPOI(type: string, near: LatLng, radius_km = 25): Promise<any 
 //   U-turn excursions into town centers. E.g. northbound 9W → heading ≈ 0 at Nyack
 //   means GraphHopper must pass through Nyack traveling north — it cannot dip south
 //   to reach the town center and backtrack, because that would require a U-turn.
-async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings?: number[]): Promise<any> {
+async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings?: number[], modelOverride?: any): Promise<any> {
   let body: any;
   if (curviness === 0) {
     // Car profile — CH routing (no ch.disable), no custom_model needed.
@@ -350,7 +416,8 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
     // This ensures e.g. Alpine, NJ snaps to Route 9W (primary) not Palisades Pkwy (motorway).
     // Combined with the PALISADES_ZONE_AREAS penalty in custom_model, motorways in the
     // Palisades corridor are effectively ruled out for all scenic routing tiers (2 and 3).
-    const model = CURVINESS_MODELS[curviness - 1];
+    // v2.33: modelOverride allows corridor-specific custom_model (buildCorridorModel).
+    const model = modelOverride || CURVINESS_MODELS[curviness - 1];
     body = {
       points: points.map(p => [p.lng, p.lat]),
       profile: 'motorcycle',
@@ -588,35 +655,26 @@ Examples:
   → escape_via_waypoints: ["FDR Drive/96th St, Manhattan, NY"]
   → escape_waypoint: "Englewood Cliffs, NJ"
 
-── SCENIC / RURAL ROADS ──
-(9W, NY-97, NY-218, NY-28, NJ-94, NJ-23, Route 6, Route 44, Route 209, Palisades Pkwy, etc.)
-→ "Via [road]" means FOLLOW that road as far as it goes toward the destination, then exit.
-→ ONE entry waypoint is only enough when the destination is the FIRST town on the road.
-  For any destination further along, you must THREAD the road with multiple intermediate waypoints
-  so GraphHopper doesn't cut across to the destination on other roads.
-→ Use towns that sit directly ON the named road. Pick all towns between the entry point and where
-  the road naturally diverges toward the destination — then stop.
-→ Keep escape_waypoint appropriate for the direction. Do NOT add escape_via_waypoints.
+── SCENIC / RURAL ROADS — road_corridor field ──
+(9W, NY-97, NY-218, NY-28, NJ-94, NJ-23, Route 6, Route 44, Route 209, etc.)
+→ "Via [road]" means FOLLOW that road. Do NOT thread intermediate waypoints — they create forced detours.
+→ Instead, output road_corridor with the road name. The routing engine applies a geographic area model
+  that biases GraphHopper to stay on the named road automatically.
+→ When road_corridor is set: leave escape_waypoint empty (null/omit) and escape_via_waypoints: [].
+  The engine handles the full route in one phase from origin → destination.
+→ No intermediate_waypoints needed — the corridor model does the work.
 
-9W threading guide (NYC origin, escape_waypoint: "Piermont, NY"):
-  Destination = Bear Mountain, NY     → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY"]
-  Destination = Cornwall / Storm King → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY"]
-  Destination = Newburgh, NY          → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY"]
-  Destination = anywhere beyond Newburgh → intermediate_waypoints: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
-
-NY-28 threading guide (escape_waypoint: "Harriman, NY"):
-  Destination = Woodstock, NY   → intermediate_waypoints: ["Kingston, NY"]
-  Destination = Phoenicia, NY   → intermediate_waypoints: ["Kingston, NY", "Woodstock, NY"]
-  Destination = Margaretville   → intermediate_waypoints: ["Kingston, NY", "Woodstock, NY"]
-
-NY-97 threading guide (escape_waypoint: "Harriman, NY"):
-  Destination = Hawks Nest / Sparrowbush → intermediate_waypoints: ["Middletown, NY"]
+road_corridor values:
+  "9W"   — Hudson River west bank (Piermont, Nyack, Haverstraw, Bear Mountain, Cornwall, Newburgh)
+  "NY-97" — Delaware River canyon (Hawks Nest, Sparrowbush, Port Jervis)
+  "NY-28" — Catskills spine (Woodstock, Phoenicia, Margaretville)
+  "NY-218" — Storm King Highway (Cornwall to West Point)
 
 Examples:
-"take me to Hawks Nest via 9W"      → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
-"take me to Bear Mountain along 9W" → escape: "Piermont, NY", intermediates: ["Nyack, NY", "Haverstraw, NY"]
-"go to Woodstock taking NY-28"      → escape: "Harriman, NY", intermediates: ["Kingston, NY"]
-"ride 9W to Newburgh"               → escape: "Piermont, NY", intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
+"take me to Hawks Nest via 9W"      → road_corridor: "9W", destination: "Sparrowbush, NY", no escape_waypoint
+"take me to Bear Mountain along 9W" → road_corridor: "9W", destination: "Bear Mountain State Park, NY"
+"go to Woodstock taking NY-28"      → road_corridor: "NY-28", destination: "Woodstock, NY"
+"ride 9W to Newburgh"               → road_corridor: "9W", destination: "Newburgh, NY"
 
 ━━ REFINEMENT INTERPRETATION ━━
 When the query starts with "[Refining existing route —...]" you are modifying an existing route.
@@ -674,29 +732,13 @@ Interpret these before geocoding anything. These override generic Places results
   → use NORTHWEST corridor (GWB → Mahwah, NJ → NJ-23 → NJ-94)
 
 "9W" or "Route 9W" or "riding 9W" or "via 9W" or "along 9W"
-  → the road itself. User wants to FOLLOW 9W — not just enter it.
+  → the road itself. User wants to FOLLOW 9W as a corridor.
   → destination: "Bear Mountain, NY" unless they say otherwise.
-  → FOLLOW 9W = thread intermediate waypoints along the road so GraphHopper stays on it.
-    A single entry point only works when Bear Mountain IS the destination. Any further destination
-    requires additional waypoints or GraphHopper cuts across on other roads.
-  → NEVER output "George Washington Bridge" as escape_waypoint — geocodes to NJ coordinates,
-    causes tunnel detours. The car finds GWB automatically en route to Piermont.
-
-  Origin is NYC (Manhattan, Brooklyn, Bronx, Queens, NJ):
-    escape_waypoint: "Piermont, NY" always.
-    intermediate_waypoints — thread based on destination:
-      To Bear Mountain, NY        → []
-      To Cornwall / Storm King    → ["Bear Mountain, NY"]
-      To Newburgh, NY             → ["Bear Mountain, NY", "Cornwall, NY"]
-      To anywhere beyond Newburgh → ["Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
-
-  Origin is NORTH of GWB (Tarrytown, Westchester, Yonkers, White Plains, Hudson Valley):
-    escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY"
-    intermediate_waypoints — always starts with "Nyack, NY", then add:
-      To Bear Mountain, NY   → ["Nyack, NY"]
-      To Cornwall            → ["Nyack, NY", "Bear Mountain, NY"]
-      To Newburgh            → ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY"]
-    NEVER use Piermont for north-of-GWB origins (forces 40-mile southward detour).
+  → Output road_corridor: "9W" — NO escape_waypoint, NO intermediate_waypoints.
+    The corridor model handles road-following via geographic area priority biasing.
+  → NEVER thread intermediate waypoints (Nyack, Haverstraw, etc.) — these create forced detours
+    into town centers. The corridor model replaces waypoint threading entirely.
+  → NEVER output "George Washington Bridge" as escape_waypoint.
 
 "Bear Mountain" or "Bear"
   → destination: "Bear Mountain State Park, NY"
@@ -728,49 +770,44 @@ Interpret these before geocoding anything. These override generic Places results
   → SOUTH corridor (Goethals → Freehold, NJ)
 
 ━━ PREFERRED ROAD CORRIDORS ━━
-These are the signature motorcycle roads for each destination type. When the user has NO stops,
-always anchor intermediate_waypoints through the town(s) listed — they sit directly ON the road.
-If the user HAS stops, add a road anchor only if it's naturally on the way (no detour).
+These are the signature motorcycle roads for each destination type. When the user explicitly
+names one of these roads, output road_corridor (NOT intermediate_waypoints — those create detours).
 
-US-9W — Hudson River west bank (Bear Mountain, Storm King, West Point, Cold Spring, Newburgh by river):
-  "Via 9W" = thread these towns in order — they sit directly ON Route 9W:
-  Piermont → Nyack → Bear Mountain → Cornwall → Newburgh
-  Pick the towns between your entry point and where 9W diverges toward the destination.
-
-  NYC-origin: escape_waypoint: "Piermont, NY". NEVER "George Washington Bridge".
-    To Bear Mountain          → intermediates: ["Nyack, NY", "Haverstraw, NY"]
-    To Cornwall / Storm King  → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY"]
-    To Newburgh               → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY"]
-    To beyond Newburgh        → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
-
-  North-of-GWB origin (Tarrytown, Westchester, etc.):
-    escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY"
-    To Bear Mountain   → intermediates: ["Nyack, NY", "Haverstraw, NY"]
-    To Cornwall        → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY"]
-    To Newburgh        → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY"]
+US-9W — Hudson River west bank (Bear Mountain, Storm King, West Point, Cold Spring, Newburgh):
+  When user says "via 9W", "take 9W", "along 9W", "ride 9W":
+    → road_corridor: "9W"
+    → NO escape_waypoint, NO intermediate_waypoints
+    → The corridor model biases GraphHopper to stay on 9W throughout
+  Character: primary road hugging the Hudson's west bank, dramatic river views, sweeping curves.
 
 PALISADES INTERSTATE PKWY — ridge road above Hudson (NJ side, Bear Mountain approach):
-  Anchor: "Alpine, NJ" (handled in CLOSE NORTH corridor). No trucks. Stunning.
+  Default Bear Mountain corridor (no "9W" mention). Handled by CLOSE NORTH escape_waypoint: "Alpine, NJ".
+  No trucks. Spectacular ridge road. GraphHopper avoids Palisades motorway via Palisades zone model.
 
-NY-97 / HAWKS NEST — Delaware River canyon switchbacks (Hawks Nest, Port Jervis, NY-97 corridor):
-  Anchor: "Middletown, NY" (handled in FAR NORTH corridor). Crown jewel of the region —
-  switchbacks carved into cliff face above the Delaware River gorge.
+NY-97 / HAWKS NEST — Delaware River canyon switchbacks:
+  When user says "via NY-97", "take 97", "Hawks Nest via 97":
+    → road_corridor: "NY-97"
+    → NO escape_waypoint, NO intermediate_waypoints
+  Character: switchbacks carved into cliff face above the Delaware River gorge.
 
 NY-218 — Storm King Highway (Cornwall, West Point approach):
-  Anchor: "Cornwall, NY" — sits at the NY-218 / 9W junction.
-  Short section but spectacular: narrow cliff-side road above the Hudson. Technical riding.
+  When user says "Storm King Highway" or "via 218":
+    → road_corridor: "NY-218"
+    → destination: "Cornwall-on-Hudson, NY"
+  Character: narrow cliff-side road above the Hudson. Technical riding.
 
 NY-28 — Catskills spine (Woodstock, Phoenicia, Margaretville, Delhi):
-  Anchor: "Woodstock, NY" — sits at NY-28 entry point from Kingston.
-  Wide mountain sweepers through Catskill peaks. Better than NY-17 which is suburban until Catskills.
+  When user says "via NY-28", "take 28", "NY-28 to Woodstock":
+    → road_corridor: "NY-28"
+    → NO escape_waypoint, NO intermediate_waypoints
+  Character: wide mountain sweepers through Catskill peaks.
 
 NJ-94 / NJ-23 — NJ Highlands backroads (High Point, Delaware Water Gap from NJ):
-  Anchor: "Mahwah, NJ" (handled in NORTHWEST corridor).
+  No road_corridor needed. Handled by NORTHWEST escape_waypoint: "Mahwah, NJ".
 
 NJ Route 29 — Delaware River road (Milford NJ, Frenchtown, Lambertville):
-  For destinations along the NJ side of the Delaware River south of Port Jervis:
-  escape_waypoint: "Englewood Cliffs, NJ"
-  intermediate_waypoints: ["Mahwah, NJ", "Milford, NJ"] — routes down NJ-23 → NJ-29 riverside run.
+  escape_waypoint: "Englewood Cliffs, NJ", then escape through Mahwah → Milford corridor.
+  (This is an escape-waypoint route, not a road_corridor route — NJ-29 runs south from the escape point.)
 
 ━━ STOPS ━━
 Only add stops the rider explicitly requests. Never invent them.
@@ -798,18 +835,34 @@ ${lessons}
 ━━ OUTPUT FORMAT ━━
 Respond ONLY with valid JSON, no markdown, no explanation.
 
-Route response (the normal case):
+Route response — standard (escape_waypoint-based):
 {
   "origin": "Rider GPS location or named place if no GPS provided",
   "escape_waypoint": "named place for city departure handoff",
   "escape_via_waypoints": [],
-  "intermediate_waypoints": ["anchor town 1, State", "optional anchor 2, State"],
   "stops": [{ "type": "coffee shop", "near": "town name, State", "radius_km": 15 }],
   "destination": "Town or Park Name, State",
   "curviness": 2,
   "round_trip": false,
-  "reasoning": "one sentence: why this corridor, why these intermediates"
+  "reasoning": "one sentence: why this corridor"
 }
+
+Route response — named road corridor (road_corridor field):
+{
+  "origin": "Rider GPS location or named place if no GPS provided",
+  "road_corridor": "9W",
+  "escape_waypoint": null,
+  "escape_via_waypoints": [],
+  "stops": [],
+  "destination": "Bear Mountain State Park, NY",
+  "curviness": 2,
+  "round_trip": false,
+  "reasoning": "rider asked to follow 9W — corridor model handles road preference, no waypoints needed"
+}
+
+IMPORTANT: When road_corridor is set, always set escape_waypoint to null. The corridor routing
+engine is single-phase — no city-exit handoff waypoint needed. Never combine road_corridor with
+escape_waypoint or intermediate_waypoints — they conflict.
 
 escape_via_waypoints is [] in the normal case. Only populate it when the rider explicitly names
 a city highway, bridge, or tunnel they want to travel. See EXPLICIT ROAD SPECIFICATION above.
@@ -821,7 +874,7 @@ Clarification response (only when genuinely ambiguous per rules above):
   "options": ["Option A", "Option B"]
 }
 
-CRITICAL: Always include the US state abbreviation in destination, intermediate_waypoints, and stops.near.
+CRITICAL: Always include the US state abbreviation in destination and stops.near.
 Examples: "Hawks Nest, NY" not "Hawks Nest". "Middletown, NY" not "Middletown".
 Ambiguous place names (Hawks Nest, Liberty, Chester, Monroe, etc.) exist in many states — the geocoder needs the state to find the right one.`;
 
@@ -873,9 +926,12 @@ Ambiguous place names (Hawks Nest, Liberty, Chester, Monroe, etc.) exist in many
     })),
     curviness: (intent.curviness as 1 | 2 | 3) || 2,
     round_trip: intent.round_trip || false,
-    escape_waypoint: intent.escape_waypoint || undefined,
-    escape_via_waypoints: intent.escape_via_waypoints || [],
-    intermediate_waypoints: intent.intermediate_waypoints || [],
+    escape_waypoint: intent.road_corridor ? undefined : (intent.escape_waypoint || undefined),
+    escape_via_waypoints: intent.road_corridor ? [] : (intent.escape_via_waypoints || []),
+    road_corridor: intent.road_corridor || undefined,
+    // NOTE: intermediate_waypoints removed in v2.33. road_corridor replaces threading.
+    // Legacy fallback: if old intermediate_waypoints come back, still route them via
+    // the escapeLL path — but Claude should not output them for corridor requests.
   };
 
   return { routeRequest, rawIntent: intent };
@@ -890,10 +946,15 @@ Ambiguous place names (Hawks Nest, Liberty, Chester, Monroe, etc.) exist in many
 async function buildRefineQuery(feedback: string, rawIntent: any): Promise<string> {
   const parts = [
     rawIntent.destination && `destination: ${rawIntent.destination}`,
-    rawIntent.escape_waypoint && `current escape waypoint (replaceable): ${rawIntent.escape_waypoint}`,
+    rawIntent.road_corridor
+      ? `current road corridor (replaceable): ${rawIntent.road_corridor}`
+      : rawIntent.escape_waypoint
+        ? `current escape waypoint (replaceable): ${rawIntent.escape_waypoint}`
+        : null,
+    // v2.33: intermediate_waypoints replaced by road_corridor. Kept for legacy refine sessions.
     rawIntent.intermediate_waypoints?.length
       ? `current corridor intermediates (replaceable): [${rawIntent.intermediate_waypoints.join(', ')}]`
-      : `current corridor intermediates: none`,
+      : null,
     rawIntent.stops?.length && `current stops (keep unless changed): ${rawIntent.stops.map((s: any) => `${s.type} near ${s.near}`).join(', ')}`,
     rawIntent.curviness && `current curviness (keep unless changed): ${rawIntent.curviness}`,
     rawIntent.round_trip && `round trip: yes`,
@@ -1084,10 +1145,23 @@ Deno.serve(async (req) => {
     // Build scenic waypoint chain: [escape] → intermediates → stops → destination
     const stopLLs: LatLng[] = stops.map(s => ({ lat: s.lat, lng: s.lng }));
     const curviness = (body.curviness ?? 2) as 1 | 2 | 3;
+    const corridor = body.road_corridor || undefined;
 
     let route: any;
     let allWaypoints: LatLng[]; // full chain for DB storage
-    if (escapeLL) {
+    if (corridor) {
+      // v2.33 — Single-phase corridor routing.
+      // Claude outputs road_corridor (e.g. "9W") instead of threading waypoints.
+      // buildCorridorModel applies a geographic area that inverts secondary/primary
+      // preference within the named road's zone. Result: GraphHopper follows the
+      // primary road (9W) naturally — no intermediate waypoints needed.
+      // distance_influence is lowered (90→70) so road-type priority carries real weight.
+      const corridorModel = buildCorridorModel(corridor, curviness);
+      allWaypoints = [originLL, ...stopLLs, destinationLL];
+      if (body.round_trip) allWaypoints.push(originLL);
+      route = await getRoute(allWaypoints, curviness, undefined, corridorModel);
+      console.log('[generate-route] corridor routing via', corridor, '— single phase, no intermediates');
+    } else if (escapeLL) {
       // Two-phase routing:
       // Leg 1 — city escape: origin → [escape_via_waypoints] → escape waypoint (curviness=0, car profile)
       //   escape_via_waypoints force the route through explicitly named city highways/bridges/tunnels
