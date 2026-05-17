@@ -1,4 +1,4 @@
-// generate-route edge function — v2.22
+// generate-route edge function — v2.23
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -110,6 +110,71 @@ function haversineKm(a: LatLng, b: LatLng): number {
   const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
   const x = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+// ── Hardcoded coordinate table for known escape / intermediate waypoints ───────
+// v2.23: bypass Places API geocoding for fixed routing infrastructure.
+// Places API returns wrong things for bridges and highway ramps (e.g. parking lots).
+// Coordinates are snapped to the road surface at each named point.
+// Claude outputs one of these names → we use the exact coordinate → no geocoding error.
+// Fall back to Places API only for names not in this table.
+const KNOWN_WAYPOINTS: Record<string, LatLng> = {
+  // ── GWB corridor — NJ side (escape via GWB from NYC) ──
+  'englewood cliffs, nj':               { lat: 40.8831, lng: -73.9529 }, // 9W at Palisade Ave
+  'alpine, nj':                         { lat: 40.9553, lng: -73.9305 }, // 9W at Alpine
+  'mahwah, nj':                         { lat: 41.0883, lng: -74.1468 }, // NJ-17 at Mahwah
+  'milford, nj':                        { lat: 40.5723, lng: -75.0948 }, // NJ-29 Milford
+  // ── GWB corridor — NY side ──
+  'piermont, ny':                       { lat: 41.0423, lng: -73.9158 }, // 9W at Piermont
+  'nyack, ny':                          { lat: 41.0906, lng: -73.9179 }, // 9W at Nyack/Tappan Zee
+  // ── Mario Cuomo Bridge (Tappan Zee) — Westchester escape ──
+  'mario cuomo bridge, tarrytown, ny':  { lat: 41.0694, lng: -73.8790 }, // Tarrytown on-ramp
+  // ── Harriman (Thruway exit 16) — far north escape ──
+  'harriman, ny':                       { lat: 41.2091, lng: -74.1355 }, // NY-17 at Harriman
+  // ── Far north / Catskill intermediates ──
+  'middletown, ny':                     { lat: 41.4459, lng: -74.4229 }, // US-6/NY-17M
+  'goshen, ny':                         { lat: 41.4001, lng: -74.3263 }, // NY-17M/NY-94
+  'ellenville, ny':                     { lat: 41.7179, lng: -74.3923 }, // US-209
+  'kingston, ny':                       { lat: 41.9270, lng: -73.9974 }, // NY-28 entry
+  // ── 9W scenic corridor ──
+  'bear mountain, ny':                  { lat: 41.3145, lng: -74.0063 }, // Bear Mountain SP
+  'bear mountain state park, ny':       { lat: 41.3145, lng: -74.0063 },
+  'cornwall, ny':                       { lat: 41.4320, lng: -74.0035 }, // NY-218/9W junction
+  'cornwall-on-hudson, ny':             { lat: 41.4320, lng: -74.0035 },
+  'newburgh, ny':                       { lat: 41.5034, lng: -74.0104 }, // NY-9W at Newburgh
+  // ── Staten Island crossings ──
+  'goethals bridge, staten island, ny': { lat: 40.6411, lng: -74.2006 }, // SI approach
+  'verrazano-narrows bridge, staten island, ny': { lat: 40.6065, lng: -74.0446 },
+  'perth amboy, nj':                    { lat: 40.5067, lng: -74.2654 }, // NJ-35
+  // ── Shore intermediates ──
+  'freehold, nj':                       { lat: 40.2593, lng: -74.2731 }, // NJ-9
+  'toms river, nj':                     { lat: 39.9534, lng: -74.1979 }, // NJ-37/US-9
+  // ── Escape via waypoints (city highways — car profile only) ──
+  'i-278/bqe, brooklyn, ny':           { lat: 40.6928, lng: -73.9900 }, // BQE at Atlantic
+  'belt parkway/flatbush ave, brooklyn, ny': { lat: 40.6289, lng: -73.9443 },
+  'fdr drive/96th st, manhattan, ny':  { lat: 40.7847, lng: -73.9473 },
+};
+
+function lookupWaypoint(name: string): LatLng | null {
+  const key = name.toLowerCase().trim().replace(/\s+/g, ' ');
+  if (KNOWN_WAYPOINTS[key]) {
+    console.log(`[waypoint] "${name}" → hardcoded coords (no geocode)`);
+    return KNOWN_WAYPOINTS[key];
+  }
+  // Partial match for minor naming variations
+  for (const [k, v] of Object.entries(KNOWN_WAYPOINTS)) {
+    if (key === k || key.startsWith(k) || k.startsWith(key)) {
+      console.log(`[waypoint] "${name}" → hardcoded coords via partial match "${k}"`);
+      return v;
+    }
+  }
+  return null;
+}
+
+// Resolve a routing waypoint: check hardcoded table first, fall back to Places API.
+// Used for escape_waypoint and intermediate_waypoints — not for user destinations/stops.
+async function resolveWaypoint(name: string): Promise<LatLng> {
+  return lookupWaypoint(name) ?? await geocode(name);
 }
 
 // ── Geocode a place name via Places API (New) ─────────────────────────────────
@@ -880,19 +945,20 @@ Deno.serve(async (req) => {
     ]);
     console.log('[generate-route] origin:', JSON.stringify(originLL), 'dest:', JSON.stringify(destinationLL));
 
-    // v2.4: geocode escape + intermediate waypoints in parallel
+    // v2.23: resolve escape + intermediate waypoints via hardcoded table first, then Places API.
+    // This prevents Places from geocoding bridge names to parking lots / wrong entrances.
     const escapeLL = body.escape_waypoint
-      ? await resolveLocation({ query: body.escape_waypoint })
+      ? await resolveWaypoint(body.escape_waypoint)
       : null;
-    // v2.18: geocode escape_via_waypoints (city highways forced into the escape leg)
+    // escape_via_waypoints are city highways (car profile) — also use table where possible
     const escapeViaLLs: LatLng[] = [];
     for (const wp of (body.escape_via_waypoints || [])) {
-      const ll = await resolveLocation({ query: wp });
+      const ll = await resolveWaypoint(wp);
       escapeViaLLs.push(ll);
     }
     const intermediateWPs: LatLng[] = [];
     for (const wp of (body.intermediate_waypoints || [])) {
-      const ll = await resolveLocation({ query: wp });
+      const ll = await resolveWaypoint(wp);
       intermediateWPs.push(ll);
     }
     if (escapeLL) console.log('[generate-route] escape:', JSON.stringify(escapeLL));
