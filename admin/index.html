@@ -123,6 +123,26 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .notes-input:focus{border-color:var(--accent)}
 .notes-input::placeholder{color:var(--text-muted)}
 .lesson-done-msg{font-size:12px;color:var(--green);margin-left:4px}
+
+/* ── Rulebook ── */
+.rulebook-add-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin-bottom:24px}
+.rulebook-add-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px}
+.rulebook-add-hint{font-size:12px;color:var(--text-muted);margin-bottom:12px}
+.rulebook-textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:var(--font);outline:none;resize:vertical;min-height:80px;line-height:1.5}
+.rulebook-textarea:focus{border-color:var(--accent)}
+.rulebook-textarea::placeholder{color:var(--text-muted)}
+.rule-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:12px}
+.rule-card.admin-rule{border-left:3px solid var(--accent)}
+.rule-card.bug-lesson{border-left:3px solid var(--green)}
+.rule-meta{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.rule-source{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:20px}
+.rule-source-admin{background:var(--accent-dim);color:var(--accent)}
+.rule-source-bug{background:rgba(34,197,94,.15);color:var(--green)}
+.rule-date{font-size:11px;color:var(--text-muted)}
+.rule-text{font-size:13px;color:var(--text);line-height:1.6;font-style:italic;margin-bottom:10px}
+.rule-complaint{font-size:11px;color:var(--text-dim);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:10px;white-space:pre-wrap}
+.rule-actions{display:flex;align-items:center;gap:8px}
+.rule-notes{font-size:11px;color:var(--text-muted);font-style:italic}
 </style>
 </head>
 <body>
@@ -163,6 +183,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <button class="nav-item" onclick="showPanel('routes',this)">
         <span class="nav-icon">🏍️</span> Routes
         <span class="nav-badge" id="badge-routes">—</span>
+      </button>
+      <button class="nav-item" onclick="showPanel('rulebook',this)">
+        <span class="nav-icon">📋</span> Rulebook
+        <span class="nav-badge" id="badge-rulebook">—</span>
       </button>
     </div>
     <div class="content">
@@ -216,6 +240,29 @@ tr:hover td{background:rgba(255,255,255,.02)}
             <tbody id="routes-body"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
+      </div>
+
+      <!-- ── Rulebook Panel ── -->
+      <div class="panel" id="panel-rulebook">
+        <div class="stats-row" id="rulebook-stats"></div>
+        <div class="section-header">
+          <div class="section-title">Active Routing Rules</div>
+          <button class="refresh-btn" onclick="loadRulebook()">↻ Refresh</button>
+        </div>
+
+        <!-- Add admin rule form -->
+        <div class="rulebook-add-card">
+          <div class="rulebook-add-title">➕ Add a new routing rule</div>
+          <div class="rulebook-add-hint">Rules added here are injected directly into Claude's routing prompt on every request.</div>
+          <textarea id="new-rule-text" class="rulebook-textarea" placeholder="State the rule precisely: what routing mistake to avoid and what to do instead. Example: When the origin is in Westchester and the destination is Bear Mountain, never route south to GWB — use Mario Cuomo Bridge → Nyack instead."></textarea>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+            <input id="new-rule-notes" class="notes-input" style="flex:1" placeholder="Optional context / reason for this rule…"/>
+            <button class="lesson-btn lesson-btn-approve" style="white-space:nowrap;padding:8px 18px" onclick="addAdminRule()">Add Rule</button>
+          </div>
+          <div id="add-rule-status" style="font-size:12px;margin-top:8px;display:none"></div>
+        </div>
+
+        <div id="rulebook-list"></div>
       </div>
 
     </div>
@@ -281,7 +328,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -522,6 +569,117 @@ async function reanalyze(i) {
   _bugReports[i].admin_notes = adminNotes || null;
   document.getElementById('lesson-section-' + i).innerHTML = renderLessonSection(_bugReports[i], i);
   analyzeBugReport(i);
+}
+
+// ── Rulebook ─────────────────────────────────────────────────────────────────
+const _ruleRows = {};
+
+async function loadRulebook() {
+  document.getElementById('rulebook-list').innerHTML = '<div style="color:var(--text-muted);padding:24px 0"><span class="spinner"></span> Loading rules…</div>';
+  try {
+    const data = await sb('/rest/v1/bug_reports?select=id,comment,page_context,proposed_lesson,admin_notes,lesson_approved,created_at&lesson_approved=eq.true&order=created_at.desc&limit=100');
+    const badge = data.length;
+    document.getElementById('badge-rulebook').textContent = badge;
+
+    const adminRules = data.filter(r => !r.comment || r.comment === '(Admin rule)');
+    const bugLessons = data.filter(r => r.comment && r.comment !== '(Admin rule)');
+
+    document.getElementById('rulebook-stats').innerHTML =
+      statCard(data.length, 'Active Rules', data.length > 0) +
+      statCard(bugLessons.length, 'From Bug Reports', bugLessons.length > 0) +
+      statCard(adminRules.length, 'Admin Added', adminRules.length > 0);
+
+    if (!data.length) {
+      document.getElementById('rulebook-list').innerHTML = '<div style="color:var(--text-muted);padding:24px 0;text-align:center">No active rules yet. Approve a lesson from a bug report, or add one above.</div>';
+      return;
+    }
+
+    let html = '';
+    data.forEach((r, i) => {
+      _ruleRows[i] = r;
+      const isAdmin = !r.comment || r.comment === '(Admin rule)';
+      const sourceClass = isAdmin ? 'rule-source-admin' : 'rule-source-bug';
+      const sourceLabel = isAdmin ? '⚙ Admin rule' : '🐛 Bug lesson';
+      const cardClass   = isAdmin ? 'admin-rule' : 'bug-lesson';
+      const complaint   = !isAdmin && r.comment ? `<div class="rule-complaint">Complaint: "${escHtml(r.comment)}"${r.page_context ? `\nQuery: "${escHtml(r.page_context)}"` : ''}</div>` : '';
+      const notes       = r.admin_notes ? `<div class="rule-notes">Note: ${escHtml(r.admin_notes)}</div>` : '';
+      html += `
+        <div class="rule-card ${cardClass}" id="rule-card-${i}">
+          <div class="rule-meta">
+            <span class="rule-source ${sourceClass}">${sourceLabel}</span>
+            <span class="rule-date">${fmtDate(r.created_at)}</span>
+          </div>
+          <div class="rule-text">${escHtml(r.proposed_lesson || '')}</div>
+          ${complaint}
+          ${notes}
+          <div class="rule-actions">
+            <button class="lesson-btn lesson-btn-reject" onclick="revokeRule(${i})">✗ Revoke</button>
+          </div>
+        </div>`;
+    });
+    document.getElementById('rulebook-list').innerHTML = html;
+  } catch(e) {
+    document.getElementById('rulebook-list').innerHTML = `<div style="color:var(--red);padding:24px 0">${e.message}</div>`;
+  }
+}
+
+async function revokeRule(i) {
+  const r = _ruleRows[i];
+  if (!r || !r.id) return;
+  if (!confirm('Revoke this rule? Claude will stop applying it immediately.')) return;
+  try {
+    await sbPatch(`/rest/v1/bug_reports?id=eq.${r.id}`, { lesson_approved: false });
+    const card = document.getElementById('rule-card-' + i);
+    if (card) {
+      card.style.opacity = '0.4';
+      card.style.pointerEvents = 'none';
+      card.querySelector('.rule-actions').innerHTML = '<span style="font-size:12px;color:var(--text-muted)">Revoked</span>';
+    }
+    const badge = document.getElementById('badge-rulebook');
+    const cur = parseInt(badge.textContent) || 0;
+    badge.textContent = Math.max(0, cur - 1);
+  } catch(e) {
+    alert('Revoke failed: ' + e.message);
+  }
+}
+
+async function addAdminRule() {
+  const ruleText  = document.getElementById('new-rule-text').value.trim();
+  const notesText = document.getElementById('new-rule-notes').value.trim();
+  const statusEl  = document.getElementById('add-rule-status');
+  if (!ruleText || ruleText.length < 10) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Rule text is too short — write a specific, actionable routing rule.';
+    statusEl.style.display = 'block';
+    return;
+  }
+  statusEl.style.color = 'var(--text-muted)';
+  statusEl.textContent = 'Saving…';
+  statusEl.style.display = 'block';
+  try {
+    await sb('/rest/v1/bug_reports', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        comment: '(Admin rule)',
+        page_context: null,
+        proposed_lesson: ruleText,
+        lesson_approved: true,
+        admin_notes: notesText || null,
+        route_context: null,
+        image_data: null,
+      }),
+    });
+    statusEl.style.color = 'var(--green)';
+    statusEl.textContent = '✓ Rule added and now active.';
+    document.getElementById('new-rule-text').value = '';
+    document.getElementById('new-rule-notes').value = '';
+    setTimeout(() => { statusEl.style.display = 'none'; }, 3000);
+    loadRulebook();
+  } catch(e) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Save failed: ' + e.message;
+  }
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

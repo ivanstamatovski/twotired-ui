@@ -1,4 +1,4 @@
-// generate-route edge function — v2.20
+// generate-route edge function — v2.21
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -318,18 +318,32 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
 
 ── CLOSE NORTH: Rockland County, Bear Mountain, Stony Point, Nyack ──
   These destinations sit along the NJ/NY Palisades corridor.
-  escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
-  intermediate_waypoints: ["Alpine, NJ"]
-  WHY Alpine: Palisades Pkwy is tagged as motorway in the routing engine (avoided by bike profile).
-  Anchoring at Alpine (15mi north of the bridge) forces the route to continue north through NJ
-  rather than immediately U-turning back to NY. From Alpine the route enters NY near Nyack.
+  CRITICAL — corridor depends on where the rider actually is:
+
+  Origin is NYC or south of GWB (Manhattan, Brooklyn, Bronx, Queens, NJ below the bridge):
+    escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
+    intermediate_waypoints: ["Alpine, NJ"]
+    WHY Alpine: Palisades Pkwy is tagged as motorway (avoided by bike profile). Anchoring at
+    Alpine (15mi north of bridge) forces the route north through NJ, enters NY near Nyack.
+
+  Origin is NORTH of GWB (Westchester, Yonkers, White Plains, Tarrytown, or any Hudson Valley town):
+    NEVER use GWB — it forces the rider south past their destination and back north (double loop).
+    escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY"
+    intermediate_waypoints: ["Nyack, NY"]
+    WHY: Mario Cuomo Bridge drops directly into Nyack on 9W. From Nyack, GraphHopper routes
+    south on 9W to Bear Mountain naturally. Zero south detour.
 
 ── CLOSE NORTH: Bear Mountain / Storm King via 9W (NY side, user prefers staying in NY) ──
   If the user explicitly mentions 9W, west bank, or wants to avoid NJ entirely:
-  escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
-  intermediate_waypoints: ["Piermont, NY"]
-  WHY Piermont: anchors to the NY side of the river (on 9W) immediately after the bridge,
-  preventing any NJ detour.
+
+  Origin is NYC or south of GWB (Manhattan, Brooklyn, Bronx, Queens, NJ):
+    escape_waypoint: "George Washington Bridge, Fort Lee, NJ"
+    intermediate_waypoints: ["Piermont, NY"]
+    WHY Piermont: first town on 9W in NY north of the bridge — no NJ detour.
+
+  Origin is NORTH of GWB (Westchester, Yonkers, White Plains, Tarrytown, etc.):
+    NEVER use GWB for 9W — already handled by the 9W rider vocabulary rule.
+    No escape_waypoint needed. intermediate_waypoints: ["Nyack, NY"]
 
 ── FAR NORTH: Harriman, Newburgh, Hawks Nest, Port Jervis, Catskills, Kingston, Woodstock, Saugerties ──
   These are reached via I-87 (Major Deegan → NY Thruway). No NJ crossing needed.
@@ -520,7 +534,10 @@ Interpret these before geocoding anything. These override generic Places results
 
 "Bear Mountain" or "Bear"
   → destination: "Bear Mountain State Park, NY"
-  → use CLOSE NORTH corridor (GWB → Alpine, NJ → Palisades Pkwy)
+  → use CLOSE NORTH corridor — but origin-dependent:
+    • NYC/south of GWB: GWB escape → Alpine, NJ intermediate (Palisades Pkwy corridor)
+    • North of GWB (Westchester, Yonkers, etc.): Mario Cuomo Bridge escape → Nyack, NY intermediate
+    NEVER send a north-of-GWB rider south to GWB for Bear Mountain — that's a double loop.
 
 "The Gunks" or "Gunks" or "Shawangunks"
   → destination: "New Paltz, NY"
