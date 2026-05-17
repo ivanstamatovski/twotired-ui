@@ -8,6 +8,7 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const EDGE_URL = `${SUPABASE_URL}/functions/v1/generate-route`;
 const RECENT_KEY = 'twistyroute_recent';
+const LAST_ROUTE_KEY = 'twistyroute_last';
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const DEFAULT_CENTER = [-74.3, 41.4];
 const DEFAULT_ZOOM = 9;
@@ -350,7 +351,21 @@ export default function App() {
 
     map.on('load', () => {
       mapLoadedRef.current = true;
-      if (pendingRoute.current) { drawRouteOnMap(pendingRoute.current); pendingRoute.current = null; }
+      if (pendingRoute.current) {
+        drawRouteOnMap(pendingRoute.current);
+        pendingRoute.current = null;
+      } else {
+        // Restore last active route so tab switches / reloads don't wipe the map
+        try {
+          const last = JSON.parse(localStorage.getItem(LAST_ROUTE_KEY) || 'null');
+          if (last?.geometry) {
+            setRouteData(last);
+            setCurrentIntent(last.intent || null);
+            setMessages([{ role:'route', route:last }]);
+            drawRouteOnMap(last);
+          }
+        } catch {}
+      }
 
       // Center on user location once on startup
       getCurrentGPS({ timeout: 5000, maximumAge: 60000 }).then(gps => {
@@ -543,9 +558,12 @@ export default function App() {
       drawRouteOnMap(r);
       if (isMobile) setSheetMode('collapsed');
 
-      const entry = { id:Date.now(), title:r.title, distance_mi:r.distance_mi, duration_str:r.duration_str };
+      // Store full geometry so recent rides can be redrawn without an API call
+      const entry = { id:Date.now(), title:r.title, distance_mi:r.distance_mi, duration_str:r.duration_str, geometry:r.geometry, intent:r.intent, stops:r.stops||[], instructions:r.instructions||[] };
       const updated = [entry, ...recent.filter(x=>x.title!==entry.title)].slice(0,5);
       setRecent(updated); localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
+      // Persist last active route so it survives tab switches and reloads
+      localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
 
     } catch(err) { clearInterval(ticker); setError(err.message); }
     finally { setLoading(false); }
@@ -894,7 +912,22 @@ export default function App() {
                     <div className="recent-label">Recent rides</div>
                     {recent.map(r=>(
                       <div key={r.id} className="recent-item"
-                        onClick={()=>{ setQuery(r.title); submitQuery(r.title); }}>
+                        onClick={()=>{
+                          if (r.geometry) {
+                            // Restore from cache — no API call, instant redraw
+                            setRouteData(r);
+                            setCurrentIntent(r.intent || null);
+                            setRouteApproved(false);
+                            setRefineOpen(false);
+                            setMessages([{ role:'route', route:r }]);
+                            drawRouteOnMap(r);
+                            localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
+                            if (isMobile) setSheetMode('collapsed');
+                          } else {
+                            // Legacy entry without geometry — fall back to API
+                            setQuery(r.title); submitQuery(r.title);
+                          }
+                        }}>
                         <span className="recent-title">{r.title}</span>
                         <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
                       </div>
