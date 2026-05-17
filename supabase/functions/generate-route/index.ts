@@ -1,4 +1,4 @@
-// generate-route edge function — v2.29
+// generate-route edge function — v2.30
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -146,6 +146,19 @@ function haversineKm(a: LatLng, b: LatLng): number {
   const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
   const x = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+// ── Compass bearing (degrees, clockwise from north) ───────────────────────────
+// Used to supply heading hints to GraphHopper intermediate waypoints.
+// Prevents waypoint U-turns: a northbound route told to pass through a point
+// heading north cannot dip south to reach the town center then return north.
+function bearingDegrees(from: LatLng, to: LatLng): number {
+  const toRad = (d: number) => d * Math.PI / 180;
+  const dLng = toRad(to.lng - from.lng);
+  const lat1 = toRad(from.lat), lat2 = toRad(to.lat);
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
 }
 
 // ── Hardcoded coordinate table for known escape / intermediate waypoints ───────
@@ -313,7 +326,12 @@ async function findPOI(type: string, near: LatLng, radius_km = 25): Promise<any 
 // ── Route via GraphHopper ─────────────────────────────────────────────────────
 // curviness 0 = city escape mode: car profile + CH routing, highways naturally preferred
 // curviness 1–3 = motorcycle profile + LM flexible mode with scenic custom_model
-async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2): Promise<any> {
+// headings: optional per-point compass bearing array (degrees, -1 = unconstrained).
+//   For scenic legs, pass the overall route bearing at each via-point to prevent
+//   U-turn excursions into town centers. E.g. northbound 9W → heading ≈ 0 at Nyack
+//   means GraphHopper must pass through Nyack traveling north — it cannot dip south
+//   to reach the town center and backtrack, because that would require a U-turn.
+async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings?: number[]): Promise<any> {
   let body: any;
   if (curviness === 0) {
     // Car profile — CH routing (no ch.disable), no custom_model needed.
@@ -342,6 +360,13 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2): Promise
       instructions: true,
       locale: 'en',
     };
+    // v2.30: heading hints prevent via-point U-turn excursions.
+    // Only applied to scenic (motorcycle) legs — car escape uses highways where
+    // snapping direction is unambiguous. heading_penalty amplifies the preference.
+    if (headings && headings.length === points.length) {
+      body.heading = headings;
+      body.heading_penalty = 300; // seconds: strong preference, not a hard block
+    }
   }
   const res = await fetch(`${GRAPHHOPPER_URL}/route`, {
     method: 'POST',
@@ -1069,7 +1094,17 @@ Deno.serve(async (req) => {
       const escapeLeg = await getRoute([originLL, ...escapeViaLLs, escapeLL], 0); // highways fine
       const scenicWaypoints: LatLng[] = [escapeLL, ...intermediateWPs, ...stopLLs, destinationLL];
       if (body.round_trip) scenicWaypoints.push(originLL);
-      const scenicLeg = await getRoute(scenicWaypoints, curviness);
+      // v2.30: compute overall bearing (escape → destination) and apply as heading hint
+      // to all via-points. This prevents U-turn excursions: a waypoint on 9W in Nyack
+      // will be approached traveling in the corridor direction (e.g. north), not with a
+      // south dip into the town center followed by a U-turn back onto the main road.
+      // First and last points get -1 (unconstrained). heading_penalty=300 in getRoute.
+      const overallBearing = Math.round(bearingDegrees(escapeLL, destinationLL));
+      const scenicHeadings = scenicWaypoints.map((_, i) =>
+        (i === 0 || i === scenicWaypoints.length - 1) ? -1 : overallBearing
+      );
+      console.log(`[generate-route] scenic headings: bearing=${overallBearing}°, ${scenicHeadings}`);
+      const scenicLeg = await getRoute(scenicWaypoints, curviness, scenicHeadings);
       route = mergeRoutes(escapeLeg, scenicLeg);
       allWaypoints = [originLL, ...escapeViaLLs, escapeLL, ...intermediateWPs, ...stopLLs, destinationLL];
       if (body.round_trip) allWaypoints.push(originLL);
