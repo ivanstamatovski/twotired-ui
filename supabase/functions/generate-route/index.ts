@@ -1,4 +1,4 @@
-// generate-route edge function — v2.31
+// generate-route edge function — v2.32
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -738,16 +738,16 @@ US-9W — Hudson River west bank (Bear Mountain, Storm King, West Point, Cold Sp
   Pick the towns between your entry point and where 9W diverges toward the destination.
 
   NYC-origin: escape_waypoint: "Piermont, NY". NEVER "George Washington Bridge".
-    To Bear Mountain          → intermediates: []
-    To Cornwall / Storm King  → intermediates: ["Bear Mountain, NY"]
-    To Newburgh               → intermediates: ["Bear Mountain, NY", "Cornwall, NY"]
-    To beyond Newburgh        → intermediates: ["Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
+    To Bear Mountain          → intermediates: ["Nyack, NY", "Haverstraw, NY"]
+    To Cornwall / Storm King  → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY"]
+    To Newburgh               → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY"]
+    To beyond Newburgh        → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY", "Newburgh, NY"]
 
   North-of-GWB origin (Tarrytown, Westchester, etc.):
     escape_waypoint: "Mario Cuomo Bridge, Tarrytown, NY"
-    To Bear Mountain   → intermediates: ["Nyack, NY"]
-    To Cornwall        → intermediates: ["Nyack, NY", "Bear Mountain, NY"]
-    To Newburgh        → intermediates: ["Nyack, NY", "Bear Mountain, NY", "Cornwall, NY"]
+    To Bear Mountain   → intermediates: ["Nyack, NY", "Haverstraw, NY"]
+    To Cornwall        → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY"]
+    To Newburgh        → intermediates: ["Nyack, NY", "Haverstraw, NY", "Bear Mountain, NY", "Cornwall, NY"]
 
 PALISADES INTERSTATE PKWY — ridge road above Hudson (NJ side, Bear Mountain approach):
   Anchor: "Alpine, NJ" (handled in CLOSE NORTH corridor). No trucks. Stunning.
