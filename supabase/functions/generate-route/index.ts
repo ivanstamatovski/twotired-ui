@@ -1085,7 +1085,7 @@ NJ Route 29 — Delaware River road (Milford NJ, Frenchtown, Lambertville):
 ━━ STOPS ━━
 Only add stops the rider explicitly requests. Never invent them.
 near: a specific town or area name (not coordinates).
-radius_km: 15 for specific towns, 25 for general areas.
+radius_km: 4 for specific towns (tight — prevents results crossing rivers or mountains to the wrong side), 12 for general areas ("somewhere in the Catskills").
 
 ━━ WHEN TO CLARIFY ━━
 If the request is genuinely ambiguous — two valid interpretations that produce meaningfully different routes — output a clarification request INSTEAD of a route.
@@ -1426,7 +1426,7 @@ Deno.serve(async (req) => {
       for (const stop of body.stops) {
         const nearLL = await resolveLocation(stop.near);
         const poi = await findPOI(stop.type, nearLL, stop.radius_km ?? 15);
-        if (poi) stops.push(poi);
+        if (poi) stops.push({ ...poi, type: stop.type }); // include type for emoji picker in App.jsx
       }
     }
 
