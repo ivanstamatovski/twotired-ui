@@ -460,7 +460,6 @@ export default function App() {
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
       const el = document.createElement('div');
-      el.className = 'map-stop-marker';
       // Pick emoji by stop type keyword
       const t = (stop.type || stop.name || '').toLowerCase();
       const emoji = t.includes('coffee') || t.includes('cafe') || t.includes('espresso') ? '☕'
@@ -471,6 +470,18 @@ export default function App() {
         : t.includes('view') || t.includes('overlook') || t.includes('scenic') ? '📸'
         : '📍';
       el.textContent = emoji;
+      // Inline styles — MapLibre overrides external CSS on custom marker elements
+      Object.assign(el.style, {
+        width: '36px', height: '36px',
+        background: '#ffffff',
+        border: '2.5px solid #f97316',
+        borderRadius: '50%',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: '18px', lineHeight: '1',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+        cursor: 'pointer',
+        userSelect: 'none',
+      });
       const popup = new maplibregl.Popup({ offset: 16, closeButton: false, maxWidth: '220px' })
         .setHTML(`<div class="map-popup"><strong>${stop.name}</strong>${stop.rating ? `<div class="popup-rating">⭐ ${stop.rating}${stop.ratingCount ? ` (${stop.ratingCount.toLocaleString()})` : ''}</div>` : ''}</div>`);
       markersRef.current.push(
