@@ -461,10 +461,20 @@ export default function App() {
       if (!stop.lat || !stop.lng) return;
       const el = document.createElement('div');
       el.className = 'map-stop-marker';
-      const popup = new maplibregl.Popup({ offset:14, closeButton:false })
-        .setHTML(`<div class="map-popup"><strong>${stop.name}</strong>${stop.rating?`<br>⭐ ${stop.rating}`:''}</div>`);
+      // Pick emoji by stop type keyword
+      const t = (stop.type || stop.name || '').toLowerCase();
+      const emoji = t.includes('coffee') || t.includes('cafe') || t.includes('espresso') ? '☕'
+        : t.includes('lunch') || t.includes('dinner') || t.includes('restaurant') || t.includes('diner') || t.includes('food') || t.includes('eat') ? '🍽️'
+        : t.includes('gas') || t.includes('fuel') || t.includes('petrol') ? '⛽'
+        : t.includes('bar') || t.includes('pub') || t.includes('beer') || t.includes('brewery') ? '🍺'
+        : t.includes('ice cream') || t.includes('dessert') || t.includes('bakery') ? '🍦'
+        : t.includes('view') || t.includes('overlook') || t.includes('scenic') ? '📸'
+        : '📍';
+      el.textContent = emoji;
+      const popup = new maplibregl.Popup({ offset: 16, closeButton: false, maxWidth: '220px' })
+        .setHTML(`<div class="map-popup"><strong>${stop.name}</strong>${stop.rating ? `<div class="popup-rating">⭐ ${stop.rating}${stop.ratingCount ? ` (${stop.ratingCount.toLocaleString()})` : ''}</div>` : ''}</div>`);
       markersRef.current.push(
-        new maplibregl.Marker({ element:el }).setLngLat([stop.lng, stop.lat]).setPopup(popup).addTo(map)
+        new maplibregl.Marker({ element: el }).setLngLat([stop.lng, stop.lat]).setPopup(popup).addTo(map)
       );
     });
 

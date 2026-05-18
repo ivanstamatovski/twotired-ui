@@ -187,6 +187,48 @@ html, body, #root {
   .map-locate-btn { bottom: 48px; right: 12px; }
 }
 
+/* ─── POI stop markers (coffee, lunch, gas, etc.) ───────────────── */
+.map-stop-marker {
+  width: 36px;
+  height: 36px;
+  background: #ffffff;
+  border: 2.5px solid #f97316;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  animation: stop-pop 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  transition: transform 0.15s ease;
+}
+.map-stop-marker:hover {
+  transform: scale(1.15);
+}
+
+@keyframes stop-pop {
+  from { transform: scale(0); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+
+.map-popup {
+  font-size: 13px;
+  line-height: 1.5;
+  min-width: 120px;
+}
+.map-popup strong {
+  display: block;
+  font-size: 13px;
+  color: #111;
+}
+.map-popup .popup-rating {
+  color: #f97316;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 /* ─── Motorcycle user-location marker ───────────────────────────── */
 .user-moto-marker {
   cursor: default;

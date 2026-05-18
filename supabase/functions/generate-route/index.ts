@@ -133,6 +133,59 @@ const NINE_W_ROUTE17_EXCL_AREA = {
   }],
 };
 
+// ── NY-97 / Delaware River Canyon corridor area ───────────────────────────────
+// NY-97 is a NY state highway — SECONDARY in OSM. Hawks Nest switchbacks are 2 miles
+// north of Sparrow Bush: tight cliff-face bends above the Delaware gorge, then 18 miles
+// of sweeping curves north to Narrowsburg.
+// INVERTED logic vs 9W: NY-97 is SECONDARY, so we penalize PRIMARY/TRUNK in the canyon
+// to prevent GraphHopper from routing via US-6 (PRIMARY) which runs parallel to the north.
+const NY97_CORRIDOR_AREA = {
+  type: 'FeatureCollection',
+  features: [{
+    type: 'Feature',
+    id: 'ny97_corridor',
+    properties: {},
+    geometry: {
+      type: 'Polygon',
+      // Delaware River canyon from Port Jervis north to Narrowsburg + approach roads.
+      // Wide enough to capture US-6 (PRIMARY) which bypasses the canyon.
+      coordinates: [[
+        [-74.55, 41.28],
+        [-75.10, 41.28],
+        [-75.10, 41.72],
+        [-74.55, 41.72],
+        [-74.55, 41.28],
+      ]],
+    },
+  }],
+};
+
+// ── NY-28 / Catskills corridor area ───────────────────────────────────────────
+// NY-28 is a NY state highway — SECONDARY in OSM. Runs east-west through the Catskill
+// peaks: Kingston → Woodstock → Phoenicia → Shandaken → Margaretville.
+// Same inverted logic as NY-97: penalize PRIMARY/TRUNK to keep route on the mountain
+// secondary instead of jumping to US-209 or I-87 bypasses.
+const NY28_CORRIDOR_AREA = {
+  type: 'FeatureCollection',
+  features: [{
+    type: 'Feature',
+    id: 'ny28_corridor',
+    properties: {},
+    geometry: {
+      type: 'Polygon',
+      // Catskills corridor: Kingston west to Margaretville/Delhi. Wide N/S to capture
+      // competing US-209 (E side) and I-86/NY-17 (S side).
+      coordinates: [[
+        [-73.95, 41.80],
+        [-74.80, 41.80],
+        [-74.80, 42.25],
+        [-73.95, 42.25],
+        [-73.95, 41.80],
+      ]],
+    },
+  }],
+};
+
 // ── 9W corridor area ──────────────────────────────────────────────────────────
 // v2.33: Used when rider requests "via 9W" or similar named-road routing.
 // The corridor covers the Hudson River west bank from Alpine/Fort Lee to Newburgh,
@@ -221,6 +274,73 @@ function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
           ...(base.areas?.features || []),
           ...NINE_W_CORRIDOR_AREA.features,
           ...NINE_W_ROUTE17_EXCL_AREA.features,
+        ],
+      },
+      distance_influence: 90,
+    };
+  }
+
+  if (corridor === 'NY-97') {
+    return {
+      speed: base.speed, // keep motorcycle speed model
+      priority: [
+        // ── Global road hierarchy (same anti-residential penalties as 9W) ──────────
+        { if: 'road_class == MOTORWAY',       multiply_by: '0.1'  }, // avoid interstates
+        { if: 'road_class == RESIDENTIAL',    multiply_by: '0.15' }, // no neighborhood crawling
+        { if: 'road_class == LIVING_STREET',  multiply_by: '0.05' }, // nearly banned
+        { if: 'road_class == SERVICE',        multiply_by: '0.05' }, // nearly banned
+        { if: 'road_class == SECONDARY',      multiply_by: '0.6'  }, // minor roads: lower but OK
+        { if: 'road_class == TERTIARY',       multiply_by: '0.5'  }, // discouraged globally
+
+        // ── NY-97 corridor: INVERTED logic vs 9W ─────────────────────────────────
+        // NY-97 is a SECONDARY road. US-6 (PRIMARY) runs parallel north of the canyon
+        // and is shorter/faster — GraphHopper would prefer it without penalty.
+        // Fix: in the corridor, PRIMARY/TRUNK get crushed so SECONDARY (NY-97) wins.
+        //   PRIMARY in corridor:  no global rule, combined: 0.15 alone
+        //   SECONDARY in corridor: 0.6 global × 1.0 here = 0.6 >> PRIMARY 0.15 ✓
+        { if: 'in_ny97_corridor && road_class == PRIMARY',  multiply_by: '0.15' },
+        { if: 'in_ny97_corridor && road_class == TRUNK',    multiply_by: '0.15' },
+        { if: 'in_ny97_corridor && road_class == MOTORWAY', multiply_by: '0.05' },
+        // TERTIARY/RESIDENTIAL already penalized globally; corridor doesn't need extra push
+      ],
+      areas: {
+        type: 'FeatureCollection',
+        features: [
+          ...(base.areas?.features || []),
+          ...NY97_CORRIDOR_AREA.features,
+        ],
+      },
+      distance_influence: 90,
+    };
+  }
+
+  if (corridor === 'NY-28') {
+    return {
+      speed: base.speed, // keep motorcycle speed model
+      priority: [
+        // ── Global road hierarchy (same as other corridors) ───────────────────────
+        { if: 'road_class == MOTORWAY',       multiply_by: '0.1'  },
+        { if: 'road_class == RESIDENTIAL',    multiply_by: '0.15' },
+        { if: 'road_class == LIVING_STREET',  multiply_by: '0.05' },
+        { if: 'road_class == SERVICE',        multiply_by: '0.05' },
+        { if: 'road_class == SECONDARY',      multiply_by: '0.6'  },
+        { if: 'road_class == TERTIARY',       multiply_by: '0.5'  },
+
+        // ── NY-28 corridor: INVERTED logic — NY-28 is SECONDARY ──────────────────
+        // Competitors: I-87 (MOTORWAY, already penalized), US-209 (PRIMARY, east side),
+        // I-86/NY-17 (MOTORWAY/PRIMARY, south of corridor).
+        // Penalize PRIMARY/TRUNK so SECONDARY (NY-28) wins through the Catskill spine.
+        //   PRIMARY in corridor:   combined 0.15  (0.15 penalty only)
+        //   SECONDARY in corridor: combined 0.6   (0.6 global, no extra penalty) >> 0.15 ✓
+        { if: 'in_ny28_corridor && road_class == PRIMARY',  multiply_by: '0.15' },
+        { if: 'in_ny28_corridor && road_class == TRUNK',    multiply_by: '0.15' },
+        { if: 'in_ny28_corridor && road_class == MOTORWAY', multiply_by: '0.05' },
+      ],
+      areas: {
+        type: 'FeatureCollection',
+        features: [
+          ...(base.areas?.features || []),
+          ...NY28_CORRIDOR_AREA.features,
         ],
       },
       distance_influence: 90,
@@ -852,6 +972,68 @@ Interpret these before geocoding anything. These override generic Places results
   → destination: "Asbury Park, NJ" as default unless specified
   → SOUTH corridor (Goethals → Freehold, NJ)
 
+━━ KNOWN MOTORCYCLE ROUTES DATABASE ━━
+These are real, well-known biker routes in the NYC region. Use this knowledge when the user asks
+for recommendations, mentions a destination, or names a road. This is curated route quality data —
+trust it over general mapping logic.
+
+BEAR MOUNTAIN (most popular NYC-area moto destination):
+  Best approach from NYC: 9W north from the GWB. Continuous, sweeping road with Hudson River views,
+  no stop lights for long stretches, drama at the bridge approaches. 9W is the "correct" biker road.
+  Palisades Pkwy approach: also excellent — ridge road, no trucks, no lights, but a parkway (motorway OSM class).
+  Both converge at the Bear Mountain Bridge or at Perkins Memorial Drive.
+  Avoid: 9W south of Alpine has more suburban traffic. Always escape city before engaging corridor.
+  Avoid: Route 303, I-87, Route 17 — parallel roads with no character, just traffic.
+
+HAWKS NEST / NY-97 (Delaware River canyon):
+  The road: NY-97 from Port Jervis north to Narrowsburg / Pond Eddy area.
+  The famous section: "Hawks Nest" — 2 miles of tight switchbacks carved into cliffs directly above
+  the Delaware River gorge, just north of Sparrow Bush. Like an eastern version of Angeles Crest.
+  Continuation: after Hawks Nest, NY-97 opens into 18+ miles of sweeping curves north along the river.
+  Best approach from NYC: GWB → Harriman (NY-17 west) → Middletown → Sparrow Bush / Port Jervis area.
+  OSM road class: SECONDARY. US-6 (PRIMARY) runs north of the canyon — routing must penalize PRIMARY
+  in the corridor or GraphHopper takes the boring shortcut.
+  Why riders go: cliff-face road, no guardrails in places, tight blind corners, dramatic river views.
+  Best stop: Barryville, NY area for gas. The road has limited services once you're in the canyon.
+
+NY-28 / CATSKILLS SPINE:
+  The road: NY-28 from Kingston west through Woodstock → Phonecia → Shandaken → Margaretville → Delhi.
+  Character: long, flowing mountain sweepers through the Catskill high peaks. Less technical than Hawks Nest,
+  more about sustained rhythm and mountain scenery.
+  Famous stop: Phoenicia Diner (Phoenicia, NY) — legendary biker gathering spot, excellent food.
+  The "Catskill loop" classic: NY-28 west, then NY-30 north, then back via NY-23 or return on 28.
+  Best approach: Harriman → NY-17W → Catskill area OR 9W north → Kingston → NY-28 west.
+  OSM road class: SECONDARY. Competing roads: I-87 (Thruway, motorway) on the east, US-209 south.
+  Corridor logic must penalize PRIMARY/TRUNK inside the Catskills to prevent shortcuts.
+
+NY-218 / STORM KING HIGHWAY:
+  The road: NY-218 from Vails Gate north to Cornwall-on-Hudson, along the Hudson.
+  Character: narrow, cliff-hugging, dramatic Hudson River views. Originally blasted from solid rock.
+  Technical riding: tight corners, some blind curves, 1.5 lanes in places. Not for beginners.
+  Context: often combined with 9W — Storm King is the dramatic final push to West Point / Cold Spring area.
+  Avoid on weekends (tourist foot traffic near Storm King Art Center).
+
+NJ-94 / NJ HIGHLANDS (High Point, Delaware Water Gap):
+  Best roads: NJ-94 north from Vernon, NJ-23 northwest. Farmland, rolling hills, open views.
+  Delaware Water Gap: approach via I-80 to Blairstown area, then Old Mine Road for riverside riding.
+  Character: more open and agricultural vs the Hudson Valley. Better in spring/fall for foliage.
+
+NJ-29 / DELAWARE RIVER ROAD (Milford, Frenchtown, Lambertville):
+  The road: NJ-29 south from Milford along the Delaware River.
+  Character: flat river road, charming towns every 10 miles, antique shops, good lunch stops.
+  Milford, Frenchtown, Stockton, New Hope (PA side), Lambertville: all classic biker towns.
+  Approach from NYC: GWB → Mahwah → US-202 west → Milford.
+  Good day trip loop: ride out via Mahwah/Highlands, ride south on NJ-29, return via I-78.
+
+GENERAL QUALITY RULES (what makes a great motorcycle road):
+  ✓ Long stretches without stop lights or stop signs
+  ✓ Continuous flowing curves — not zigzag intersections
+  ✓ Primary or secondary roads — NOT residential streets or local roads
+  ✓ Dramatic scenery: river, mountain, cliff, ridge
+  ✗ Neighborhood streets: stop signs every block, low speed limits, no flow
+  ✗ Parallel interstates: fast but soul-crushing
+  ✗ Zigzag through towns when a bypass exists
+
 ━━ PREFERRED ROAD CORRIDORS ━━
 These are the signature motorcycle roads for each destination type. When the user explicitly
 names one of these roads, output road_corridor (NOT intermediate_waypoints — those create detours).
@@ -864,38 +1046,41 @@ US-9W — Hudson River west bank (Bear Mountain, Storm King, West Point, Cold Sp
     → NO intermediate_waypoints — corridor model handles road-following
     → The corridor model biases GraphHopper to stay on 9W throughout the scenic leg
   Character: primary road hugging the Hudson's west bank, dramatic river views, sweeping curves.
+  Road class: PRIMARY (US highway). Corridor logic penalizes SECONDARY/TERTIARY to make PRIMARY win.
 
 PALISADES INTERSTATE PKWY — ridge road above Hudson (NJ side, Bear Mountain approach):
   Default Bear Mountain corridor (no "9W" mention). Handled by CLOSE NORTH escape_waypoint: "Alpine, NJ".
   No trucks. Spectacular ridge road. GraphHopper avoids Palisades motorway via Palisades zone model.
 
 NY-97 / HAWKS NEST — Delaware River canyon switchbacks:
-  When user says "via NY-97", "take 97", "Hawks Nest via 97":
+  When user says "via NY-97", "take 97", "Hawks Nest", "Hawks Nest via 97", "the canyon road":
     → road_corridor: "NY-97"
-    → escape_waypoint: "Harriman, NY" for NYC origins
+    → escape_waypoint: "Middletown, NY" for NYC origins (NOT Harriman — Middletown sits naturally on NY-17 west, avoids the Sloatsburg 17A detour)
     → NO intermediate_waypoints
-  Character: switchbacks carved into cliff face above the Delaware River gorge.
+  Character: switchbacks carved into cliff face above the Delaware River gorge. One of the best roads in the Northeast.
+  Road class: SECONDARY (NY state route). Corridor logic penalizes PRIMARY/TRUNK so NY-97 wins over US-6.
 
 NY-218 — Storm King Highway (Cornwall, West Point approach):
-  When user says "Storm King Highway" or "via 218":
+  When user says "Storm King Highway", "Storm King", or "via 218":
     → road_corridor: "NY-218"
     → escape_waypoint: "Alpine, NJ" for NYC origins
     → destination: "Cornwall-on-Hudson, NY"
-  Character: narrow cliff-side road above the Hudson. Technical riding.
+  Character: narrow cliff-side road above the Hudson. Technical riding, historically significant.
 
 NY-28 — Catskills spine (Woodstock, Phoenicia, Margaretville, Delhi):
-  When user says "via NY-28", "take 28", "NY-28 to Woodstock":
+  When user says "via NY-28", "take 28", "NY-28 to Woodstock", "Catskills", "Phoenicia":
     → road_corridor: "NY-28"
     → escape_waypoint: "Harriman, NY" for NYC origins
     → NO intermediate_waypoints
-  Character: wide mountain sweepers through Catskill peaks.
+  Character: wide mountain sweepers through Catskill peaks. Flowing rhythm, great scenery.
+  Road class: SECONDARY (NY state route). Corridor logic penalizes PRIMARY/TRUNK over I-87/US-209.
 
 NJ-94 / NJ-23 — NJ Highlands backroads (High Point, Delaware Water Gap from NJ):
   No road_corridor needed. Handled by NORTHWEST escape_waypoint: "Mahwah, NJ".
 
 NJ Route 29 — Delaware River road (Milford NJ, Frenchtown, Lambertville):
-  escape_waypoint: "Englewood Cliffs, NJ", then escape through Mahwah → Milford corridor.
-  (This is an escape-waypoint route, not a road_corridor route — NJ-29 runs south from the escape point.)
+  escape_waypoint: "Milford, NJ" via Mahwah corridor.
+  (This is an escape-waypoint route, not a road_corridor route — NJ-29 runs south from Milford.)
 
 ━━ STOPS ━━
 Only add stops the rider explicitly requests. Never invent them.
