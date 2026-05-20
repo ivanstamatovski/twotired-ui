@@ -438,6 +438,7 @@ function bearingDegrees(from: LatLng, to: LatLng): number {
 // OSM way IDs are cited for auditability.
 const KNOWN_WAYPOINTS: Record<string, LatLng> = {
   // ── GWB corridor — NJ side ──
+  'fort lee, nj':                       { lat: 40.851206, lng: -73.970859 }, // Main St / Lemoine Ave, Fort Lee — just across GWB on NJ side
   'alpine, nj':                         { lat: 40.956668, lng: -73.921224 }, // US 9W / Palisades Blvd — OSM way 1297483038
   'mahwah, nj':                         { lat: 41.091303, lng: -74.154417 }, // NJ-17 / Route 17 South — OSM way 60972489
   'milford, nj':                        { lat: 40.572300, lng: -75.094800 }, // NJ-29 / River Road at Milford Borough
@@ -466,9 +467,12 @@ const KNOWN_WAYPOINTS: Record<string, LatLng> = {
   'goethals bridge, staten island, ny': { lat: 40.643592, lng: -74.209789 }, // I-278 SI approach — OSM way 38071038
   'verrazano-narrows bridge, staten island, ny': { lat: 40.601958, lng: -74.058808 }, // I-278 SI Expressway — OSM way 5680111
   'perth amboy, nj':                    { lat: 40.514965, lng: -74.286347 }, // NJ-35 / Convery Blvd — OSM way 11663261
-  // ── Shore intermediates ──
+  // ── Long Island boundary ──
+  'garden city, ny':                    { lat: 40.726944, lng: -73.633611 }, // Nassau County — first major town east of Queens border
+  // ── Shore / SW NJ intermediates ──
   'freehold, nj':                       { lat: 40.266728, lng: -74.293930 }, // US-9 / US Highway 9 — OSM way 46499952
   'toms river, nj':                     { lat: 39.963559, lng: -74.204741 }, // NJ-37 / Route 37 West — OSM way 11742469
+  'new brunswick, nj':                  { lat: 40.486966, lng: -74.444523 }, // US-1 / Albany St, New Brunswick — SW corridor anchor
   // ── Escape via waypoints (city highways — car profile only) ──
   'i-278/bqe, brooklyn, ny':           { lat: 40.692734, lng: -73.999541 }, // I-278 BQE Brooklyn — OSM way 38182028
   'belt parkway/flatbush ave, brooklyn, ny': { lat: 40.584807, lng: -73.946343 }, // Belt Pkwy — OSM way 219685090
@@ -718,13 +722,42 @@ one or two intermediate_waypoints that are real towns ON the named road.
 Do NOT try to control which bridge GH crosses or how it exits the city. GH knows the road network.
 Trust it. Overspecifying waypoints is what causes loops, spurs, and double-backs.
 
+━━ NYC ORIGIN — EFFICIENT CITY EXIT ━━
+THE CITY = all 5 boroughs: Manhattan, Brooklyn, Queens, Bronx, Staten Island.
+The boundary waypoint must be OUTSIDE all 5 boroughs — in NJ, Westchester, Nassau County, or Rockland.
+Staten Island is still the city. "Freehold, NJ" is outside. "Jamaica, NY" is NOT — it's Queens.
+
+By destination direction — pick ONE boundary intermediate that is geographically outside all 5 boroughs:
+
+  NORTH / NORTHWEST (Bear Mountain, Harriman, Catskills, Hawk's Nest, Hudson Valley):
+    → "Fort Lee, NJ" — just across GWB in NJ. GH finds the best borough path to GWB naturally.
+    → Exception: Bronx origin — no boundary needed, Bronx connects directly to GWB and I-87.
+
+  SOUTH / JERSEY SHORE (Asbury Park, Cape May, Seaside Heights):
+    → "Freehold, NJ" — first real NJ corridor town south of the city.
+      GH crosses via Verrazzano + Goethals (through Staten Island is fine — it's the natural path,
+      not a detour, even though SI is a borough).
+
+  SOUTHWEST (Philadelphia, Trenton, Delaware):
+    → "New Brunswick, NJ" — anchors onto US-1 south corridor.
+
+  EAST (Long Island, Nassau/Suffolk):
+    → "Garden City, NY" — first major town in Nassau County, outside the city.
+      GH exits Queens heading east naturally to reach it.
+
+  NORTH OF GWB (Westchester, Yonkers, Tarrytown, White Plains):
+    → No boundary needed — already outside all 5 boroughs.
+
+RULE: If rider has a stop already outside the city, that stop IS the boundary — skip the boundary intermediate.
+RULE: If a road_corridor already has intermediate_waypoints (e.g. Piermont + Nyack for 9W), those replace the boundary — do NOT add Fort Lee on top.
+
 ━━ INTERMEDIATE WAYPOINTS — WHEN AND HOW ━━
 intermediate_waypoints are named places GH must pass through, in order.
-Use them ONLY for corridor routes where you need to anchor GH on a specific road.
-For general routing (no road_corridor), leave intermediate_waypoints: [] — GH finds the best path.
+Use them for: (1) NYC boundary exit, (2) corridor road anchoring.
+Keep the list short — 1–2 waypoints maximum.
 
-RULE: If the rider specified any stops (coffee, lunch, etc.), set intermediate_waypoints: [] —
-let the stops anchor the route. Adding intermediates ON TOP of stops creates forks.
+RULE: If the rider specified any stops (coffee, lunch, etc.) that are outside the city,
+set intermediate_waypoints: [] — let the stops anchor the route.
 
 NEVER use "Florida, NY" as an intermediate — causes west-then-east zigzag.
 
@@ -986,10 +1019,10 @@ ${lessons}
 ━━ OUTPUT FORMAT ━━
 Respond ONLY with valid JSON, no markdown, no explanation.
 
-Route response — standard (no corridor):
+Route response — standard (no corridor, NYC origin heading north):
 {
   "origin": "Rider GPS location or named place if no GPS provided",
-  "intermediate_waypoints": [],
+  "intermediate_waypoints": ["Fort Lee, NJ"],
   "stops": [{ "type": "coffee shop", "near": "town name, State", "radius_km": 15 }],
   "destination": "Town or Park Name, State",
   "curviness": 2,
