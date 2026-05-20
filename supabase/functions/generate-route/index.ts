@@ -1,4 +1,4 @@
-// generate-route edge function — v2.37
+// generate-route edge function — v2.42
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -354,12 +354,23 @@ function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
 // distance_influence minimum is 90 in LM/flexible mode. All tiers use 90.
 // Differentiation comes from priority penalty weights only.
 const CURVINESS_MODELS = [
-  // Tier 1: Direct + Spirited — fastest viable route, light character
+  // Tier 1: Direct + Spirited — fastest transit route, highway-friendly
+  // v2.41: added full road hierarchy to stop secondary roads (Saint Georges Ave) beating PRIMARY.
+  // v2.42: raised MOTORWAY from 0.5 → 0.85. At 0.5, I-95 (MOTORWAY) lost to NJ-27 (PRIMARY 0.9)
+  //        by a 2:1 margin, so GraphHopper took NJ-27 — a strip-mall crawl full of red lights.
+  //        For a transit/city ride, the rider WANTS the highway. 0.85 makes I-95 competitive:
+  //        PRIMARY (0.9) ≈ MOTORWAY (0.85) — GraphHopper picks I-95 when it's genuinely faster.
+  //        Motorway avoidance (0.1–0.5) only makes sense for curviness 2–3 (scenic/backroads).
   {
     speed: [],
     priority: [
-      { if: 'road_class == MOTORWAY', multiply_by: '0.5' },
-      { if: 'road_class == PRIMARY', multiply_by: '0.9' },
+      { if: 'road_class == MOTORWAY',    multiply_by: '0.85' },
+      { if: 'road_class == PRIMARY',     multiply_by: '0.9'  },
+      { if: 'road_class == SECONDARY',   multiply_by: '0.7'  },
+      { if: 'road_class == TERTIARY',    multiply_by: '0.5'  },
+      { if: 'road_class == RESIDENTIAL', multiply_by: '0.2'  },
+      { if: 'road_class == LIVING_STREET', multiply_by: '0.05' },
+      { if: 'road_class == SERVICE',     multiply_by: '0.05' },
     ],
     distance_influence: 90,
   },
@@ -707,6 +718,20 @@ YOUR MOST IMPORTANT JOB: Always specify an escape_waypoint to get the rider out 
 Without it, GraphHopper will meander through city streets for hours. You must choose the right corridor.
 Base your corridor choice on where the rider actually is, not on a hardcoded assumption.
 
+━━ FIVE BOROUGHS EXIT RULE ━━
+The escape leg uses the car profile. By default the car profile picks the shortest distance path —
+which from Queens often routes through Manhattan surface streets (a mess).
+To prevent this: always use escape_via_waypoints to anchor the escape leg onto the correct HIGHWAY
+before it leaves the city. The car profile will then travel on that highway naturally.
+
+CRITICAL: The escape_via_waypoints must be a city highway anchor (see list in CITY HIGHWAYS section).
+Without this, GraphHopper will thread through Manhattan streets to reach any bridge/crossing south or
+west of the city — even when a faster all-highway alternative exists (e.g. BQE → Verrazano → Goethals).
+
+The escape principle: get out of the 5 boroughs as FAST as possible on HIGHWAYS. No surface streets,
+no Manhattan grid, no residential shortcuts. The bike is not a car — every minute in city traffic is
+wasted riding time.
+
 ━━ NYC ESCAPE CORRIDORS ━━
 Pick based on destination direction. Read carefully — wrong corridor = route doubles back.
 
@@ -774,13 +799,28 @@ Pick based on destination direction. Read carefully — wrong corridor = route d
 
 ── WEST / SOUTHWEST: Trenton, Princeton, Philadelphia, Delaware ──
   escape_waypoint: "Goethals Bridge, Staten Island, NY"
-  intermediate_waypoints: ["Perth Amboy, NJ"] — anchors onto NJ-35 / US-9 corridor
+  escape_via_waypoints: ["I-278/BQE, Brooklyn, NY"]
+  WHY BQE via: from Queens, the car profile defaults to Manhattan surface streets to reach Goethals.
+  Adding the BQE forces the escape leg onto I-278 through Brooklyn → Verrazano Bridge → Staten Island
+  Expressway → Goethals Bridge. All highway, zero Manhattan, clean exit.
+  intermediate_waypoints: []   ← EMPTY. Do NOT add Perth Amboy or any NJ town.
+  WHY no intermediate: Perth Amboy sits at lng -74.286, which is WEST of US-1 (lng ~-74.21). Adding it
+  forces a west detour through Linden/Rahway surface streets and back — a nasty zigzag.
+  At curviness=1, GraphHopper follows US-1 (PRIMARY, weight 0.9) south from the Goethals exit naturally.
+  No anchor needed. The BQE + Goethals waypoints are enough to exit NYC cleanly.
   curviness: 1 — central NJ has no scenic back roads, only traffic-light-saturated state routes.
-  curviness 2-3 will produce 3+ hours of stop-and-go on NJ-9/NJ-35. Use 1 unless user explicitly asks for scenic/twisty.
+  curviness 2-3 will produce 3+ hours of stop-and-go on NJ-9/NJ-35/NJ-27. Use 1 unless user explicitly asks for scenic/twisty.
+  WHY curviness 1 uses the highway: NJ-27 and US-1 are PRIMARY roads but are strip-mall crawls with
+  constant red lights. At curviness=1, MOTORWAY (I-95/NJ Turnpike) is nearly equal weight to PRIMARY,
+  so GraphHopper takes the highway when it's genuinely faster — which it always is through central NJ.
 
 ── SOUTH: Jersey Shore, Asbury Park, Cape May, Seaside Heights ──
   escape_waypoint: "Goethals Bridge, Staten Island, NY"
-  intermediate_waypoints: ["Freehold, NJ"] or ["Toms River, NJ"] depending on shore target
+  escape_via_waypoints: ["I-278/BQE, Brooklyn, NY"]
+  WHY BQE via: same reason as SW — forces I-278 highway through Brooklyn, avoids Manhattan surface streets.
+  intermediate_waypoints: ["Freehold, NJ"] or ["Toms River, NJ"] depending on shore target.
+  WHY shore intermediates are OK: Freehold/Toms River sit ON the NJ-9/Garden State Pkwy corridor,
+  directly south of the Goethals exit — no west detour involved. Unlike Perth Amboy they don't force a zigzag.
 
 ── EAST: Long Island ──
   No escape_waypoint needed — rider is already in Queens, just route east.
