@@ -1,12 +1,14 @@
-// generate-route edge function — v2.43
+// generate-route edge function — v2.44
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
 // v2.2: adds Claude Sonnet 4.6 intent parsing — accepts natural language via body.query
 // v2.3: adds Claude Haiku 4.5 ride narrative from GraphHopper turn-by-turn instructions
-// v2.43: removes escape_waypoint/escape_via_waypoints + two-phase routing entirely.
-//        All routing is now single-phase motorcycle profile: origin → intermediates → stops → dest.
-//        Corridor routing uses intermediate_waypoints (places ON the road) instead of escape handoffs.
+// v2.43: removes escape_waypoint/escape_via_waypoints. All routing waypoints use intermediate_waypoints.
+// v2.44: restores car-profile city exit. escape_waypoint field is GONE (Claude never produces it),
+//        but when origin is inside all 5 NYC boroughs AND there are intermediate_waypoints,
+//        the code auto-runs a car-profile leg to intermediates[0] then merges with motorcycle scenic leg.
+//        This keeps Manhattan/Brooklyn/Queens routing clean without any LLM-specified escape fields.
 
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY')!;
 const GOOGLE_PLACES_KEY = Deno.env.get('GOOGLE_PLACES_KEY')!;
@@ -1210,6 +1212,20 @@ function mergeRoutes(leg1: any, leg2: any): any {
   };
 }
 
+// ── NYC 5-borough boundary check ──────────────────────────────────────────────
+// Returns true if the point is inside the approximate bounding box of all 5 NYC boroughs.
+// Manhattan, Brooklyn, Queens, Bronx, Staten Island are all "the city" for routing purposes.
+// Used to trigger two-phase routing: car profile (highway-preferring) to the first boundary
+// intermediate, then motorcycle profile for the scenic leg beyond the city.
+// Why: GH motorcycle profile penalises motorways but also deprioritises TRUNK/PRIMARY slightly,
+// so from Queens it routes via Queensboro Bridge → Manhattan surface streets → GWB instead
+// of via the Bronx expressways → GWB. Car profile has no scenic penalties → picks highways.
+function isInNYC(ll: LatLng): boolean {
+  // Bounding box covers all 5 boroughs with a small margin.
+  // Eastern limit -73.70 clips to just past JFK; western -74.27 covers western SI tip.
+  return ll.lat >= 40.49 && ll.lat <= 40.92 && ll.lng >= -74.27 && ll.lng <= -73.70;
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -1306,24 +1322,64 @@ Deno.serve(async (req) => {
     const curviness = (body.curviness ?? 2) as 1 | 2 | 3;
     const corridor = body.road_corridor || undefined;
 
-    // v2.43 — Single-phase routing: origin → intermediates → stops → destination
-    // GH handles city exit natively using motorcycle profile. No two-phase escape logic.
+    // v2.44 — Hybrid routing: car-profile city exit + motorcycle scenic leg
+    //
+    // When origin is inside all 5 NYC boroughs AND there are intermediate_waypoints:
+    //   Phase 1 (escape): car profile, curviness=0, origin → intermediates[0]
+    //     Car profile has no motorway penalty → picks bridges and expressways naturally.
+    //     This is what prevents the Queensboro Bridge → Manhattan surface streets routing.
+    //   Phase 2 (scenic): motorcycle profile, origin=intermediates[0] → rest of route
+    //     Normal scenic/corridor routing takes over once outside the city.
+    //   Merged with mergeRoutes() into a single geometry for the frontend.
+    //
+    // When origin is outside NYC OR no intermediates: single-phase motorcycle (unchanged).
     let route: any;
     let allWaypoints: LatLng[];
-    allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
-    if (body.round_trip) allWaypoints.push(originLL);
+    const nycOrigin = isInNYC(originLL) && intermediateWPs.length > 0;
 
-    if (corridor) {
-      const corridorModel = buildCorridorModel(corridor, curviness);
-      const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
-      const headings = allWaypoints.map((_, i) =>
-        (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
-      );
-      route = await getRoute(allWaypoints, curviness, headings, corridorModel);
-      console.log('[generate-route] corridor routing via', corridor, '— single phase,', allWaypoints.length, 'waypoints');
+    if (nycOrigin) {
+      const boundaryLL = intermediateWPs[0];
+      console.log('[generate-route] NYC origin — car escape to', JSON.stringify(boundaryLL));
+      const escapeLeg = await getRoute([originLL, boundaryLL], 0);
+
+      const scenicWPs = [boundaryLL, ...intermediateWPs.slice(1), ...stopLLs, destinationLL];
+      if (body.round_trip) scenicWPs.push(originLL);
+
+      let scenicLeg: any;
+      if (corridor) {
+        const corridorModel = buildCorridorModel(corridor, curviness);
+        const overallBearing = Math.round(bearingDegrees(boundaryLL, destinationLL));
+        const headings = scenicWPs.map((_, i) =>
+          (i === 0 || i === scenicWPs.length - 1) ? -1 : overallBearing
+        );
+        scenicLeg = await getRoute(scenicWPs, curviness, headings, corridorModel);
+        console.log('[generate-route] corridor routing via', corridor, '— scenic phase,', scenicWPs.length, 'waypoints');
+      } else {
+        scenicLeg = await getRoute(scenicWPs, curviness);
+        console.log('[generate-route] scenic routing —', scenicWPs.length, 'waypoints');
+      }
+
+      route = mergeRoutes(escapeLeg, scenicLeg);
+      allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
+      if (body.round_trip) allWaypoints.push(originLL);
+      console.log('[generate-route] merged route:', route.distance_miles, 'mi,', route.time_minutes, 'min');
     } else {
-      route = await getRoute(allWaypoints, curviness);
-      console.log('[generate-route] standard routing —', allWaypoints.length, 'waypoints');
+      // Single-phase motorcycle profile — non-NYC origin or no boundary intermediates
+      allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
+      if (body.round_trip) allWaypoints.push(originLL);
+
+      if (corridor) {
+        const corridorModel = buildCorridorModel(corridor, curviness);
+        const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
+        const headings = allWaypoints.map((_, i) =>
+          (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
+        );
+        route = await getRoute(allWaypoints, curviness, headings, corridorModel);
+        console.log('[generate-route] corridor routing via', corridor, '— single phase,', allWaypoints.length, 'waypoints');
+      } else {
+        route = await getRoute(allWaypoints, curviness);
+        console.log('[generate-route] standard routing —', allWaypoints.length, 'waypoints');
+      }
     }
 
     // Save to Supabase (best-effort)
