@@ -504,6 +504,21 @@ export default function App() {
     window.speechSynthesis.speak(u);
   }
 
+  function restoreRecentRoute(r) {
+    if (r.geometry) {
+      setRouteData(r);
+      setCurrentIntent(r.intent || null);
+      setRouteApproved(false);
+      setRefineOpen(false);
+      setMessages([{ role:'route', route:r }]);
+      drawRouteOnMap(r);
+      localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
+      if (isMobile) setSheetMode('collapsed');
+    } else {
+      setQuery(r.title); submitQuery(r.title);
+    }
+  }
+
   function startNavigation() {
     setNavMode(true);
     navModeRef.current = true;
@@ -766,7 +781,7 @@ export default function App() {
                 <div className="recent-peek">
                   {recent.slice(0,2).map(r=>(
                     <button key={r.id} className="recent-chip"
-                      onClick={()=>{ setQuery(r.title); submitQuery(r.title); }}>{r.title}</button>
+                      onClick={()=>restoreRecentRoute(r)}>{r.title}</button>
                   ))}
                 </div>
               )}
@@ -845,7 +860,7 @@ export default function App() {
                         <div className="menu-section-label">Recent rides</div>
                         {recent.slice(0,3).map(r=>(
                           <button key={r.id} className="menu-item"
-                            onClick={()=>{ setMenuOpen(false); setQuery(r.title); submitQuery(r.title); }}>
+                            onClick={()=>{ setMenuOpen(false); restoreRecentRoute(r); }}>
                             {r.title}<span className="menu-item-meta">{r.distance_mi?.toFixed(0)} mi</span>
                           </button>
                         ))}
@@ -925,6 +940,17 @@ export default function App() {
                     <div className="approved-banner">✅ Route approved — ride safe!</div>
                   </div>
                 )}
+                {recent.filter(r=>r.title !== routeData?.title).length > 0 && (
+                  <div className="recent-sidebar">
+                    <div className="recent-label">Recent rides</div>
+                    {recent.filter(r=>r.title !== routeData?.title).slice(0,3).map(r=>(
+                      <div key={r.id} className="recent-item" onClick={()=>restoreRecentRoute(r)}>
+                        <span className="recent-title">{r.title}</span>
+                        <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             ) : (
               <div className="empty-state">
@@ -933,22 +959,7 @@ export default function App() {
                     <div className="recent-label">Recent rides</div>
                     {recent.map(r=>(
                       <div key={r.id} className="recent-item"
-                        onClick={()=>{
-                          if (r.geometry) {
-                            // Restore from cache — no API call, instant redraw
-                            setRouteData(r);
-                            setCurrentIntent(r.intent || null);
-                            setRouteApproved(false);
-                            setRefineOpen(false);
-                            setMessages([{ role:'route', route:r }]);
-                            drawRouteOnMap(r);
-                            localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
-                            if (isMobile) setSheetMode('collapsed');
-                          } else {
-                            // Legacy entry without geometry — fall back to API
-                            setQuery(r.title); submitQuery(r.title);
-                          }
-                        }}>
+                        onClick={()=>restoreRecentRoute(r)}>
                         <span className="recent-title">{r.title}</span>
                         <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
                       </div>
