@@ -1,4 +1,4 @@
-// generate-route edge function — v2.45
+// generate-route edge function — v2.52
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -13,6 +13,22 @@
 //        with the route geometry. It returns joy/transit scores for the specific segments
 //        the route passes through — not the whole road's average. Scores added to response
 //        and passed as hints to the narrative generator.
+// v2.50: score-driven routing areas. Replaces static class-only CURVINESS_MODELS with
+//        buildCurvinessModel() which fetches joy/transit area polygons from score server
+//        at cold start and blends them with infrastructure safety-net rules.
+// v2.51: curviness 1 (transit) now uses car profile. Car has no built-in motorway
+//        penalty, so NJ Turnpike / interstates are naturally preferred for get-there
+//        runs. motorcycle profile's internal motorway penalty can't be overridden by
+//        multiply_by (capped at 1.0 in LM mode) so score areas alone weren't enough.
+// v2.52: custom 'twotired' GH profile replaces car/motorcycle split. twotired is a
+//        flat car-based profile (no road-class biases) with only infrastructure rules
+//        baked in (RESIDENTIAL 0.15, LIVING_STREET/SERVICE 0.05, UNPAVED 0.1).
+//        All routing preference comes from per-request custom_model: curviness tier
+//        rules + joy/transit score area polygons. infra block removed from
+//        buildCurvinessModel to avoid double-stacking penalties.
+//        Tier 1: no motorway penalty + transit_tier_c 0.4× → highways beat NJ-27
+//        Tier 2: class penalties + joy_tier_c 0.4× → boring primaries avoided
+//        Tier 3: strong class penalties + joy_tier_c 0.4× → max scenery bias
 
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY')!;
 const GOOGLE_PLACES_KEY = Deno.env.get('GOOGLE_PLACES_KEY')!;
@@ -239,7 +255,7 @@ const NINE_W_CORRIDOR_AREA = {
 // Bear Mountain) — not from GraphHopper seeking curviness. Curviness-seeking is only
 // appropriate for open-ended "twisty ride" requests, not named corridor routes.
 function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
-  const base = CURVINESS_MODELS[curviness - 1];
+  const base = buildCurvinessModel(curviness);
 
   if (corridor === '9W') {
     return {
@@ -355,63 +371,122 @@ function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
   return base; // unknown corridor — fall back to standard curviness model
 }
 
-// ── Curviness tiers ───────────────────────────────────────────────────────────
-// distance_influence minimum is 90 in LM/flexible mode. All tiers use 90.
-// Differentiation comes from priority penalty weights only.
-const CURVINESS_MODELS = [
-  // Tier 1: Direct + Spirited — fastest transit route, highway-friendly
-  // v2.41: added full road hierarchy to stop secondary roads (Saint Georges Ave) beating PRIMARY.
-  // v2.42: raised MOTORWAY from 0.5 → 0.85. At 0.5, I-95 (MOTORWAY) lost to NJ-27 (PRIMARY 0.9)
-  //        by a 2:1 margin, so GraphHopper took NJ-27 — a strip-mall crawl full of red lights.
-  //        For a transit/city ride, the rider WANTS the highway. 0.85 makes I-95 competitive:
-  //        PRIMARY (0.9) ≈ MOTORWAY (0.85) — GraphHopper picks I-95 when it's genuinely faster.
-  //        Motorway avoidance (0.1–0.5) only makes sense for curviness 2–3 (scenic/backroads).
-  {
-    speed: [],
-    priority: [
-      { if: 'road_class == MOTORWAY',    multiply_by: '0.85' },
-      { if: 'road_class == PRIMARY',     multiply_by: '0.9'  },
-      { if: 'road_class == SECONDARY',   multiply_by: '0.7'  },
-      { if: 'road_class == TERTIARY',    multiply_by: '0.5'  },
-      { if: 'road_class == RESIDENTIAL', multiply_by: '0.2'  },
-      { if: 'road_class == LIVING_STREET', multiply_by: '0.05' },
-      { if: 'road_class == SERVICE',     multiply_by: '0.05' },
-    ],
-    distance_influence: 90,
-  },
-  // Tier 2: Scenic — avoids highways, prefers secondary/tertiary
-  // Note: multiply_by max is 1.0 in LM mode. Preference via relative penalties only.
-  // Palisades zone: in_palisades_pkwy && MOTORWAY → extra 0.1 factor → combined 0.01.
-  {
-    speed: [],
-    priority: [
-      { if: 'road_class == MOTORWAY', multiply_by: '0.1' },
-      { if: 'road_class == TRUNK', multiply_by: '0.2' },
-      { if: 'road_class == PRIMARY', multiply_by: '0.7' },
-      { if: 'road_class == SECONDARY', multiply_by: '1.0' },
-      { if: 'road_class == TERTIARY', multiply_by: '1.0' },
+// ── Routing area cache (fetched from score server at cold start) ───────────────
+// joy areas   → used for curviness 2 + 3 (scenic / backroads)
+// transit areas → used for curviness 1 (get-there routing)
+//
+// In LM/flexible mode multiply_by is capped at 1.0 — we can only penalise, not
+// boost.  The strategy: tier_c (low-scoring) roads get 0.4× penalty; tier_a and
+// tier_b roads are untouched.  Net effect: GH routes around low-joy / low-transit
+// roads rather than through them.  Combined with class-based safety-net rules
+// this cleanly solves NJ-27 vs NJ Turnpike, Goshen interchange, etc.
+let _joyAreas:     any | null = null;
+let _transitAreas: any | null = null;
+
+async function loadRoutingAreas(): Promise<void> {
+  if (!ROAD_SCORE_URL) return;
+  try {
+    const [jRes, tRes] = await Promise.all([
+      fetch(`${ROAD_SCORE_URL}/areas/joy`,     { signal: AbortSignal.timeout(10000) }),
+      fetch(`${ROAD_SCORE_URL}/areas/transit`, { signal: AbortSignal.timeout(10000) }),
+    ]);
+    if (jRes.ok) { _joyAreas     = await jRes.json(); console.log('[loadRoutingAreas] joy areas loaded'); }
+    if (tRes.ok) { _transitAreas = await tRes.json(); console.log('[loadRoutingAreas] transit areas loaded'); }
+  } catch (e: any) {
+    console.warn('[loadRoutingAreas] failed (will route without score areas):', e.message);
+  }
+}
+
+// Kick off at module load — warm by the time the first request arrives
+const _areasPromise = loadRoutingAreas();
+
+// ── Curviness tier model builder ───────────────────────────────────────────────
+// v2.5: replaced static class-based CURVINESS_MODELS array with a function that
+// blends infrastructure rules (class-based safety nets) with score-driven area
+// penalties from generate_joy_areas.py.
+//
+// Architecture:
+//   Tier 1 (transit)  — no motorway penalty; transit_tier_c penalised 0.4×
+//                        → NJ Turnpike beats NJ-27 because 27 is tier_c (signal-heavy)
+//   Tier 2 (scenic)   — motorway/trunk penalised by class; joy_tier_c penalised 0.4×
+//                        → boring primary roads avoided, twisty secondaries preferred
+//   Tier 3 (backroads) — motorway/primary penalised by class; joy_tier_c penalised 0.4×
+//                        → maximum scenery, highest-joy roads selected
+//
+// Infrastructure rules kept in all tiers (not scoring, just topology hygiene):
+//   RESIDENTIAL: 0.15  — motorcycles are not neighbourhood crawlers
+//   LIVING_STREET/SERVICE: 0.05 — effectively banned
+function buildCurvinessModel(curviness: 1 | 2 | 3): any {
+  // NOTE: RESIDENTIAL (0.15), LIVING_STREET/SERVICE (0.05), and UNPAVED (0.1) rules
+  // live in twotired.json (the GH base profile). Do NOT repeat them here — GH merges
+  // per-request custom_model on top of the profile model multiplicatively, so repeating
+  // them would double-stack the penalties (e.g. RESIDENTIAL → 0.15 × 0.15 = 0.02).
+
+  // Palisades zone is always included so the Pkwy motorway is penalised for scenic tiers.
+  const baseAreaFeatures: any[] = [...(PALISADES_ZONE_AREAS.features)];
+
+  if (curviness === 1) {
+    // Transit: flat base (all road classes at 1.0 from twotired profile — motorways fine).
+    // Only score-area penalty applied: avoid transit-poor roads.
+    const priority: any[] = [
+      ...(_transitAreas ? [{ if: 'in_transit_tier_c', multiply_by: '0.4' }] : []),
+    ];
+    const areaFeatures = [
+      ...baseAreaFeatures,
+      ...(_transitAreas?.features ?? []),
+    ];
+    return {
+      speed: [],
+      priority,
+      areas: { type: 'FeatureCollection', features: areaFeatures },
+      distance_influence: 90,
+    };
+  }
+
+  if (curviness === 2) {
+    // Scenic: penalise big fast roads + joy_tier_c penalty for boring/congested roads.
+    const priority: any[] = [
+      { if: 'road_class == MOTORWAY', multiply_by: '0.1'  },
+      { if: 'road_class == TRUNK',    multiply_by: '0.2'  },
+      { if: 'road_class == PRIMARY',  multiply_by: '0.7'  },
       { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
-    ],
-    areas: PALISADES_ZONE_AREAS,
-    distance_influence: 90,
-  },
-  // Tier 3: Backroads — maximally avoids highways, strongly prefers small roads
-  // Palisades zone: in_palisades_pkwy && MOTORWAY → extra 0.1 factor → combined 0.005.
-  {
+      ...(_joyAreas ? [{ if: 'in_joy_tier_c', multiply_by: '0.4' }] : []),
+    ];
+    const areaFeatures = [
+      ...baseAreaFeatures,
+      ...(_joyAreas?.features ?? []),
+    ];
+    return {
+      speed: [],
+      priority,
+      areas: { type: 'FeatureCollection', features: areaFeatures },
+      distance_influence: 90,
+    };
+  }
+
+  // Curviness 3: backroads — maximum scenery bias, motorways effectively banned.
+  const priority: any[] = [
+    { if: 'road_class == MOTORWAY', multiply_by: '0.05' },
+    { if: 'road_class == TRUNK',    multiply_by: '0.1'  },
+    { if: 'road_class == PRIMARY',  multiply_by: '0.5'  },
+    { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
+    ...(_joyAreas ? [{ if: 'in_joy_tier_c', multiply_by: '0.4' }] : []),
+  ];
+  const areaFeatures = [
+    ...baseAreaFeatures,
+    ...(_joyAreas?.features ?? []),
+  ];
+  return {
     speed: [],
-    priority: [
-      { if: 'road_class == MOTORWAY', multiply_by: '0.05' },
-      { if: 'road_class == TRUNK', multiply_by: '0.1' },
-      { if: 'road_class == PRIMARY', multiply_by: '0.5' },
-      { if: 'road_class == SECONDARY', multiply_by: '1.0' },
-      { if: 'road_class == TERTIARY', multiply_by: '1.0' },
-      { if: 'road_class == UNCLASSIFIED', multiply_by: '1.0' },
-      { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
-    ],
-    areas: PALISADES_ZONE_AREAS,
+    priority,
+    areas: { type: 'FeatureCollection', features: areaFeatures },
     distance_influence: 90,
-  },
-];
+  };
+}
+
+// Keep CURVINESS_MODELS as a lazy getter so corridor builder can still reference it
+// (corridor builder calls buildCorridorModel which needs the base speed array)
+const CURVINESS_MODELS = [1, 2, 3].map((c) => buildCurvinessModel(c as 1 | 2 | 3));
 
 // ── Haversine distance (km) ────────────────────────────────────────────────────
 function haversineKm(a: LatLng, b: LatLng): number {
@@ -631,7 +706,10 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
     const model = modelOverride || CURVINESS_MODELS[curviness - 1];
     body = {
       points: points.map(p => [p.lng, p.lat]),
-      profile: 'motorcycle',
+      // v2.52: single 'twotired' profile for all curviness tiers. Flat car-based base
+      // (no road-class biases) — all routing preference comes from the per-request
+      // custom_model (curviness tier rules + joy/transit score area polygons).
+      profile: 'twotired',
       custom_model: model,
       'ch.disable': true,
       snap_prevention: ['motorway', 'motorway_link'],
@@ -731,7 +809,7 @@ async function fetchRouteScores(geometry: any): Promise<RouteScores | null> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ geometry }),
-      signal: AbortSignal.timeout(5000), // 5s max — never block the response
+      signal: AbortSignal.timeout(20000), // 20s max — long routes (90+ mi) need 6-8s for ST_DWithin
     });
     if (!res.ok) {
       console.warn('[fetchRouteScores] score server error:', res.status);
@@ -1313,6 +1391,9 @@ Deno.serve(async (req) => {
 
   try {
     const rawBody = await req.json();
+
+    // v2.5: ensure routing areas are loaded (no-op on warm invocations)
+    await _areasPromise;
 
     // v2.19: fetch routing lessons from bug reports in parallel with body parse
     const lessonsPromise = fetchRoutingLessons();
