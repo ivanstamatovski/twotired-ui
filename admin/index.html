@@ -143,6 +143,39 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .rule-complaint{font-size:11px;color:var(--text-dim);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:10px;white-space:pre-wrap}
 .rule-actions{display:flex;align-items:center;gap:8px}
 .rule-notes{font-size:11px;color:var(--text-muted);font-style:italic}
+
+/* ── Route Debug ── */
+.debug-search{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 13px;color:var(--text);font-size:13px;font-family:var(--font);outline:none;margin-bottom:16px}
+.debug-search:focus{border-color:var(--accent)}
+.debug-search::placeholder{color:var(--text-muted)}
+.phase-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px}
+@media(max-width:900px){.phase-grid{grid-template-columns:1fr}}
+.phase-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+.phase-title{font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.phase-row{display:flex;gap:8px;margin-bottom:5px;font-size:12px;align-items:baseline}
+.phase-key{color:var(--text-muted);min-width:110px;flex-shrink:0}
+.phase-val{color:var(--text);word-break:break-word}
+.phase-val.code{font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--accent)}
+.score-bar-wrap{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.score-bar-label{font-size:12px;color:var(--text-muted);min-width:80px}
+.score-bar-track{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.score-bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.score-bar-fill.joy{background:var(--accent)}
+.score-bar-fill.transit{background:var(--blue)}
+.score-bar-val{font-size:12px;font-weight:600;color:var(--text);min-width:28px;text-align:right}
+.narrative-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px 16px;font-size:13px;color:var(--text);line-height:1.65;margin-top:4px;font-style:italic}
+.wp-tag{display:inline-flex;align-items:center;gap:5px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 8px;font-size:11px;margin:2px 2px 0 0}
+.wp-tag-name{color:var(--text)}
+.wp-tag-src{color:var(--text-muted)}
+.wp-tag-src.hardcoded{color:var(--green)}
+.wp-tag-src.places{color:var(--blue)}
+.wp-tag-src.gps{color:var(--accent)}
+.timing-row{display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:4px}
+.timing-label{color:var(--text-muted);min-width:90px}
+.timing-bar-wrap{flex:1;height:4px;background:var(--border);border-radius:2px}
+.timing-bar{height:100%;border-radius:2px;background:var(--accent);opacity:.7}
+.timing-val{color:var(--text-dim);min-width:45px;text-align:right}
+.error-box{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:12px 14px;color:var(--red);font-size:12px;font-family:'SF Mono',Menlo,monospace;white-space:pre-wrap;margin-top:4px}
 </style>
 </head>
 <body>
@@ -187,6 +220,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <button class="nav-item" onclick="showPanel('rulebook',this)">
         <span class="nav-icon">📋</span> Rulebook
         <span class="nav-badge" id="badge-rulebook">—</span>
+      </button>
+      <button class="nav-item" onclick="showPanel('debug',this)">
+        <span class="nav-icon">🔍</span> Route Debug
+        <span class="nav-badge" id="badge-debug">—</span>
       </button>
     </div>
     <div class="content">
@@ -265,6 +302,24 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <div id="rulebook-list"></div>
       </div>
 
+      <!-- ── Route Debug Panel ── -->
+      <div class="panel" id="panel-debug">
+        <div class="stats-row" id="debug-stats"></div>
+        <div class="section-header">
+          <div class="section-title">Route Pipeline Debug</div>
+          <button class="refresh-btn" onclick="loadDebugLogs()">↻ Refresh</button>
+        </div>
+        <input class="debug-search" id="debug-search" placeholder="Search by query or destination…" oninput="filterDebugLogs()" />
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Time</th><th>Query</th><th>Destination</th><th>Joy</th><th>Transit</th><th>Total ms</th><th></th>
+            </tr></thead>
+            <tbody id="debug-body"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -328,7 +383,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -680,6 +735,177 @@ async function addAdminRule() {
     statusEl.style.color = 'var(--red)';
     statusEl.textContent = 'Save failed: ' + e.message;
   }
+}
+
+// ── Route Debug ───────────────────────────────────────────────────────────────
+let _debugLogs = [];
+
+async function loadDebugLogs() {
+  const tbody = document.getElementById('debug-body');
+  tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>';
+  try {
+    const data = await sb('/rest/v1/route_logs?select=*&order=created_at.desc&limit=100');
+    _debugLogs = data;
+    document.getElementById('badge-debug').textContent = data.length;
+
+    const today = data.filter(r => new Date(r.created_at) > new Date(Date.now()-86400000)).length;
+    const errors = data.filter(r => r.error).length;
+    const scored = data.filter(r => r.road_scores?.score_joy).length;
+    const avgJoy = scored > 0
+      ? (data.filter(r => r.road_scores?.score_joy).reduce((s,r) => s + r.road_scores.score_joy, 0) / scored).toFixed(2)
+      : '—';
+    document.getElementById('debug-stats').innerHTML =
+      statCard(data.length, 'Total Requests') +
+      statCard(today, 'Today', today > 0) +
+      statCard(scored + '/' + data.length, 'Scored Routes', scored > 0) +
+      statCard(errors > 0 ? `<span style="color:var(--red)">${errors}</span>` : '0', 'Errors');
+
+    document.getElementById('debug-search').value = '';
+    renderDebugRows(data);
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
+  }
+}
+
+function filterDebugLogs() {
+  const q = document.getElementById('debug-search').value.toLowerCase();
+  const filtered = q
+    ? _debugLogs.filter(r => (r.query||'').toLowerCase().includes(q) || (r.raw_intent?.destination||'').toLowerCase().includes(q))
+    : _debugLogs;
+  renderDebugRows(filtered);
+}
+
+function renderDebugRows(data) {
+  const tbody = document.getElementById('debug-body');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="empty-icon">🔍</div>No route logs yet — generate a route to see it here</div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map((r, i) => {
+    const joy     = r.road_scores?.score_joy;
+    const transit = r.road_scores?.score_transit;
+    const joyColor = joy == null ? 'var(--text-muted)' : joy >= 3.5 ? 'var(--green)' : joy >= 2.5 ? 'var(--accent)' : 'var(--red)';
+    const dest    = r.raw_intent?.destination || r.resolved_dest?.query || '—';
+    return `
+      <tr>
+        <td class="cell-mono" style="white-space:nowrap">${timeSince(r.created_at)}<br><span style="font-size:10px;color:var(--text-muted)">${fmtDate(r.created_at)}</span></td>
+        <td><div class="cell-main" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(r.query||'')}">${escHtml(r.query || '(no query)')}</div></td>
+        <td style="color:var(--text)">${escHtml(dest)}</td>
+        <td style="color:${joyColor};font-weight:600">${joy != null ? joy.toFixed(2) : '—'}</td>
+        <td style="color:var(--blue)">${transit != null ? transit.toFixed(2) : '—'}</td>
+        <td style="color:var(--text-muted)">${r.total_ms != null ? r.total_ms.toLocaleString() + 'ms' : '—'}</td>
+        <td style="text-align:right">
+          ${r.error ? '<span style="color:var(--red);font-size:12px;margin-right:8px">⚠ error</span>' : ''}
+          <button class="expand-btn" onclick="toggleDebugDetail(${i})">Trace</button>
+        </td>
+      </tr>
+      <tr class="detail-row" id="debug-detail-${i}">
+        <td class="detail-cell" colspan="7">${renderDebugDetail(r)}</td>
+      </tr>`;
+  }).join('');
+}
+
+function toggleDebugDetail(i) {
+  document.getElementById('debug-detail-' + i).classList.toggle('open');
+}
+
+function renderDebugDetail(r) {
+  const intent = r.raw_intent || {};
+  const scores = r.road_scores || {};
+  const routing = r.routing_config || {};
+  const result  = r.route_result || {};
+
+  // Waypoints
+  function wpTags(arr) {
+    if (!arr || !arr.length) return '<span style="color:var(--text-muted);font-size:12px">none</span>';
+    return arr.map(w => {
+      const src = w.source || 'places';
+      return `<span class="wp-tag"><span class="wp-tag-name">${escHtml(w.name||w.query||`${w.lat?.toFixed(4)},${w.lng?.toFixed(4)}`)}</span><span class="wp-tag-src ${src}">${src}</span></span>`;
+    }).join('');
+  }
+
+  // Score bars
+  function scoreBars() {
+    if (!scores.score_joy) return '<div style="color:var(--text-muted);font-size:12px">No scored segments found near route</div>';
+    const joy     = scores.score_joy || 0;
+    const transit = scores.score_transit || 0;
+    return `
+      <div class="score-bar-wrap"><div class="score-bar-label">Joy</div><div class="score-bar-track"><div class="score-bar-fill joy" style="width:${(joy/5*100).toFixed(0)}%"></div></div><div class="score-bar-val">${joy.toFixed(2)}</div></div>
+      <div class="score-bar-wrap"><div class="score-bar-label">Transit</div><div class="score-bar-track"><div class="score-bar-fill transit" style="width:${(transit/5*100).toFixed(0)}%"></div></div><div class="score-bar-val">${transit.toFixed(2)}</div></div>
+      <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--text-muted)">
+        <span>Curvature: <b style="color:var(--text)">${scores.avg_curvature ?? '—'}</b></span>
+        <span>Scenic: <b style="color:var(--text)">${scores.avg_scenic != null ? (scores.avg_scenic*100).toFixed(0)+'%' : '—'}</b></span>
+        <span>Elevation σ: <b style="color:var(--text)">${scores.avg_elevation ?? '—'}m</b></span>
+        <span>Signals/km: <b style="color:var(--text)">${scores.avg_signals_per_km ?? '—'}</b></span>
+        <span>Segments: <b style="color:var(--text)">${scores.segment_count ?? '—'}</b></span>
+      </div>`;
+  }
+
+  // Timing bars
+  function timingBars() {
+    const total = r.total_ms || 1;
+    const phases = [
+      { label: 'Intent parse', ms: r.parse_ms },
+      { label: 'Routing (GH)', ms: r.route_ms },
+      { label: 'Road scores',  ms: r.score_ms },
+      { label: 'Narrative',    ms: r.narrative_ms },
+    ];
+    return phases.map(p => {
+      if (p.ms == null) return '';
+      const pct = Math.min(100, (p.ms / total * 100)).toFixed(0);
+      return `<div class="timing-row"><div class="timing-label">${p.label}</div><div class="timing-bar-wrap"><div class="timing-bar" style="width:${pct}%"></div></div><div class="timing-val">${p.ms.toLocaleString()}ms</div></div>`;
+    }).join('') + `<div class="timing-row" style="margin-top:4px;border-top:1px solid var(--border);padding-top:6px"><div class="timing-label" style="color:var(--text);font-weight:600">Total</div><div class="timing-bar-wrap"></div><div class="timing-val" style="color:var(--text);font-weight:600">${total.toLocaleString()}ms</div></div>`;
+  }
+
+  return `
+    ${r.error ? `<div class="error-box">⚠ Error: ${escHtml(r.error)}</div>` : ''}
+    <div class="phase-grid">
+
+      <div class="phase-card">
+        <div class="phase-title">🧠 Intent Parse <span style="font-weight:400;color:var(--text-muted)">${r.parse_ms != null ? r.parse_ms+'ms' : ''}</span></div>
+        <div class="phase-row"><span class="phase-key">Destination</span><span class="phase-val">${escHtml(intent.destination||'—')}</span></div>
+        <div class="phase-row"><span class="phase-key">Corridor</span><span class="phase-val code">${escHtml(intent.road_corridor||'none')}</span></div>
+        <div class="phase-row"><span class="phase-key">Curviness</span><span class="phase-val">${intent.curviness||'—'}</span></div>
+        <div class="phase-row"><span class="phase-key">Round trip</span><span class="phase-val">${intent.round_trip ? 'yes' : 'no'}</span></div>
+        ${intent.reasoning ? `<div class="phase-row"><span class="phase-key">Reasoning</span><span class="phase-val" style="font-style:italic;color:var(--text-dim)">${escHtml(intent.reasoning)}</span></div>` : ''}
+      </div>
+
+      <div class="phase-card">
+        <div class="phase-title">📍 Waypoints</div>
+        <div class="phase-row"><span class="phase-key">Origin</span>${wpTags(r.resolved_origin ? [r.resolved_origin] : [])}</div>
+        <div class="phase-row"><span class="phase-key">Destination</span>${wpTags(r.resolved_dest ? [r.resolved_dest] : [])}</div>
+        <div class="phase-row"><span class="phase-key">Intermediates</span><div style="flex:1">${wpTags(r.resolved_waypoints)}</div></div>
+        <div class="phase-row"><span class="phase-key">Stops</span><div style="flex:1">${wpTags(r.resolved_stops)}</div></div>
+      </div>
+
+      <div class="phase-card">
+        <div class="phase-title">🏍️ Routing <span style="font-weight:400;color:var(--text-muted)">${r.route_ms != null ? r.route_ms+'ms' : ''}</span></div>
+        <div class="phase-row"><span class="phase-key">Profile</span><span class="phase-val code">${escHtml(routing.profile||'—')}</span></div>
+        <div class="phase-row"><span class="phase-key">Curviness</span><span class="phase-val">${routing.curviness||'—'}</span></div>
+        <div class="phase-row"><span class="phase-key">Corridor</span><span class="phase-val code">${escHtml(routing.corridor||'none')}</span></div>
+        <div class="phase-row"><span class="phase-key">NYC two-phase</span><span class="phase-val">${routing.nyc_two_phase ? '<span style="color:var(--accent)">yes</span>' : 'no'}</span></div>
+        <div class="phase-row"><span class="phase-key">Waypoints</span><span class="phase-val">${routing.waypoint_count||'—'}</span></div>
+        <div class="phase-row"><span class="phase-key">Distance</span><span class="phase-val">${result.distance_miles != null ? result.distance_miles + ' mi' : '—'}</span></div>
+        <div class="phase-row"><span class="phase-key">Duration</span><span class="phase-val">${result.time_minutes != null ? Math.floor(result.time_minutes/60)+'h '+result.time_minutes%60+'m' : '—'}</span></div>
+      </div>
+
+      <div class="phase-card">
+        <div class="phase-title">📊 Road Scores <span style="font-weight:400;color:var(--text-muted)">${r.score_ms != null ? r.score_ms+'ms' : ''}</span></div>
+        ${scoreBars()}
+      </div>
+
+    </div>
+
+    ${r.narrative ? `
+    <div style="margin-top:12px">
+      <div class="phase-title" style="margin-bottom:6px">📝 Narrative <span style="font-weight:400;color:var(--text-muted)">${r.narrative_ms != null ? r.narrative_ms+'ms' : ''}</span></div>
+      <div class="narrative-box">${escHtml(r.narrative)}</div>
+    </div>` : ''}
+
+    <div style="margin-top:12px">
+      <div class="phase-title" style="margin-bottom:6px">⏱ Timing</div>
+      ${timingBars()}
+    </div>`;
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

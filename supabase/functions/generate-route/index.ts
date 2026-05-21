@@ -1277,6 +1277,27 @@ function isInNYC(ll: LatLng): boolean {
   return ll.lat >= 40.49 && ll.lat <= 40.92 && ll.lng >= -74.27 && ll.lng <= -73.70;
 }
 
+// ── Pipeline logger (v2.45) ───────────────────────────────────────────────────
+// Writes a full trace of every route generation to route_logs table.
+// Best-effort — never throws, never blocks the response.
+async function logPipeline(record: Record<string, any>): Promise<void> {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/route_logs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify(record),
+    });
+    if (!res.ok) console.warn('[logPipeline] insert failed:', res.status);
+  } catch (e: any) {
+    console.warn('[logPipeline] error:', e.message);
+  }
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -1286,6 +1307,9 @@ Deno.serve(async (req) => {
       status: 500, headers: { ...CORS, 'Content-Type': 'application/json' },
     });
   }
+
+  const requestStart = Date.now();
+  const log: Record<string, any> = {}; // pipeline trace — populated throughout
 
   try {
     const rawBody = await req.json();
@@ -1299,15 +1323,19 @@ Deno.serve(async (req) => {
     const gpsTag = userLat !== undefined ? ` [Rider GPS: ${userLat.toFixed(5)}, ${userLng!.toFixed(5)}]` : '';
     if (gpsTag) console.log('[generate-route] rider GPS:', userLat, userLng);
 
+    log.query = typeof rawBody.query === 'string' ? rawBody.query : null;
+    log.user_lat = userLat ?? null;
+    log.user_lng = userLng ?? null;
+
     // v2.10: detect mode — new query, refinement, or raw RouteRequest
     let body: RouteRequest;
     let rawIntent: any = null;
 
+    const parseStart = Date.now();
     if (rawBody.refine === true && rawBody.intent && typeof rawBody.feedback === 'string') {
-      // Conversational refinement: rider saw a route and wants to change something
       console.log('[generate-route] refine mode, feedback:', rawBody.feedback);
+      log.query = `[refine] ${rawBody.feedback}`;
       const refineQuery = await buildRefineQuery(rawBody.feedback, rawBody.intent);
-      console.log('[generate-route] refine query:', refineQuery);
       const parsed = await parseIntent(refineQuery + gpsTag, await lessonsPromise);
       if ('clarify' in parsed) {
         return new Response(JSON.stringify({ success: true, clarify: true, question: parsed.question, options: parsed.options }), {
@@ -1330,11 +1358,12 @@ Deno.serve(async (req) => {
     } else {
       body = rawBody as RouteRequest;
     }
+    log.parse_ms = Date.now() - parseStart;
+    log.raw_intent = rawIntent;
 
-    // Override origin with actual GPS coords — skip Places geocode, use exact position
+    // Override origin with actual GPS coords
     if (userLat !== undefined) {
       body.origin = { lat: userLat, lng: userLng! };
-      console.log('[generate-route] origin overridden with GPS:', userLat, userLng);
     }
 
     if (!body.origin || !body.destination) {
@@ -1350,12 +1379,26 @@ Deno.serve(async (req) => {
     ]);
     console.log('[generate-route] origin:', JSON.stringify(originLL), 'dest:', JSON.stringify(destinationLL));
 
-    // v2.43: single-phase routing — resolve intermediate waypoints only (no escape logic)
+    log.resolved_origin = {
+      ...originLL,
+      source: userLat !== undefined ? 'gps' : ('lat' in body.origin ? 'coords' : 'places'),
+    };
+    log.resolved_dest = {
+      ...destinationLL,
+      query: 'query' in body.destination ? body.destination.query : null,
+      source: 'lat' in body.destination ? 'coords' : 'places',
+    };
+
+    // Resolve intermediate waypoints
     const intermediateWPs: LatLng[] = [];
+    const resolvedWaypoints: any[] = [];
     for (const wp of (body.intermediate_waypoints || [])) {
-      const ll = await resolveWaypoint(wp);
+      const hardcoded = lookupWaypoint(wp);
+      const ll = hardcoded ?? await geocode(wp);
       intermediateWPs.push(ll);
+      resolvedWaypoints.push({ name: wp, ...ll, source: hardcoded ? 'hardcoded' : 'places' });
     }
+    log.resolved_waypoints = resolvedWaypoints;
     if (intermediateWPs.length) console.log('[generate-route] intermediates:', JSON.stringify(intermediateWPs));
 
     // Find POI stops
@@ -1364,30 +1407,21 @@ Deno.serve(async (req) => {
       for (const stop of body.stops) {
         const nearLL = await resolveLocation(stop.near);
         const poi = await findPOI(stop.type, nearLL, stop.radius_km ?? 15);
-        if (poi) stops.push({ ...poi, type: stop.type }); // include type for emoji picker in App.jsx
+        if (poi) stops.push({ ...poi, type: stop.type });
       }
     }
+    log.resolved_stops = stops.map(s => ({ name: s.name, lat: s.lat, lng: s.lng, type: s.type }));
 
-    // Build scenic waypoint chain: [escape] → intermediates → stops → destination
+    // Build waypoint chain
     const stopLLs: LatLng[] = stops.map(s => ({ lat: s.lat, lng: s.lng }));
     const curviness = (body.curviness ?? 2) as 1 | 2 | 3;
     const corridor = body.road_corridor || undefined;
 
-    // v2.44 — Hybrid routing: car-profile city exit + motorcycle scenic leg
-    //
-    // When origin is inside all 5 NYC boroughs AND there are intermediate_waypoints:
-    //   Phase 1 (escape): car profile, curviness=0, origin → intermediates[0]
-    //     Car profile has no motorway penalty → picks bridges and expressways naturally.
-    //     This is what prevents the Queensboro Bridge → Manhattan surface streets routing.
-    //   Phase 2 (scenic): motorcycle profile, origin=intermediates[0] → rest of route
-    //     Normal scenic/corridor routing takes over once outside the city.
-    //   Merged with mergeRoutes() into a single geometry for the frontend.
-    //
-    // When origin is outside NYC OR no intermediates: single-phase motorcycle (unchanged).
     let route: any;
     let allWaypoints: LatLng[];
     const nycOrigin = isInNYC(originLL) && intermediateWPs.length > 0;
 
+    const routeStart = Date.now();
     if (nycOrigin) {
       const boundaryLL = intermediateWPs[0];
       console.log('[generate-route] NYC origin — car escape to', JSON.stringify(boundaryLL));
@@ -1404,18 +1438,14 @@ Deno.serve(async (req) => {
           (i === 0 || i === scenicWPs.length - 1) ? -1 : overallBearing
         );
         scenicLeg = await getRoute(scenicWPs, curviness, headings, corridorModel);
-        console.log('[generate-route] corridor routing via', corridor, '— scenic phase,', scenicWPs.length, 'waypoints');
       } else {
         scenicLeg = await getRoute(scenicWPs, curviness);
-        console.log('[generate-route] scenic routing —', scenicWPs.length, 'waypoints');
       }
 
       route = mergeRoutes(escapeLeg, scenicLeg);
       allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
       if (body.round_trip) allWaypoints.push(originLL);
-      console.log('[generate-route] merged route:', route.distance_miles, 'mi,', route.time_minutes, 'min');
     } else {
-      // Single-phase motorcycle profile — non-NYC origin or no boundary intermediates
       allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
       if (body.round_trip) allWaypoints.push(originLL);
 
@@ -1426,31 +1456,37 @@ Deno.serve(async (req) => {
           (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
         );
         route = await getRoute(allWaypoints, curviness, headings, corridorModel);
-        console.log('[generate-route] corridor routing via', corridor, '— single phase,', allWaypoints.length, 'waypoints');
       } else {
         route = await getRoute(allWaypoints, curviness);
-        console.log('[generate-route] standard routing —', allWaypoints.length, 'waypoints');
       }
     }
+    log.route_ms = Date.now() - routeStart;
+    log.routing_config = {
+      profile: nycOrigin ? 'car+motorcycle' : 'motorcycle',
+      curviness,
+      corridor: corridor ?? null,
+      nyc_two_phase: nycOrigin,
+      waypoint_count: allWaypoints.length,
+    };
+    log.route_result = { distance_miles: route.distance_miles, time_minutes: route.time_minutes };
 
-    // Save to Supabase (best-effort)
     const destName = 'query' in body.destination ? body.destination.query : `${destinationLL.lat},${destinationLL.lng}`;
-
-    // Road scores + narrative run in parallel with DB save (v2.45)
     const originalQuery = typeof (rawBody as any).query === 'string'
       ? (rawBody as any).query
       : ('query' in body.destination ? body.destination.query : 'route');
+
+    // Scores + narrative in parallel
+    const scoreStart = Date.now();
     const scoresPromise = fetchRouteScores(route.geometry);
-    const narrativePromise = scoresPromise.then(scores =>
-      generateNarrative(
-        route.instructions,
-        stops,
-        route.distance_miles,
-        route.time_minutes,
-        originalQuery,
-        scores,
-      )
-    );
+    const narrativePromise = scoresPromise.then(scores => {
+      log.score_ms = Date.now() - scoreStart;
+      log.road_scores = scores;
+      const narrativeStart = Date.now();
+      return generateNarrative(route.instructions, stops, route.distance_miles, route.time_minutes, originalQuery, scores)
+        .then(n => { log.narrative_ms = Date.now() - narrativeStart; return n; });
+    });
+
+    // Save route to Supabase (best-effort)
     try {
       const record = {
         title: `Route to ${destName}`,
@@ -1480,6 +1516,11 @@ Deno.serve(async (req) => {
     }
 
     const [narrative, scores] = await Promise.all([narrativePromise, scoresPromise]);
+    log.narrative = narrative;
+    log.total_ms = Date.now() - requestStart;
+
+    // Write pipeline log (fire and forget)
+    logPipeline(log);
 
     return new Response(JSON.stringify({ success: true, route: { ...route, waypoints: allWaypoints, stops, destination: destName, title: `Route to ${destName}`, duration_str: `${Math.floor(route.time_minutes / 60)}h ${route.time_minutes % 60}min`, distance_mi: route.distance_miles, intent: rawIntent, narrative, road_scores: scores ?? undefined } }), {
       status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
@@ -1487,6 +1528,9 @@ Deno.serve(async (req) => {
 
   } catch (err: any) {
     console.error('[generate-route] error:', err.message);
+    log.error = err.message;
+    log.total_ms = Date.now() - requestStart;
+    logPipeline(log);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500, headers: { ...CORS, 'Content-Type': 'application/json' },
     });
