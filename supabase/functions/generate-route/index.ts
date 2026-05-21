@@ -1,4 +1,4 @@
-// generate-route edge function — v2.44
+// generate-route edge function — v2.45
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -9,12 +9,17 @@
 //        but when origin is inside all 5 NYC boroughs AND there are intermediate_waypoints,
 //        the code auto-runs a car-profile leg to intermediates[0] then merges with motorcycle scenic leg.
 //        This keeps Manhattan/Brooklyn/Queens routing clean without any LLM-specified escape fields.
+// v2.45: road scoring integration. After GH returns a route, we query the Molly score server
+//        with the route geometry. It returns joy/transit scores for the specific segments
+//        the route passes through — not the whole road's average. Scores added to response
+//        and passed as hints to the narrative generator.
 
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY')!;
 const GOOGLE_PLACES_KEY = Deno.env.get('GOOGLE_PLACES_KEY')!;
 const GRAPHHOPPER_URL = Deno.env.get('GRAPHHOPPER_URL')!;
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const ROAD_SCORE_URL = Deno.env.get('ROAD_SCORE_URL') || ''; // optional — score server on Molly
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -705,6 +710,43 @@ Apply any relevant lessons to the current route before generating waypoints.`;
   }
 }
 
+// ── Road scoring (v2.45) ──────────────────────────────────────────────────────
+// Queries the Molly score server with the route's GeoJSON geometry.
+// Returns aggregate scores for the specific road segments the route passes through.
+// Best-effort — returns null on any error, never blocks routing.
+interface RouteScores {
+  score_joy: number | null;
+  score_transit: number | null;
+  avg_curvature: number | null;
+  avg_scenic: number | null;
+  avg_elevation: number | null;
+  avg_signals_per_km: number | null;
+  segment_count: number;
+}
+
+async function fetchRouteScores(geometry: any): Promise<RouteScores | null> {
+  if (!ROAD_SCORE_URL) return null;
+  try {
+    const res = await fetch(`${ROAD_SCORE_URL}/score-route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ geometry }),
+      signal: AbortSignal.timeout(5000), // 5s max — never block the response
+    });
+    if (!res.ok) {
+      console.warn('[fetchRouteScores] score server error:', res.status);
+      return null;
+    }
+    const data = await res.json();
+    if (!data.score_joy) return null; // no scored segments found
+    console.log(`[fetchRouteScores] joy=${data.score_joy} transit=${data.score_transit} segments=${data.segment_count}`);
+    return data as RouteScores;
+  } catch (e: any) {
+    console.warn('[fetchRouteScores] error:', e.message);
+    return null;
+  }
+}
+
 // ── Claude intent parser (v2.10) ─────────────────────────────────────────────
 // Claude is the route DIRECTOR. It plans the full journey including city escape.
 // GraphHopper only connects the dots Claude specifies.
@@ -1146,6 +1188,7 @@ async function generateNarrative(
   distanceMiles: number,
   timeMinutes: number,
   query: string,
+  scores?: RouteScores | null,
 ): Promise<string> {
   // Distill instructions to road names only — drop intervals/distances to save tokens
   const roadSteps = instructions
@@ -1158,9 +1201,17 @@ async function generateNarrative(
   const mins = timeMinutes % 60;
   const durationStr = hours > 0 ? `${hours}h ${mins}min` : `${mins}min`;
 
+  const scoreHint = scores?.score_joy != null
+    ? `\nRoad quality scores (from live road database, based on the specific segments this route uses):
+  Joy score: ${scores.score_joy}/5.0 (curvature, scenery, low signals, elevation)
+  Transit score: ${scores.score_transit}/5.0 (flow, speed, efficiency)
+  Avg curvature: ${scores.avg_curvature} | Scenic: ${(scores.avg_scenic! * 100).toFixed(0)}% scenic proximity | Signals: ${scores.avg_signals_per_km}/km
+Use these scores to add one specific sentence about the road character — e.g. high curvature = "expect tight technical bends", high scenic = "forest and river views throughout", low signals = "barely a traffic light for 40 miles". Don't list the numbers directly.`
+    : '';
+
   const userMessage = `Ride request: "${query}"
 Distance: ${distanceMiles} miles | Duration: ${durationStr}
-Stops: ${stopNames}
+Stops: ${stopNames}${scoreHint}
 Turn-by-turn (abbreviated):
 ${roadSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 
@@ -1385,16 +1436,20 @@ Deno.serve(async (req) => {
     // Save to Supabase (best-effort)
     const destName = 'query' in body.destination ? body.destination.query : `${destinationLL.lat},${destinationLL.lng}`;
 
-    // Narrative (v2.3) — run in parallel with DB save, best-effort
+    // Road scores + narrative run in parallel with DB save (v2.45)
     const originalQuery = typeof (rawBody as any).query === 'string'
       ? (rawBody as any).query
       : ('query' in body.destination ? body.destination.query : 'route');
-    const narrativePromise = generateNarrative(
-      route.instructions,
-      stops,
-      route.distance_miles,
-      route.time_minutes,
-      originalQuery,
+    const scoresPromise = fetchRouteScores(route.geometry);
+    const narrativePromise = scoresPromise.then(scores =>
+      generateNarrative(
+        route.instructions,
+        stops,
+        route.distance_miles,
+        route.time_minutes,
+        originalQuery,
+        scores,
+      )
     );
     try {
       const record = {
@@ -1424,9 +1479,9 @@ Deno.serve(async (req) => {
       console.error('[generate-route] DB insert exception:', dbErr.message);
     }
 
-    const narrative = await narrativePromise;
+    const [narrative, scores] = await Promise.all([narrativePromise, scoresPromise]);
 
-    return new Response(JSON.stringify({ success: true, route: { ...route, waypoints: allWaypoints, stops, destination: destName, title: `Route to ${destName}`, duration_str: `${Math.floor(route.time_minutes / 60)}h ${route.time_minutes % 60}min`, distance_mi: route.distance_miles, intent: rawIntent } }), {
+    return new Response(JSON.stringify({ success: true, route: { ...route, waypoints: allWaypoints, stops, destination: destName, title: `Route to ${destName}`, duration_str: `${Math.floor(route.time_minutes / 60)}h ${route.time_minutes % 60}min`, distance_mi: route.distance_miles, intent: rawIntent, narrative, road_scores: scores ?? undefined } }), {
       status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
     });
 
