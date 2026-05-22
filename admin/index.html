@@ -4,6 +4,8 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>TwoTired Admin</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -176,6 +178,17 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .timing-bar{height:100%;border-radius:2px;background:var(--accent);opacity:.7}
 .timing-val{color:var(--text-dim);min-width:45px;text-align:right}
 .error-box{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:12px 14px;color:var(--red);font-size:12px;font-family:'SF Mono',Menlo,monospace;white-space:pre-wrap;margin-top:4px}
+
+/* ── Debug Map ── */
+.debug-map-wrap{margin-top:14px}
+.debug-map-container{height:440px;border-radius:8px;overflow:hidden;border:1px solid var(--border);position:relative;background:var(--bg)}
+.debug-map-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--text-dim);align-items:center}
+.legend-swatch{display:inline-block;width:12px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle}
+.legend-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+/* Leaflet popup dark theme */
+.leaflet-popup-content-wrapper{background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:0 4px 16px rgba(0,0,0,.5);border-radius:8px}
+.leaflet-popup-tip{background:var(--surface)}
+.leaflet-popup-content{font-size:12px;margin:8px 12px}
 </style>
 </head>
 <body>
@@ -329,6 +342,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
 const SUPABASE_URL = 'https://ujvfwzcjgxupvtiwllhw.supabase.co';
 const ADMIN_PASSWORD = 'TwoTired2026!';
 const SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqdmZ3emNqZ3h1cHZ0aXdsbGh3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NDQ5MDE2OCwiZXhwIjoyMDkwMDY2MTY4fQ.GX50wbDudRN7KubXvpZOHLTxTHbnv0EAPcH6hhmKO1s';
+// Score server Tailscale funnel URL (Molly:8765 exposed via 8443)
+const SCORE_SERVER_URL = 'https://molly.tail71232f.ts.net:8443';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 function doLogin() {
@@ -800,16 +815,18 @@ function renderDebugRows(data) {
         </td>
       </tr>
       <tr class="detail-row" id="debug-detail-${i}">
-        <td class="detail-cell" colspan="7">${renderDebugDetail(r)}</td>
+        <td class="detail-cell" colspan="7">${renderDebugDetail(r, i)}</td>
       </tr>`;
   }).join('');
 }
 
 function toggleDebugDetail(i) {
-  document.getElementById('debug-detail-' + i).classList.toggle('open');
+  const row = document.getElementById('debug-detail-' + i);
+  const open = row.classList.toggle('open');
+  if (open) setTimeout(() => initDebugMap(_debugLogs[i], i), 60);
 }
 
-function renderDebugDetail(r) {
+function renderDebugDetail(r, idx) {
   const intent = r.raw_intent || {};
   const scores = r.road_scores || {};
   const routing = r.routing_config || {};
@@ -905,7 +922,125 @@ function renderDebugDetail(r) {
     <div style="margin-top:12px">
       <div class="phase-title" style="margin-bottom:6px">⏱ Timing</div>
       ${timingBars()}
+    </div>
+
+    <div class="debug-map-wrap">
+      <div class="phase-title" style="margin-bottom:6px">🗺️ Route Map</div>
+      <div class="debug-map-container" id="debug-map-${idx}"></div>
+      <div class="debug-map-legend">
+        <span><span class="legend-dot" style="background:#22c55e;border:2px solid #fff"></span>Origin</span>
+        <span><span class="legend-dot" style="background:#f97316;border:2px solid #fff"></span>Waypoint</span>
+        <span><span class="legend-dot" style="background:#ef4444;border:2px solid #fff"></span>Destination</span>
+        <span><span class="legend-swatch" style="background:rgba(34,197,94,.25);border:1px solid #22c55e"></span>Tier A (preferred)</span>
+        <span><span class="legend-swatch" style="background:rgba(239,68,68,.3);border:1px solid #ef4444"></span>Tier C (penalized)</span>
+        ${r.route_geometry ? '' : '<span style="color:var(--text-muted);font-style:italic">Route polyline: deploy v2.53 to enable</span>'}
+      </div>
     </div>`;
+}
+
+// ── Debug Map ─────────────────────────────────────────────────────────────────
+const _debugMaps = {};
+let _cachedJoyAreas = null;
+let _cachedTransitAreas = null;
+
+async function getScoreAreas(type) {
+  if (!SCORE_SERVER_URL) return null;
+  if (type === 'joy') {
+    if (!_cachedJoyAreas) {
+      try {
+        const r = await fetch(`${SCORE_SERVER_URL}/areas/joy`);
+        if (r.ok) _cachedJoyAreas = await r.json();
+      } catch(e) { console.warn('[areas] joy fetch failed:', e.message); }
+    }
+    return _cachedJoyAreas;
+  } else {
+    if (!_cachedTransitAreas) {
+      try {
+        const r = await fetch(`${SCORE_SERVER_URL}/areas/transit`);
+        if (r.ok) _cachedTransitAreas = await r.json();
+      } catch(e) { console.warn('[areas] transit fetch failed:', e.message); }
+    }
+    return _cachedTransitAreas;
+  }
+}
+
+async function initDebugMap(r, idx) {
+  const mapId = 'debug-map-' + idx;
+  const container = document.getElementById(mapId);
+  if (!container) return;
+
+  // Already initialized — just fix size
+  if (_debugMaps[mapId]) { _debugMaps[mapId].invalidateSize(); return; }
+
+  const map = L.map(container, { zoomControl: true }).setView([40.9, -74.2], 9);
+  _debugMaps[mapId] = map;
+
+  // Dark tile layer
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '©OpenStreetMap ©CARTO', maxZoom: 19,
+  }).addTo(map);
+
+  const bounds = [];
+  const mkOpts = (color, r2=7) => ({ radius: r2, fillColor: color, color: '#1a1a1a', weight: 2, fillOpacity: 1 });
+
+  // Route polyline (if geometry logged by edge function v2.53+)
+  const geom = r.route_geometry;
+  if (geom?.coordinates?.length > 1) {
+    const lls = geom.coordinates.map(c => [c[1], c[0]]);
+    L.polyline(lls, { color: '#f97316', weight: 3.5, opacity: 0.9 }).addTo(map);
+    bounds.push(...lls);
+  }
+
+  // Origin
+  const origin = r.resolved_origin;
+  if (origin?.lat && origin?.lng) {
+    const ll = [origin.lat, origin.lng];
+    L.circleMarker(ll, mkOpts('#22c55e', 8))
+      .bindPopup(`<b>Origin</b><br>${escHtml(origin.name || origin.query || '')}`)
+      .addTo(map);
+    bounds.push(ll);
+  }
+
+  // Intermediates
+  (r.resolved_waypoints || []).forEach((wp, wi) => {
+    if (!wp?.lat || !wp?.lng) return;
+    const ll = [wp.lat, wp.lng];
+    L.circleMarker(ll, mkOpts('#f97316', 5))
+      .bindPopup(`<b>Waypoint ${wi+1}</b><br>${escHtml(wp.name || wp.query || '')}`)
+      .addTo(map);
+    bounds.push(ll);
+  });
+
+  // Destination
+  const dest = r.resolved_dest;
+  if (dest?.lat && dest?.lng) {
+    const ll = [dest.lat, dest.lng];
+    L.circleMarker(ll, mkOpts('#ef4444', 8))
+      .bindPopup(`<b>Destination</b><br>${escHtml(dest.name || dest.query || '')}`)
+      .addTo(map);
+    bounds.push(ll);
+  }
+
+  if (bounds.length > 0) map.fitBounds(L.latLngBounds(bounds).pad(0.18));
+
+  // Score area polygons — load async after map is visible
+  const curviness = r.routing_config?.curviness ?? 2;
+  const areas = await getScoreAreas(curviness === 1 ? 'transit' : 'joy');
+  if (areas) {
+    areas.features.forEach(f => {
+      const isA = (f.id || '').includes('tier_a');
+      const isC = (f.id || '').includes('tier_c');
+      if (!isA && !isC) return;
+      L.geoJSON(f.geometry || f, {
+        style: {
+          fillColor:    isA ? '#22c55e' : '#ef4444',
+          fillOpacity:  isA ? 0.10 : 0.20,
+          color:        isA ? '#22c55e' : '#ef4444',
+          weight: 0.5, opacity: 0.4,
+        },
+      }).addTo(map);
+    });
+  }
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

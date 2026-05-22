@@ -1,4 +1,4 @@
-// generate-route edge function — v2.52
+// generate-route edge function — v2.53
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -1550,6 +1550,14 @@ Deno.serve(async (req) => {
       waypoint_count: allWaypoints.length,
     };
     log.route_result = { distance_miles: route.distance_miles, time_minutes: route.time_minutes };
+    // v2.53: store simplified geometry (≤100 pts) for Route Debug map in admin portal
+    if (route.geometry?.coordinates?.length > 1) {
+      const coords: [number, number][] = route.geometry.coordinates;
+      const step = Math.ceil(coords.length / 100);
+      const sampled = coords.filter((_: any, i: number) => i % step === 0);
+      if (sampled[sampled.length - 1] !== coords[coords.length - 1]) sampled.push(coords[coords.length - 1]);
+      log.route_geometry = { type: 'LineString', coordinates: sampled };
+    }
 
     const destName = 'query' in body.destination ? body.destination.query : `${destinationLL.lat},${destinationLL.lng}`;
     const originalQuery = typeof (rawBody as any).query === 'string'
