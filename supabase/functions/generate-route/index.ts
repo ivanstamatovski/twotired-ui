@@ -1,4 +1,9 @@
-// generate-route edge function — v2.53
+// generate-route edge function — v2.54
+// v2.54: removes NYC two-phase car escape routing. twotired profile has no motorway
+//        penalty, so GH finds the best city exit (GWB, Turnpike, etc.) on its own.
+//        Boundary waypoints (Fort Lee, New Brunswick) removed from system prompt.
+//        Corridor anchor waypoints (Piermont, Nyack, Goshen, etc.) unchanged.
+//        Single getRoute call for all curviness levels — no more mergeRoutes() splice.
 // Architecture: LLM never produces coordinates.
 // Places API geocodes. GraphHopper routes. Claude handles text only.
 // v2.1: adds haversine post-filter to findPOI (fixes Joe Bosco / Delaware Water Gap bug)
@@ -844,42 +849,15 @@ one or two intermediate_waypoints that are real towns ON the named road.
 Do NOT try to control which bridge GH crosses or how it exits the city. GH knows the road network.
 Trust it. Overspecifying waypoints is what causes loops, spurs, and double-backs.
 
-━━ NYC ORIGIN — EFFICIENT CITY EXIT ━━
-THE CITY = all 5 boroughs: Manhattan, Brooklyn, Queens, Bronx, Staten Island.
-The boundary waypoint must be OUTSIDE all 5 boroughs — in NJ, Westchester, Nassau County, or Rockland.
-Staten Island is still the city. "Freehold, NJ" is outside. "Jamaica, NY" is NOT — it's Queens.
-
-By destination direction — pick ONE boundary intermediate that is geographically outside all 5 boroughs:
-
-  NORTH / NORTHWEST (Bear Mountain, Harriman, Catskills, Hawk's Nest, Hudson Valley):
-    → "Fort Lee, NJ" — just across GWB in NJ. GH finds the best borough path to GWB naturally.
-    → Exception: Bronx origin — no boundary needed, Bronx connects directly to GWB and I-87.
-
-  SOUTH / JERSEY SHORE (Asbury Park, Cape May, Seaside Heights):
-    → "Freehold, NJ" — first real NJ corridor town south of the city.
-      GH crosses via Verrazzano + Goethals (through Staten Island is fine — it's the natural path,
-      not a detour, even though SI is a borough).
-
-  SOUTHWEST (Philadelphia, Trenton, Delaware):
-    → "New Brunswick, NJ" — anchors onto US-1 south corridor.
-
-  EAST (Long Island, Nassau/Suffolk):
-    → "Garden City, NY" — first major town in Nassau County, outside the city.
-      GH exits Queens heading east naturally to reach it.
-
-  NORTH OF GWB (Westchester, Yonkers, Tarrytown, White Plains):
-    → No boundary needed — already outside all 5 boroughs.
-
-RULE: If rider has a stop already outside the city, that stop IS the boundary — skip the boundary intermediate.
-RULE: If a road_corridor already has intermediate_waypoints (e.g. Piermont + Nyack for 9W), those replace the boundary — do NOT add Fort Lee on top.
-
 ━━ INTERMEDIATE WAYPOINTS — WHEN AND HOW ━━
 intermediate_waypoints are named places GH must pass through, in order.
-Use them for: (1) NYC boundary exit, (2) corridor road anchoring.
-Keep the list short — 1–2 waypoints maximum.
+Use them ONLY for corridor road anchoring — 1–2 real towns ON the named road.
+Do NOT add boundary/exit waypoints for NYC origins. GH with the twotired profile
+finds the best city exit (GWB, Turnpike, etc.) on its own. Adding boundary waypoints
+(Fort Lee, New Brunswick, etc.) causes zigzags and detours — never do this.
 
-RULE: If the rider specified any stops (coffee, lunch, etc.) that are outside the city,
-set intermediate_waypoints: [] — let the stops anchor the route.
+RULE: If the rider specified any stops (coffee, lunch, etc.), set intermediate_waypoints: []
+— let the stops anchor the route naturally.
 
 NEVER use "Florida, NY" as an intermediate — causes west-then-east zigzag.
 
@@ -1141,10 +1119,10 @@ ${lessons}
 ━━ OUTPUT FORMAT ━━
 Respond ONLY with valid JSON, no markdown, no explanation.
 
-Route response — standard (no corridor, NYC origin heading north):
+Route response — standard (no corridor):
 {
   "origin": "Rider GPS location or named place if no GPS provided",
-  "intermediate_waypoints": ["Fort Lee, NJ"],
+  "intermediate_waypoints": [],
   "stops": [{ "type": "coffee shop", "near": "town name, State", "radius_km": 15 }],
   "destination": "Town or Park Name, State",
   "curviness": 2,
@@ -1500,53 +1478,29 @@ Deno.serve(async (req) => {
 
     let route: any;
     let allWaypoints: LatLng[];
-    const nycOrigin = isInNYC(originLL) && intermediateWPs.length > 0;
 
+    // v2.54: single twotired route call for all cases — no two-phase car escape.
+    // twotired profile has no motorway penalty, so GH finds the best city exit naturally.
+    // Corridor anchor waypoints (Piermont, Nyack, Goshen etc.) are preserved as-is.
     const routeStart = Date.now();
-    if (nycOrigin) {
-      const boundaryLL = intermediateWPs[0];
-      console.log('[generate-route] NYC origin — car escape to', JSON.stringify(boundaryLL));
-      const escapeLeg = await getRoute([originLL, boundaryLL], 0);
+    allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
+    if (body.round_trip) allWaypoints.push(originLL);
 
-      const scenicWPs = [boundaryLL, ...intermediateWPs.slice(1), ...stopLLs, destinationLL];
-      if (body.round_trip) scenicWPs.push(originLL);
-
-      let scenicLeg: any;
-      if (corridor) {
-        const corridorModel = buildCorridorModel(corridor, curviness);
-        const overallBearing = Math.round(bearingDegrees(boundaryLL, destinationLL));
-        const headings = scenicWPs.map((_, i) =>
-          (i === 0 || i === scenicWPs.length - 1) ? -1 : overallBearing
-        );
-        scenicLeg = await getRoute(scenicWPs, curviness, headings, corridorModel);
-      } else {
-        scenicLeg = await getRoute(scenicWPs, curviness);
-      }
-
-      route = mergeRoutes(escapeLeg, scenicLeg);
-      allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
-      if (body.round_trip) allWaypoints.push(originLL);
+    if (corridor) {
+      const corridorModel = buildCorridorModel(corridor, curviness);
+      const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
+      const headings = allWaypoints.map((_, i) =>
+        (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
+      );
+      route = await getRoute(allWaypoints, curviness, headings, corridorModel);
     } else {
-      allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
-      if (body.round_trip) allWaypoints.push(originLL);
-
-      if (corridor) {
-        const corridorModel = buildCorridorModel(corridor, curviness);
-        const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
-        const headings = allWaypoints.map((_, i) =>
-          (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
-        );
-        route = await getRoute(allWaypoints, curviness, headings, corridorModel);
-      } else {
-        route = await getRoute(allWaypoints, curviness);
-      }
+      route = await getRoute(allWaypoints, curviness);
     }
     log.route_ms = Date.now() - routeStart;
     log.routing_config = {
-      profile: nycOrigin ? 'car+motorcycle' : 'motorcycle',
+      profile: 'twotired',
       curviness,
       corridor: corridor ?? null,
-      nyc_two_phase: nycOrigin,
       waypoint_count: allWaypoints.length,
     };
     log.route_result = { distance_miles: route.distance_miles, time_minutes: route.time_minutes };

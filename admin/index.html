@@ -189,6 +189,44 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .leaflet-popup-content-wrapper{background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:0 4px 16px rgba(0,0,0,.5);border-radius:8px}
 .leaflet-popup-tip{background:var(--surface)}
 .leaflet-popup-content{font-size:12px;margin:8px 12px}
+
+/* ── Fullscreen Trace Modal ── */
+#trace-modal{display:none;position:fixed;inset:0;z-index:1000;background:var(--bg);flex-direction:column;overflow:hidden}
+.trace-modal-header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.trace-modal-back{background:none;border:none;color:var(--accent);font-size:22px;cursor:pointer;padding:0 6px 0 0;line-height:1}
+.trace-modal-title{font-size:15px;font-weight:700;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trace-modal-meta{font-size:11px;color:var(--text-muted);white-space:nowrap}
+.trace-modal-body{flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch}
+.trace-modal-map{height:45vh;min-height:280px;border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-bottom:14px}
+
+/* ── Mobile Layout ── */
+@media(max-width:768px){
+  .main{flex-direction:column-reverse}
+  .sidebar{
+    width:100%;flex-direction:row;border-right:none;border-top:1px solid var(--border);
+    padding:0;position:fixed;bottom:0;left:0;right:0;background:var(--surface);
+    z-index:100;height:56px;gap:0;justify-content:space-around;
+  }
+  .nav-item{
+    flex-direction:column;padding:6px 4px;gap:2px;font-size:10px;border-radius:0;
+    flex:1;justify-content:center;align-items:center;min-width:0;
+  }
+  .nav-icon{width:auto;font-size:18px}
+  .nav-badge{margin-left:0;font-size:9px;padding:0 4px;min-width:16px;position:absolute;top:4px;right:calc(50% - 18px)}
+  .nav-item{position:relative}
+  .content{padding:12px;padding-bottom:68px}
+  .stats-row{grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+  .stat-card{padding:12px 14px}
+  .stat-value{font-size:22px}
+  .topbar{padding:0 14px;height:48px}
+  .topbar-user{display:none}
+  /* Debug table: hide less critical columns on mobile */
+  .debug-table-dest,.debug-table-transit,.debug-table-ms{display:none}
+  .expand-btn,.debug-trace-btn{padding:6px 14px;font-size:13px}
+  /* Bug table: hide time column detail */
+  .bug-table-time{font-size:11px}
+  .phase-grid{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -326,7 +364,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>Time</th><th>Query</th><th>Destination</th><th>Joy</th><th>Transit</th><th>Total ms</th><th></th>
+              <th>Time</th><th>Query</th><th class="debug-table-dest">Destination</th><th>Joy</th><th class="debug-table-transit">Transit</th><th class="debug-table-ms">Total ms</th><th></th>
             </tr></thead>
             <tbody id="debug-body"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
@@ -335,6 +373,16 @@ tr:hover td{background:rgba(255,255,255,.02)}
 
     </div>
   </div>
+</div>
+
+<!-- ── Fullscreen Trace Modal ── -->
+<div id="trace-modal">
+  <div class="trace-modal-header">
+    <button class="trace-modal-back" onclick="closeTraceModal()">‹</button>
+    <div class="trace-modal-title" id="trace-modal-title">Route Trace</div>
+    <div class="trace-modal-meta" id="trace-modal-meta"></div>
+  </div>
+  <div class="trace-modal-body" id="trace-modal-body"></div>
 </div>
 
 <script>
@@ -802,28 +850,43 @@ function renderDebugRows(data) {
     const joyColor = joy == null ? 'var(--text-muted)' : joy >= 3.5 ? 'var(--green)' : joy >= 2.5 ? 'var(--accent)' : 'var(--red)';
     const dest    = r.raw_intent?.destination || r.resolved_dest?.query || '—';
     return `
-      <tr>
+      <tr onclick="openTraceModal(${i})" style="cursor:pointer">
         <td class="cell-mono" style="white-space:nowrap">${timeSince(r.created_at)}<br><span style="font-size:10px;color:var(--text-muted)">${fmtDate(r.created_at)}</span></td>
         <td><div class="cell-main" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(r.query||'')}">${escHtml(r.query || '(no query)')}</div></td>
-        <td style="color:var(--text)">${escHtml(dest)}</td>
+        <td class="debug-table-dest" style="color:var(--text)">${escHtml(dest)}</td>
         <td style="color:${joyColor};font-weight:600">${joy != null ? joy.toFixed(2) : '—'}</td>
-        <td style="color:var(--blue)">${transit != null ? transit.toFixed(2) : '—'}</td>
-        <td style="color:var(--text-muted)">${r.total_ms != null ? r.total_ms.toLocaleString() + 'ms' : '—'}</td>
-        <td style="text-align:right">
-          ${r.error ? '<span style="color:var(--red);font-size:12px;margin-right:8px">⚠ error</span>' : ''}
-          <button class="expand-btn" onclick="toggleDebugDetail(${i})">Trace</button>
+        <td class="debug-table-transit" style="color:var(--blue)">${transit != null ? transit.toFixed(2) : '—'}</td>
+        <td class="debug-table-ms" style="color:var(--text-muted)">${r.total_ms != null ? r.total_ms.toLocaleString() + 'ms' : '—'}</td>
+        <td style="text-align:right;white-space:nowrap">
+          ${r.error ? '<span style="color:var(--red);font-size:12px;margin-right:8px">⚠</span>' : ''}
+          <button class="expand-btn debug-trace-btn" onclick="event.stopPropagation();openTraceModal(${i})">Trace</button>
         </td>
-      </tr>
-      <tr class="detail-row" id="debug-detail-${i}">
-        <td class="detail-cell" colspan="7">${renderDebugDetail(r, i)}</td>
       </tr>`;
   }).join('');
 }
 
-function toggleDebugDetail(i) {
-  const row = document.getElementById('debug-detail-' + i);
-  const open = row.classList.toggle('open');
-  if (open) setTimeout(() => initDebugMap(_debugLogs[i], i), 60);
+function openTraceModal(i) {
+  const r = _debugLogs[i];
+  if (!r) return;
+  const dest = r.raw_intent?.destination || r.resolved_dest?.query || 'Route';
+  const joy  = r.road_scores?.score_joy;
+  const dist = r.route_result?.distance_miles;
+  document.getElementById('trace-modal-title').textContent = dest;
+  document.getElementById('trace-modal-meta').textContent =
+    [joy != null ? 'Joy ' + joy.toFixed(2) : null, dist != null ? dist + ' mi' : null].filter(Boolean).join(' · ');
+  // Clean up previous map instance if any
+  const prevMap = _debugMaps['debug-map-modal'];
+  if (prevMap) { prevMap.remove(); delete _debugMaps['debug-map-modal']; }
+  document.getElementById('trace-modal-body').innerHTML = renderDebugDetail(r, 'modal');
+  document.getElementById('trace-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => initDebugMap(r, 'modal'), 80);
+}
+function closeTraceModal() {
+  document.getElementById('trace-modal').style.display = 'none';
+  document.body.style.overflow = '';
+  const m = _debugMaps['debug-map-modal'];
+  if (m) { m.remove(); delete _debugMaps['debug-map-modal']; }
 }
 
 function renderDebugDetail(r, idx) {
@@ -926,14 +989,13 @@ function renderDebugDetail(r, idx) {
 
     <div class="debug-map-wrap">
       <div class="phase-title" style="margin-bottom:6px">🗺️ Route Map</div>
-      <div class="debug-map-container" id="debug-map-${idx}"></div>
+      <div class="trace-modal-map" id="debug-map-${idx}"></div>
       <div class="debug-map-legend">
         <span><span class="legend-dot" style="background:#22c55e;border:2px solid #fff"></span>Origin</span>
         <span><span class="legend-dot" style="background:#f97316;border:2px solid #fff"></span>Waypoint</span>
         <span><span class="legend-dot" style="background:#ef4444;border:2px solid #fff"></span>Destination</span>
         <span><span class="legend-swatch" style="background:rgba(34,197,94,.25);border:1px solid #22c55e"></span>Tier A (preferred)</span>
         <span><span class="legend-swatch" style="background:rgba(239,68,68,.3);border:1px solid #ef4444"></span>Tier C (penalized)</span>
-        ${r.route_geometry ? '' : '<span style="color:var(--text-muted);font-style:italic">Route polyline: deploy v2.53 to enable</span>'}
       </div>
     </div>`;
 }
