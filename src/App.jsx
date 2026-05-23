@@ -674,9 +674,12 @@ export default function App() {
     setRouteData(null); setRouteApproved(false);
     if (isMobile) setSheetMode('expanded');
 
+    // Prefer the live watch position (maximumAge:2000) over a fresh one-shot fetch.
+    // The watch is always running so userLocation is the most accurate fix we have.
+    // Only fall back to getCurrentGPS if the watch hasn't fired yet.
     setLoading(true);
     setLoadingMsg('Getting your location…');
-    const gps = await getCurrentGPS({ timeout: 6000, maximumAge: 30000 });
+    const gps = userLocation || await getCurrentGPS({ timeout: 6000, maximumAge: 0 });
     setLoading(false);
 
     generateRoute({ query: text }, gps);
@@ -690,7 +693,7 @@ export default function App() {
     setMessages(prev => [...prev, { role:'user', content:t }]);
     if (isMobile) setSheetMode('expanded');
 
-    const gps = await getCurrentGPS({ timeout: 4000, maximumAge: 60000 });
+    const gps = userLocation || await getCurrentGPS({ timeout: 4000, maximumAge: 0 });
     await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t }, gps);
   }
 
