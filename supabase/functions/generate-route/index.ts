@@ -1250,7 +1250,8 @@ async function buildRefineQuery(feedback: string, rawIntent: any): Promise<strin
       : null,
     rawIntent.stops?.length && `current stops (keep unless changed): ${rawIntent.stops.map((s: any) => `${s.type} near ${s.near}`).join(', ')}`,
     rawIntent.curviness && `current curviness (keep unless changed): ${rawIntent.curviness}`,
-    rawIntent.round_trip && `round trip: yes`,
+    // NOTE: round_trip intentionally omitted — never carry it over from previous intent.
+    // Claude evaluates it fresh from the rider's current message only.
   ].filter(Boolean);
 
   return `[Refining existing route — ${parts.join(' | ')}] Rider feedback: "${feedback}". Identify whether this is a CORRIDOR REPLACEMENT, STOP ADDITION, or STYLE CHANGE per the REFINEMENT INTERPRETATION rules, then apply only that change.`;
