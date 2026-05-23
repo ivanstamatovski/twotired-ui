@@ -360,7 +360,9 @@ export default function App() {
           const last = JSON.parse(localStorage.getItem(LAST_ROUTE_KEY) || 'null');
           if (last?.geometry) {
             setRouteData(last);
-            setCurrentIntent(last.intent || null);
+            // Always strip round_trip from restored intent — never carry a loop across sessions
+            const restoredIntent = last.intent ? { ...last.intent, round_trip: false } : null;
+            setCurrentIntent(restoredIntent);
             setMessages([{ role:'route', route:last }]);
             drawRouteOnMap(last);
           }
