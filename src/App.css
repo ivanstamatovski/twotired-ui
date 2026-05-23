@@ -371,7 +371,14 @@ body {
  */
 .sheet {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* bottom tracks keyboard height — visualViewport sets --keyboard-height in JS.
+     When keyboard is hidden: bottom:0 (same as inset:0).
+     When keyboard shows: bottom rises above it, keeping input + submit visible.
+     transform:translateY uses 100% of this reduced height, so math stays correct. */
+  bottom: var(--keyboard-height, 0px);
   z-index: 100;
   background: var(--surface);
   border-radius: var(--sheet-radius) var(--sheet-radius) 0 0;
@@ -382,6 +389,7 @@ body {
   overflow: hidden;
   /* Default (idle): peek 200px from bottom */
   transform: translateY(calc(100% - 200px));
+  /* Only animate transform (sheet open/close); bottom tracks keyboard in real time */
   transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
   will-change: transform;
 }

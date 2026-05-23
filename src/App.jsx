@@ -594,6 +594,23 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
+  // ── Track keyboard height via visualViewport so sheet stays above keyboard ─
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const kbH = Math.max(0, window.innerHeight - vv.offsetTop - vv.height);
+      document.documentElement.style.setProperty('--keyboard-height', `${kbH}px`);
+    };
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+      document.documentElement.style.setProperty('--keyboard-height', '0px');
+    };
+  }, []);
+
   // ── Generate route ────────────────────────────────────────────────────────
   async function generateRoute(payload, gps = null) {
     setLoading(true); setError(null);
