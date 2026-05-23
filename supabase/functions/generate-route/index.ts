@@ -1,4 +1,4 @@
-// generate-route edge function — v2.55
+// generate-route edge function — v2.56
 // v2.55: fixes 9W corridor MOTORWAY penalty scope. Global MOTORWAY:0.1 was hurting
 //        city approach legs (Astoria/Queens → GWB) by preventing expressway use.
 //        Now scoped to in_nine_w_corridor and in_nine_w_route17_excl zones only,
@@ -940,6 +940,14 @@ STYLE CHANGE — rider changes the character of the ride, not the places:
   → Keep all existing waypoints, intermediates, destination, and stops unchanged
   → Only adjust curviness or other parameters
 
+DESTINATION CHANGE — rider names a completely different destination unrelated to the current route:
+  Trigger: feedback contains a new place name that clearly replaces the current destination
+  (e.g. current: Bear Mountain, feedback: "take me to the Catskills" / "go to Hawks Nest instead")
+  → Replace destination with the new place
+  → Reset ALL stops and ALL intermediate_waypoints — they were positioned for the old destination
+  → Keep curviness if it still makes sense, otherwise pick a sensible default
+  → Do NOT carry over any stops from the old route
+
 WHEN AMBIGUOUS: default to CORRIDOR REPLACEMENT. Riders think in roads, not waypoints.
 Never stack intermediates from the old route on top of new ones — that creates impossible geometry.
 
@@ -1138,6 +1146,11 @@ Route response — standard (no corridor):
   "round_trip": false,
   "reasoning": "one sentence: why this route"
 }
+
+round_trip RULE: Set to true ONLY if the rider explicitly says "round trip", "loop", "there and back",
+"return home", "circle back", or "come back the same way". Default is ALWAYS false.
+A scenic ride to a destination is NOT assumed to be a loop. Most riders end at the destination
+and plan their own return. Never infer a round trip from the nature of the destination.
 
 Route response — named road corridor:
 {
@@ -1488,14 +1501,66 @@ Deno.serve(async (req) => {
     let route: any;
     let allWaypoints: LatLng[];
 
-    // v2.54: single twotired route call for all cases — no two-phase car escape.
-    // twotired profile has no motorway penalty, so GH finds the best city exit naturally.
-    // Corridor anchor waypoints (Piermont, Nyack, Goshen etc.) are preserved as-is.
+    // ── City-exit point selection ─────────────────────────────────────────────
+    // v2.56: re-introduce two-phase routing for NYC origins with curviness 2/3.
+    //
+    // Root cause of v2.54 regression: buildCurvinessModel(2) and (3) include
+    // MOTORWAY: 0.1 penalty to keep GH on scenic roads. Correct for the Hudson Valley
+    // leg — but the same penalty hits the GWB (a motorway) on the Queens→GWB approach,
+    // causing GH to route via Manhattan surface streets or convoluted non-highway paths.
+    //
+    // Fix: when origin is in NYC AND curviness >= 2, use car profile (curviness 0,
+    // no motorway penalty) for the first leg to the exit point, then merge with the
+    // scenic profile for the rest. Curviness 1 (transit) has no motorway penalty → fine.
+    //
+    // Exit point priority:
+    //   1. First intermediate waypoint (already the "on-ramp" to the corridor)
+    //   2. Bearing-based fallback: Alpine NJ (GWB, north/NW/W) or Goethals (SW)
+    //   3. Destination is east (Long Island) → no exit needed, single-phase fine
+    function pickExitPoint(): LatLng | null {
+      if (!isInNYC(originLL) || curviness < 2) return null;
+      if (intermediateWPs.length > 0) return intermediateWPs[0];
+      // No intermediates — pick based on destination direction
+      const destLng = destinationLL.lng;
+      if (destLng > -73.80) return null; // Long Island — no bridge exit needed
+      const bearing = bearingDegrees(originLL, destinationLL);
+      // SW (Jersey Shore, Philly, South NJ): Goethals Bridge
+      if (bearing > 150 && bearing < 270) return KNOWN_WAYPOINTS['goethals bridge, staten island, ny'];
+      // North / NW / W (Hudson Valley, Catskills, Bear Mountain): GWB via Alpine NJ
+      return KNOWN_WAYPOINTS['alpine, nj'];
+    }
+
     const routeStart = Date.now();
     allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
     if (body.round_trip) allWaypoints.push(originLL);
 
-    if (corridor) {
+    const exitPoint = pickExitPoint();
+
+    if (exitPoint) {
+      // Two-phase: car profile city exit → scenic profile from exit onward
+      const remainingIntermediates = intermediateWPs.length > 0 ? intermediateWPs.slice(1) : [];
+      const scenicPoints = [exitPoint, ...remainingIntermediates, ...stopLLs, destinationLL];
+      if (body.round_trip) scenicPoints.push(originLL);
+
+      console.log('[generate-route] two-phase: car escape to', JSON.stringify(exitPoint), '→ scenic from there');
+
+      const escapeLegPromise = getRoute([originLL, exitPoint], 0); // car profile — no motorway penalty
+
+      let scenicLegPromise: Promise<any>;
+      if (corridor) {
+        const corridorModel = buildCorridorModel(corridor, curviness);
+        const overallBearing = Math.round(bearingDegrees(exitPoint, destinationLL));
+        const headings = scenicPoints.map((_, i) =>
+          (i === 0 || i === scenicPoints.length - 1) ? -1 : overallBearing
+        );
+        scenicLegPromise = getRoute(scenicPoints, curviness, headings, corridorModel);
+      } else {
+        scenicLegPromise = getRoute(scenicPoints, curviness);
+      }
+
+      const [escapeLeg, scenicLeg] = await Promise.all([escapeLegPromise, scenicLegPromise]);
+      route = mergeRoutes(escapeLeg, scenicLeg);
+    } else if (corridor) {
       const corridorModel = buildCorridorModel(corridor, curviness);
       const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
       const headings = allWaypoints.map((_, i) =>
