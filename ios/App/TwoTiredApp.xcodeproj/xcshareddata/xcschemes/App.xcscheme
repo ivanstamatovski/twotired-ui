@@ -18,7 +18,7 @@
                BlueprintIdentifier = "504EC3031FED79650016851F"
                BuildableName = "App.app"
                BlueprintName = "App"
-               ReferencedContainer = "container:TwoTired.xcodeproj">
+               ReferencedContainer = "container:TwoTiredApp.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -48,7 +48,7 @@
             BlueprintIdentifier = "504EC3031FED79650016851F"
             BuildableName = "App.app"
             BlueprintName = "App"
-            ReferencedContainer = "container:TwoTired.xcodeproj">
+            ReferencedContainer = "container:TwoTiredApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -65,7 +65,7 @@
             BlueprintIdentifier = "504EC3031FED79650016851F"
             BuildableName = "App.app"
             BlueprintName = "App"
-            ReferencedContainer = "container:TwoTired.xcodeproj">
+            ReferencedContainer = "container:TwoTiredApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>
