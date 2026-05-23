@@ -1251,6 +1251,34 @@ body {
   padding: 10px 12px;
 }
 
+/* ─── Routing variant toggle ─────────────────────────────────────── */
+.variant-toggle-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.variant-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.variant-btn:hover { background: var(--surface2); color: var(--text); }
+
+.variant-btn--active {
+  background: var(--accent, #e63946);
+  border-color: var(--accent, #e63946);
+  color: #fff;
+}
+
 .bug-trigger {
   background: transparent;
   border: 1px solid var(--border);

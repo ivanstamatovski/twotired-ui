@@ -286,6 +286,9 @@ export default function App() {
   const [nextTurn, setNextTurn] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
 
+  // Routing variant A/B toggle (dev tool)
+  const [routeVariant, setRouteVariant] = useState('classic');
+
   // Bug report
   const [bugComment, setBugComment] = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
@@ -622,7 +625,7 @@ export default function App() {
 
     try {
       const token = session?.access_token || SUPABASE_ANON_KEY;
-      const body = { ...payload, user_id: session?.user?.id || null };
+      const body = { ...payload, user_id: session?.user?.id || null, variant: routeVariant };
       if (gps) { body.userLat = gps.lat; body.userLng = gps.lng; }
 
       const res = await fetch(EDGE_URL, {
@@ -892,6 +895,16 @@ export default function App() {
                   <div className="menu-divider"/>
                 </>
               )}
+              <div className="menu-section-label">Routing model</div>
+              <div className="variant-toggle-row">
+                <button
+                  className={`variant-btn${routeVariant==='classic'?' variant-btn--active':''}`}
+                  onClick={()=>setRouteVariant('classic')}>Classic</button>
+                <button
+                  className={`variant-btn${routeVariant==='scoring'?' variant-btn--active':''}`}
+                  onClick={()=>setRouteVariant('scoring')}>Scoring</button>
+              </div>
+              <div className="menu-divider"/>
               <div className="menu-section-label">Report an issue</div>
               <textarea className="bug-textarea" placeholder="What went wrong?"
                 value={bugComment} onChange={e=>setBugComment(e.target.value)}/>
@@ -1045,6 +1058,14 @@ export default function App() {
           </div>
 
           <div className="sidebar-bug">
+            <div className="variant-toggle-row">
+              <button
+                className={`variant-btn${routeVariant==='classic'?' variant-btn--active':''}`}
+                onClick={()=>setRouteVariant('classic')}>Classic</button>
+              <button
+                className={`variant-btn${routeVariant==='scoring'?' variant-btn--active':''}`}
+                onClick={()=>setRouteVariant('scoring')}>Scoring</button>
+            </div>
             <button className="bug-trigger" onClick={()=>setMenuOpen(x=>!x)}>🐛 Report issue</button>
             {menuOpen && (
               <div className="bug-inline">
