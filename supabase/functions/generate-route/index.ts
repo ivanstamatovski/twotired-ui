@@ -563,6 +563,7 @@ const KNOWN_WAYPOINTS: Record<string, LatLng> = {
   // Englewood Cliffs: kept for edge cases — no longer a primary routing waypoint
   'englewood cliffs, nj':               { lat: 40.882243, lng: -73.950588 }, // US 9W / Sylvan Ave — OSM way 46613631
   // ── GWB corridor — NY side ──
+  'gwb ny approach':                    { lat: 40.853310, lng: -73.960688 }, // Trans-Manhattan Expy / GWB on-ramp, upper Manhattan — steers Queens/Brooklyn traffic via Triborough, not midtown
   'piermont, ny':                       { lat: 41.036665, lng: -73.923354 }, // US 9W / Highland Ave, Piermont — OSM way 24168303
   'nyack, ny':                          { lat: 41.081355, lng: -73.924058 }, // US 9W through Nyack — OSM way 8082568
   // ── Mario Cuomo Bridge (Tappan Zee) — Westchester escape ──
@@ -1550,8 +1551,10 @@ Deno.serve(async (req) => {
       const bearing = bearingDegrees(originLL, destinationLL);
       // SW (Jersey Shore, Philly, South NJ): Goethals Bridge
       if (bearing > 150 && bearing < 270) return KNOWN_WAYPOINTS['goethals bridge, staten island, ny'];
-      // North / NW / W (Hudson Valley, Catskills, Bear Mountain): GWB via Alpine NJ
-      return KNOWN_WAYPOINTS['alpine, nj'];
+      // North / NW / W (Hudson Valley, Catskills, Bear Mountain): GWB via upper-Manhattan approach.
+      // Using the Trans-Manhattan Expy on-ramp rather than Alpine NJ (NJ side) so that GH
+      // routes Queens/Brooklyn traffic via Triborough Bridge → Harlem → GWB, not through midtown.
+      return KNOWN_WAYPOINTS['gwb ny approach'];
     }
 
     const routeStart = Date.now();
