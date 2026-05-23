@@ -172,7 +172,7 @@ body {
 /* ─── Always-visible locate button ─────────────────────────────── */
 .map-locate-btn {
   position: absolute;
-  bottom: 180px;
+  bottom: 216px; /* above the idle sheet peek (200px) + 16px gap */
   right: 12px;
   z-index: 50;
   width: 42px;
@@ -362,11 +362,16 @@ body {
 }
 
 /* ─── Mobile bottom sheet ───────────────────────────────────────── */
+/*
+ * Uses transform:translateY instead of height animation.
+ * The sheet always fills the full viewport (inset:0), it just slides up/down.
+ * This is immune to dynamic viewport changes (iOS keyboard, URL bar shrinking,
+ * notch safe areas) because position:fixed+inset:0 locks to the layout viewport,
+ * not the visual viewport. Height animations fight the browser; transforms don't.
+ */
 .sheet {
-  position: fixed;  /* fixed to viewport, not map-panel — immune to layout shifts */
-  bottom: 0;
-  left: 0;
-  right: 0;
+  position: fixed;
+  inset: 0;
   z-index: 100;
   background: var(--surface);
   border-radius: var(--sheet-radius) var(--sheet-radius) 0 0;
@@ -374,9 +379,22 @@ body {
   box-shadow: 0 -4px 20px rgba(0,0,0,0.1);
   display: flex;
   flex-direction: column;
-  transition: height 0.35s cubic-bezier(0.32,0.72,0,1);
   overflow: hidden;
-  touch-action: none;
+  /* Default (idle): peek 200px from bottom */
+  transform: translateY(calc(100% - 200px));
+  transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+}
+
+/* Collapsed: show just the route bar (~110px) */
+.sheet--collapsed {
+  transform: translateY(calc(100% - 110px));
+}
+
+/* Expanded: slide up to leave only the top safe area visible */
+.sheet--expanded {
+  transform: translateY(max(0px, env(safe-area-inset-top)));
+  border-radius: 0;
 }
 
 /* Sheet handle row — drag bar + always-visible menu button */
@@ -792,19 +810,17 @@ body {
   overflow-y: auto;
 }
 
-/* Sheet-mode menu: fills the sheet body below the handle, slides over content */
+/* Sheet-mode menu: in-flow below the handle, takes remaining flex space */
 .overflow-menu-sheet {
-  position: absolute;
-  top: 48px; /* below the handle-row */
-  left: 0;
-  right: 0;
-  bottom: 0;
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   border-radius: 0;
   border: none;
   border-top: 1px solid var(--border);
   box-shadow: none;
   max-height: none;
-  z-index: 10;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 
 .menu-user-row {

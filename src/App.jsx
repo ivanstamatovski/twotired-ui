@@ -735,8 +735,6 @@ export default function App() {
   if (!authReady) return <div className="loading-shell"><span className="dot-spin"/></div>;
   if (!session) return <LoginScreen />;
 
-  const sheetHeight = { idle:'160px', collapsed:'118px', expanded:'68vh' }[sheetMode] || '160px';
-
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="app-shell">
@@ -785,7 +783,7 @@ export default function App() {
 
       {/* ════════════════ MOBILE bottom sheet ════════════════ */}
       {isMobile && !navMode ? (
-        <div className="sheet" style={{ height: sheetHeight }}>
+        <div className={`sheet sheet--${sheetMode}`}>
 
           {/* Handle row: drag bar (centre) + always-visible menu button (right) */}
           <div className="sheet-handle-row">
@@ -796,12 +794,16 @@ export default function App() {
             </div>
             <button
               className={`sheet-menu-btn${menuOpen ? ' active' : ''}`}
-              onClick={() => setMenuOpen(x => !x)}
+              onClick={() => {
+                // Always expand to show full menu
+                if (!menuOpen) setSheetMode('expanded');
+                setMenuOpen(x => !x);
+              }}
               aria-label="Menu"
             >⋯</button>
           </div>
 
-          {sheetMode === 'idle' && (
+          {!menuOpen && sheetMode === 'idle' && (
             <div className="sheet-idle">
               {voice.supported ? (
                 <button className={`mic-hero${voice.listening?' mic-listening':''}`}
@@ -839,7 +841,7 @@ export default function App() {
             </div>
           )}
 
-          {sheetMode === 'collapsed' && routeData && (
+          {!menuOpen && sheetMode === 'collapsed' && routeData && (
             <div className="sheet-collapsed-content">
               <div className="collapsed-info">
                 <span className="collapsed-title">{routeData.title}</span>
@@ -883,7 +885,7 @@ export default function App() {
             </div>
           )}
 
-          {sheetMode === 'expanded' && (
+          {!menuOpen && sheetMode === 'expanded' && (
             <div className="sheet-expanded-content">
               {error && <div className="error-banner">⚠️ {error}</div>}
               <ConversationThread messages={messages} loading={loading}
