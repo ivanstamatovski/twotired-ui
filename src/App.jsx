@@ -158,28 +158,53 @@ function useIsMobile() {
 
 // ── Login screen ──────────────────────────────────────────────────────────────
 function LoginScreen() {
-  const [email, setEmail] = useState('');
-  const [sent, setSent] = useState(false);
+  const [email, setEmail]   = useState('');
+  const [code, setCode]     = useState('');
+  const [step, setStep]     = useState('email'); // 'email' | 'code'
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError]   = useState(null);
 
-  async function sendMagicLink() {
+  async function sendOtp() {
     if (!email.includes('@')) return;
     setLoading(true); setError(null);
     const { error: err } = await supabase.auth.signInWithOtp({
-      email, options: { emailRedirectTo: window.location.origin },
+      email,
+      options: { shouldCreateUser: true },
     });
     if (err) { setError(err.message); setLoading(false); return; }
-    setSent(true); setLoading(false);
+    setStep('code'); setLoading(false);
   }
 
-  if (sent) return (
+  async function verifyOtp() {
+    const token = code.trim();
+    if (token.length !== 6) return;
+    setLoading(true); setError(null);
+    const { error: err } = await supabase.auth.verifyOtp({
+      email, token, type: 'email',
+    });
+    if (err) { setError(err.message); setLoading(false); return; }
+    // Session is set automatically — auth state listener in App will pick it up
+    setLoading(false);
+  }
+
+  if (step === 'code') return (
     <div className="login-shell">
       <div className="login-card">
         <div className="login-logo">🏍</div>
-        <h2 className="login-title">Check your email</h2>
-        <p className="login-sub">We sent a magic link to <strong>{email}</strong>.<br/>Click it to sign in.</p>
-        <button className="login-btn-secondary" onClick={() => setSent(false)}>Use a different email</button>
+        <h2 className="login-title">Enter your code</h2>
+        <p className="login-sub">We sent a 6-digit code to <strong>{email}</strong>.</p>
+        <input className="login-input login-input--code"
+          type="number" inputMode="numeric" placeholder="000000"
+          value={code} onChange={e => setCode(e.target.value.slice(0, 6))}
+          onKeyDown={e => e.key === 'Enter' && verifyOtp()} autoFocus/>
+        {error && <p className="login-error">{error}</p>}
+        <button className="login-btn" onClick={verifyOtp}
+          disabled={loading || code.trim().length !== 6}>
+          {loading ? 'Verifying…' : 'Sign in →'}
+        </button>
+        <button className="login-btn-secondary" onClick={() => { setStep('email'); setCode(''); setError(null); }}>
+          Use a different email
+        </button>
       </div>
     </div>
   );
@@ -192,13 +217,13 @@ function LoginScreen() {
         <p className="login-tagline">Your AI motorcycle ride planner</p>
         <input className="login-input" type="email" placeholder="Enter your email"
           value={email} onChange={e => setEmail(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && sendMagicLink()} autoFocus/>
+          onKeyDown={e => e.key === 'Enter' && sendOtp()} autoFocus/>
         {error && <p className="login-error">{error}</p>}
-        <button className="login-btn" onClick={sendMagicLink}
+        <button className="login-btn" onClick={sendOtp}
           disabled={loading || !email.includes('@')}>
           {loading ? 'Sending…' : 'Continue →'}
         </button>
-        <p className="login-hint">No password needed — we'll email you a link.</p>
+        <p className="login-hint">No password needed — we'll send you a code.</p>
       </div>
     </div>
   );

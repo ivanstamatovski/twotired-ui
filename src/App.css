@@ -112,6 +112,12 @@ body {
 
 .login-input:focus { border-color: var(--accent); }
 .login-input::placeholder { color: var(--text-muted); }
+.login-input--code {
+  text-align: center;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+}
 .login-error { font-size: 13px; color: var(--red); text-align: center; }
 
 .login-btn {
