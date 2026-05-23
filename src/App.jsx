@@ -390,6 +390,8 @@ export default function App() {
         navigator.geolocation.clearWatch(locationWatchRef.current);
         locationWatchRef.current = null;
       }
+      // Clear marker ref so next map init creates a fresh marker (bug fix: stale ref)
+      userMarkerRef.current = null;
       map.remove();
       mapRef.current = null;
       mapLoadedRef.current = false;
@@ -411,9 +413,9 @@ export default function App() {
       } else {
         userMarkerRef.current.setLngLat([lng, lat]);
       }
-      // Only centre map on rider during active navigation
+      // Only centre map on rider during active navigation — zoom in and lock north-up
       if (navModeRef.current) {
-        map.easeTo({ center: [lng, lat], duration: 800 });
+        map.easeTo({ center: [lng, lat], zoom: 16, bearing: 0, pitch: 0, duration: 800 });
       }
     }
 
@@ -528,7 +530,16 @@ export default function App() {
       .then(lock => { wakeLockRef.current = lock; })
       .catch(() => {});
 
-    // Trigger an immediate position fix to centre the map right away
+    // Immediately fly to rider position at navigation zoom (north-up)
+    if (userLocation && mapRef.current) {
+      mapRef.current.easeTo({
+        center: [userLocation.lng, userLocation.lat],
+        zoom: 16, bearing: 0, pitch: 0,
+        duration: 800,
+      });
+    }
+
+    // Trigger an immediate position fix in case userLocation is stale
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
     }
@@ -554,6 +565,34 @@ export default function App() {
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
+
+  // ── Recover navigation after app is backgrounded and foregrounded ─────────
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || !navModeRef.current) return;
+      // Re-acquire wake lock (it is automatically released when backgrounded)
+      navigator.wakeLock?.request('screen')
+        .then(lock => { wakeLockRef.current = lock; })
+        .catch(() => {});
+      // Reset speech synthesis — iOS leaves it in a broken state after backgrounding
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+      // Trigger a fresh GPS fix and re-centre the map
+      if (navigator.geolocation && mapRef.current) {
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            const { latitude: lat, longitude: lng } = pos.coords;
+            if (mapRef.current) {
+              mapRef.current.easeTo({ center: [lng, lat], zoom: 16, bearing: 0, pitch: 0, duration: 600 });
+            }
+          },
+          () => {},
+          { enableHighAccuracy: true, timeout: 8000 }
+        );
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   // ── Generate route ────────────────────────────────────────────────────────
   async function generateRoute(payload, gps = null) {
@@ -748,10 +787,18 @@ export default function App() {
       {isMobile && !navMode ? (
         <div className="sheet" style={{ height: sheetHeight }}>
 
-          <div className="sheet-handle" onClick={() =>
-            setSheetMode(m => m==='expanded' ? (routeData?'collapsed':'idle') : 'expanded')
-          }>
-            <div className="sheet-bar"/>
+          {/* Handle row: drag bar (centre) + always-visible menu button (right) */}
+          <div className="sheet-handle-row">
+            <div className="sheet-handle" onClick={() =>
+              setSheetMode(m => m==='expanded' ? (routeData?'collapsed':'idle') : 'expanded')
+            }>
+              <div className="sheet-bar"/>
+            </div>
+            <button
+              className={`sheet-menu-btn${menuOpen ? ' active' : ''}`}
+              onClick={() => setMenuOpen(x => !x)}
+              aria-label="Menu"
+            >⋯</button>
           </div>
 
           {sheetMode === 'idle' && (
@@ -779,9 +826,13 @@ export default function App() {
               </div>
               {recent.length > 0 && !voice.listening && (
                 <div className="recent-peek">
-                  {recent.slice(0,2).map(r=>(
-                    <button key={r.id} className="recent-chip"
-                      onClick={()=>restoreRecentRoute(r)}>{r.title}</button>
+                  <div className="recent-peek-label">Recent rides</div>
+                  {recent.map(r=>(
+                    <button key={r.id} className="recent-item"
+                      onClick={()=>restoreRecentRoute(r)}>
+                      <span className="recent-title">{r.title}</span>
+                      <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
+                    </button>
                   ))}
                 </div>
               )}
@@ -797,6 +848,38 @@ export default function App() {
               <div className="collapsed-actions">
                 <button className="start-nav-btn" onClick={startNavigation}>▶ Navigate</button>
               </div>
+            </div>
+          )}
+
+          {/* ── Overflow menu — shown in all sheet modes via handle ⋯ button ── */}
+          {menuOpen && (
+            <div className="overflow-menu overflow-menu-sheet">
+              <div className="menu-user-row">
+                <span className="menu-user-email">{session.user.email}</span>
+                <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
+              </div>
+              <div className="menu-divider"/>
+              {recent.length > 0 && (
+                <>
+                  <div className="menu-section-label">Recent rides</div>
+                  {recent.map(r=>(
+                    <button key={r.id} className="menu-item"
+                      onClick={()=>{ setMenuOpen(false); restoreRecentRoute(r); }}>
+                      {r.title}<span className="menu-item-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
+                    </button>
+                  ))}
+                  <div className="menu-divider"/>
+                </>
+              )}
+              <div className="menu-section-label">Report an issue</div>
+              <textarea className="bug-textarea" placeholder="What went wrong?"
+                value={bugComment} onChange={e=>setBugComment(e.target.value)}/>
+              {bugDone
+                ? <p className="bug-done">Thanks! Reported.</p>
+                : <button className="menu-submit" onClick={submitBug} disabled={bugSubmitting||!bugComment.trim()}>
+                    {bugSubmitting?'Sending…':'Submit report'}
+                  </button>
+              }
             </div>
           )}
 
@@ -842,42 +925,7 @@ export default function App() {
                   <button className="send-btn"
                     onClick={()=> routeData ? handleFollowUp() : submitQuery()}
                     disabled={loading || (routeData ? !followUpInput.trim() : !query.trim())}>↑</button>
-                  <button className="menu-btn" onClick={()=>setMenuOpen(x=>!x)} aria-label="More options">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
-                    </svg>
-                  </button>
                 </div>
-                {menuOpen && (
-                  <div className="overflow-menu">
-                    <div className="menu-user-row">
-                      <span className="menu-user-email">{session.user.email}</span>
-                      <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
-                    </div>
-                    <div className="menu-divider"/>
-                    {recent.length > 0 && (
-                      <>
-                        <div className="menu-section-label">Recent rides</div>
-                        {recent.slice(0,3).map(r=>(
-                          <button key={r.id} className="menu-item"
-                            onClick={()=>{ setMenuOpen(false); restoreRecentRoute(r); }}>
-                            {r.title}<span className="menu-item-meta">{r.distance_mi?.toFixed(0)} mi</span>
-                          </button>
-                        ))}
-                        <div className="menu-divider"/>
-                      </>
-                    )}
-                    <div className="menu-section-label">Report an issue</div>
-                    <textarea className="bug-textarea" placeholder="What went wrong?"
-                      value={bugComment} onChange={e=>setBugComment(e.target.value)}/>
-                    {bugDone
-                      ? <p className="bug-done">Thanks! Reported.</p>
-                      : <button className="menu-submit" onClick={submitBug} disabled={bugSubmitting||!bugComment.trim()}>
-                          {bugSubmitting?'Sending…':'Submit report'}
-                        </button>
-                    }
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -943,11 +991,11 @@ export default function App() {
                 {recent.filter(r=>r.title !== routeData?.title).length > 0 && (
                   <div className="recent-sidebar">
                     <div className="recent-label">Recent rides</div>
-                    {recent.filter(r=>r.title !== routeData?.title).slice(0,3).map(r=>(
-                      <div key={r.id} className="recent-item" onClick={()=>restoreRecentRoute(r)}>
+                    {recent.filter(r=>r.title !== routeData?.title).map(r=>(
+                      <button key={r.id} className="recent-item" onClick={()=>restoreRecentRoute(r)}>
                         <span className="recent-title">{r.title}</span>
                         <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -958,11 +1006,11 @@ export default function App() {
                   <>
                     <div className="recent-label">Recent rides</div>
                     {recent.map(r=>(
-                      <div key={r.id} className="recent-item"
+                      <button key={r.id} className="recent-item"
                         onClick={()=>restoreRecentRoute(r)}>
                         <span className="recent-title">{r.title}</span>
                         <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
-                      </div>
+                      </button>
                     ))}
                   </>
                 ) : (
