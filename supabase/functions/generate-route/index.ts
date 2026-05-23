@@ -1,4 +1,8 @@
-// generate-route edge function — v2.54
+// generate-route edge function — v2.55
+// v2.55: fixes 9W corridor MOTORWAY penalty scope. Global MOTORWAY:0.1 was hurting
+//        city approach legs (Astoria/Queens → GWB) by preventing expressway use.
+//        Now scoped to in_nine_w_corridor and in_nine_w_route17_excl zones only,
+//        matching the pattern NY-97 and NY-28 already used correctly.
 // v2.54: removes NYC two-phase car escape routing. twotired profile has no motorway
 //        penalty, so GH finds the best city exit (GWB, Turnpike, etc.) on its own.
 //        Boundary waypoints (Fort Lee, New Brunswick) removed from system prompt.
@@ -268,7 +272,9 @@ function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
       priority: [
         // ── Global road hierarchy (replaces curviness-seeking base.priority) ──────
         // Motorcycles want flow: highways and primary roads, NOT neighborhood streets.
-        { if: 'road_class == MOTORWAY',       multiply_by: '0.1'  }, // avoid interstates
+        // NOTE: No global MOTORWAY penalty here — allowing GH to use expressways for
+        // the city approach leg (e.g. Astoria → GWB). MOTORWAY is penalized only
+        // inside the specific zone polygons below, matching NY-97/NY-28 pattern.
         { if: 'road_class == RESIDENTIAL',    multiply_by: '0.15' }, // no neighborhood crawling
         { if: 'road_class == LIVING_STREET',  multiply_by: '0.05' }, // nearly banned
         { if: 'road_class == SERVICE',        multiply_by: '0.05' }, // nearly banned
@@ -277,11 +283,13 @@ function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
         // TRUNK and PRIMARY get ~0.7 motorcycle base (no rule = no change) — preferred
 
         // ── 9W corridor zone: enforce PRIMARY wins hard ───────────────────────────
-        // Inside the corridor, secondary/tertiary/residential all get crushed further.
-        // PRIMARY (0.7 base) must dominate everything. Combined penalties:
+        // Inside the corridor (lat 40.94–41.52), secondary/tertiary/residential and
+        // MOTORWAY (Palisades Pkwy) all get crushed. Combined penalties:
         //   SECONDARY in corridor:    0.6 × 0.15 = 0.09  << PRIMARY 0.7
         //   TERTIARY in corridor:     0.5 × 0.15 = 0.075 << PRIMARY 0.7
         //   RESIDENTIAL in corridor:  0.15 × 0.1 = 0.015 << PRIMARY 0.7
+        //   MOTORWAY in corridor:     0.05 alone          << PRIMARY 0.7 (Palisades Pkwy avoided)
+        { if: 'in_nine_w_corridor && road_class == MOTORWAY',     multiply_by: '0.05' },
         { if: 'in_nine_w_corridor && road_class == SECONDARY',    multiply_by: '0.15' },
         { if: 'in_nine_w_corridor && road_class == TERTIARY',     multiply_by: '0.15' },
         { if: 'in_nine_w_corridor && road_class == UNCLASSIFIED', multiply_by: '0.15' },
@@ -290,7 +298,8 @@ function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
         { if: 'in_nine_w_corridor && road_class == SERVICE',      multiply_by: '0.05' },
 
         // ── Route 17 / Route 303 exclusion zone ───────────────────────────────────
-        // Stepped polygon (v2.36) prevents competing PRIMARY roads west of 9W.
+        // Stepped polygon (v2.36) prevents competing PRIMARY and MOTORWAY roads west of 9W.
+        { if: 'in_nine_w_route17_excl && road_class == MOTORWAY', multiply_by: '0.05' },
         { if: 'in_nine_w_route17_excl && road_class == PRIMARY',  multiply_by: '0.1'  },
         { if: 'in_nine_w_route17_excl && road_class == TRUNK',    multiply_by: '0.1'  },
       ],
