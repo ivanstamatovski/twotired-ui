@@ -54,20 +54,97 @@ function formatDist(m) {
   return `${Math.round(m)} m`;
 }
 
+function formatMilesShort(m) {
+  const mi = m / 1609.34;
+  return mi >= 10 ? `${Math.round(mi)} mi` : `${mi.toFixed(1)} mi`;
+}
+
+function formatRemainingTime(ms) {
+  const totalMin = Math.max(0, Math.round(ms / 60000));
+  if (totalMin < 60) return `${totalMin} min`;
+  const h = Math.floor(totalMin / 60), m = totalMin % 60;
+  return `${h}h ${m}min`;
+}
+
+function formatETA(ms) {
+  const eta = new Date(Date.now() + ms);
+  return eta.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 function turnArrow(sign) {
   const map = { '-7':'↰','-3':'↰','-2':'←','-1':'↖','0':'↑','1':'↗','2':'→','3':'↱','4':'🏁','5':'⟳','6':'⟲' };
   return map[String(sign)] ?? '↑';
+}
+
+// Find the index along route.geometry.coordinates closest to (lat,lng).
+function nearestRouteIdx(coords, lat, lng) {
+  let nearIdx = 0, bestSq = Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    const sq = distSq(lat, lng, coords[i][1], coords[i][0]);
+    if (sq < bestSq) { bestSq = sq; nearIdx = i; }
+  }
+  return nearIdx;
+}
+
+// Bearing of the route AT the user's nearest point, sampled ~30m ahead so the
+// map orients to the upcoming road segment rather than wobbling on tight
+// vertices. Used when GPS heading is unreliable (stopped, walking, indoors).
+function routeBearingAt(route, lat, lng) {
+  const coords = route?.geometry?.coordinates;
+  if (!coords || coords.length < 2) return null;
+  const nearIdx = nearestRouteIdx(coords, lat, lng);
+  let aheadIdx = nearIdx;
+  for (let i = nearIdx + 1; i < coords.length; i++) {
+    if (haversineM(coords[nearIdx][1], coords[nearIdx][0], coords[i][1], coords[i][0]) >= 30) {
+      aheadIdx = i; break;
+    }
+  }
+  if (aheadIdx === nearIdx) aheadIdx = Math.min(nearIdx + 1, coords.length - 1);
+  if (aheadIdx === nearIdx) return null;
+  return bearingBetween(
+    coords[nearIdx][1],  coords[nearIdx][0],
+    coords[aheadIdx][1], coords[aheadIdx][0]
+  );
+}
+
+// Remaining time + distance from (lat,lng) to the end of the route.
+//   distM:   sum of haversine segment lengths from user → next vertex → end
+//   timeMs:  sum of GraphHopper instruction times whose interval lies ahead,
+//            with the in-progress instruction prorated by how far along it the user is
+function routeProgress(route, lat, lng) {
+  const coords = route?.geometry?.coordinates;
+  const instructions = route?.instructions;
+  if (!coords || coords.length < 2 || !instructions?.length) return null;
+
+  const nearIdx = nearestRouteIdx(coords, lat, lng);
+
+  let distM = haversineM(lat, lng, coords[nearIdx][1], coords[nearIdx][0]);
+  for (let i = nearIdx; i < coords.length - 1; i++) {
+    distM += haversineM(coords[i][1], coords[i][0], coords[i + 1][1], coords[i + 1][0]);
+  }
+
+  let timeMs = 0;
+  for (const inst of instructions) {
+    const [start, end] = inst.interval || [0, 0];
+    if (end < nearIdx) continue;                           // already passed
+    if (start <= nearIdx && end >= nearIdx) {              // currently traversing
+      const total = Math.max(1, end - start);
+      const passed = Math.max(0, nearIdx - start);
+      const remaining = (total - passed) / total;
+      timeMs += (inst.time || 0) * Math.max(0, Math.min(1, remaining));
+    } else {
+      timeMs += inst.time || 0;
+    }
+  }
+
+  return { distM, timeMs };
 }
 
 function findNextTurn(route, lat, lng) {
   const coords = route.geometry?.coordinates;
   const instructions = route.instructions;
   if (!coords?.length || !instructions?.length) return null;
-  let nearIdx = 0, bestSq = Infinity;
-  for (let i = 0; i < coords.length; i++) {
-    const sq = distSq(lat, lng, coords[i][1], coords[i][0]);
-    if (sq < bestSq) { bestSq = sq; nearIdx = i; }
-  }
+  const nearIdx = nearestRouteIdx(coords, lat, lng);
   for (let i = 0; i < instructions.length; i++) {
     const [start, end] = instructions[i].interval;
     if (nearIdx >= start && nearIdx <= end) {
@@ -80,6 +157,45 @@ function findNextTurn(route, lat, lng) {
 }
 
 // Motorcycle front-view SVG for user location marker
+// Initial-bearing helper — degrees from north (0–360) along great-circle path.
+function bearingBetween(lat1, lng1, lat2, lng2) {
+  const toRad = d => d * Math.PI / 180;
+  const φ1 = toRad(lat1), φ2 = toRad(lat2);
+  const dλ = toRad(lng2 - lng1);
+  const y = Math.sin(dλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(dλ);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// Pick the highest-quality available SpeechSynthesis voice. iOS exposes premium /
+// enhanced / neural variants when the user has downloaded them via Accessibility.
+let _pickedVoice = null;
+function pickBestVoice() {
+  if (_pickedVoice) return _pickedVoice;
+  const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
+  if (!synth) return null;
+  const all = synth.getVoices();
+  if (!all.length) return null;
+  const en = all.filter(v => /^en/i.test(v.lang));
+  const pool = en.length ? en : all;
+  const score = v => {
+    const n = v.name || '';
+    let s = 0;
+    if (/premium/i.test(n))  s += 12;
+    if (/enhanced/i.test(n)) s += 8;
+    if (/neural/i.test(n))   s += 8;
+    if (/siri/i.test(n))     s += 6;
+    const bare = n.replace(/\s*\(.*\)/, '').trim();
+    if (/^(samantha|ava|allison|joelle|nicky|karen|moira|evan|aaron)$/i.test(bare)) s += 2;
+    if (/^en-US/i.test(v.lang)) s += 1;
+    if (v.localService) s += 1;
+    return s;
+  };
+  pool.sort((a, b) => score(b) - score(a));
+  _pickedVoice = pool[0];
+  return _pickedVoice;
+}
+
 function makeMotoMarkerEl() {
   const el = document.createElement('div');
   el.className = 'user-moto-marker';
@@ -445,7 +561,14 @@ export default function App() {
   // Navigation
   const [navMode, setNavMode] = useState(false);
   const [nextTurn, setNextTurn] = useState(null);
+  const [navProgress, setNavProgress] = useState(null);   // { distM, timeMs }
   const [userLocation, setUserLocation] = useState(null);
+  const [voiceMuted, setVoiceMuted] = useState(() => {
+    try { return localStorage.getItem('voice_muted') === '1'; } catch { return false; }
+  });
+  const voiceMutedRef = useRef(false);
+  const lastNavPosRef = useRef(null);   // previous lat/lng during nav, for bearing delta
+  const navBearingRef = useRef(0);      // smoothed bearing currently applied to the map
 
   // Routing variant A/B toggle (dev tool)
   const [routeVariant, setRouteVariant] = useState('classic');
@@ -478,6 +601,28 @@ export default function App() {
 
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
   useEffect(() => { navModeRef.current = navMode; }, [navMode]);
+  useEffect(() => { voiceMutedRef.current = voiceMuted; }, [voiceMuted]);
+
+  // Prime the SpeechSynthesis voice list — many browsers load voices async and
+  // return [] from the first getVoices() call. We listen so the picker can
+  // upgrade from the default voice to a premium one as soon as it's available.
+  useEffect(() => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const onVoices = () => { _pickedVoice = null; pickBestVoice(); };
+    synth.addEventListener?.('voiceschanged', onVoices);
+    onVoices();
+    return () => synth.removeEventListener?.('voiceschanged', onVoices);
+  }, []);
+
+  const toggleVoiceMute = useCallback(() => {
+    setVoiceMuted(m => {
+      const next = !m;
+      try { localStorage.setItem('voice_muted', next ? '1' : '0'); } catch {}
+      if (next && window.speechSynthesis) window.speechSynthesis.cancel();
+      return next;
+    });
+  }, []);
 
   const handleVoiceResult = useCallback((transcript) => {
     setQuery(transcript);
@@ -491,9 +636,9 @@ export default function App() {
     if (voice.listening && voice.transcript) setQuery(voice.transcript);
   }, [voice.listening, voice.transcript]);
 
-  // When recents are open, the sheet covers the map (mic + input stay at the
-  // top, recents list fills the rest). Otherwise: base + textarea + optional
-  // error banner.
+  // When recents are open, the sheet covers the map (buttons + input stay at the
+  // top, recents list fills the rest). Otherwise: compact base — two-button
+  // hero row + single-line input pill, sized to leave most of the map visible.
   const computeIdleHeight = useCallback((textH) => {
     if (recentsOpen) {
       // Near full screen, leaving room for the status bar/notch.
@@ -501,7 +646,8 @@ export default function App() {
       return Math.min(900, vh - 40);
     }
     const errH = voice.error ? 40 : 0;
-    return Math.max(220, Math.min(180 + textH + errH, 480));
+    // Base: 14px top + 56px buttons + 10px gap + textarea + 22px safe-area pad ≈ 102 + textH
+    return Math.max(160, Math.min(102 + textH + errH, 420));
   }, [voice.error, recentsOpen]);
 
   // Auto-resize the idle textarea; grow the sheet so the whole prompt stays
@@ -622,17 +768,56 @@ export default function App() {
       } else {
         userMarkerRef.current.setLngLat([lng, lat]);
       }
-      // Only centre map on rider during active navigation — zoom in and lock north-up
+      // During active navigation: centre on rider, tilt for perspective, and
+      // rotate the map so the road ahead points up the screen.
+      //
+      // Bearing source priority:
+      //   1. GPS heading — most accurate when actually moving
+      //   2. Delta from last GPS fix — when GPS heading is null but user moved ≥5 m
+      //   3. Route geometry at user's nearest point — keeps the road ahead "up"
+      //      even when stopped at a light, just-started, or indoors
+      //   4. Last smoothed bearing — final fallback
       if (navModeRef.current) {
-        map.easeTo({ center: [lng, lat], zoom: 16, bearing: 0, pitch: 0, duration: 800 });
+        let target = navBearingRef.current;
+        if (pos.coords.heading != null && !isNaN(pos.coords.heading) &&
+            (pos.coords.speed == null || pos.coords.speed > 0.5)) {
+          target = pos.coords.heading;
+        } else if (lastNavPosRef.current) {
+          const { lat: pLat, lng: pLng } = lastNavPosRef.current;
+          if (Math.hypot(lat - pLat, lng - pLng) > 0.00005) { // ~5 m
+            target = bearingBetween(pLat, pLng, lat, lng);
+          } else {
+            const rb = routeBearingAt(routeDataRef.current, lat, lng);
+            if (rb != null) target = rb;
+          }
+        } else {
+          const rb = routeBearingAt(routeDataRef.current, lat, lng);
+          if (rb != null) target = rb;
+        }
+        // Low-pass filter so the map doesn't jitter while stopped or on GPS noise.
+        const prev = navBearingRef.current;
+        const delta = ((target - prev + 540) % 360) - 180;   // shortest signed arc
+        const smoothed = (prev + delta * 0.35 + 360) % 360;
+        navBearingRef.current = smoothed;
+        lastNavPosRef.current = { lat, lng };
+
+        map.easeTo({
+          center: [lng, lat],
+          zoom: 17,
+          bearing: smoothed,
+          pitch: 55,
+          duration: 800,
+        });
       }
     }
 
-    // Turn-by-turn announcements (nav mode only)
+    // Turn-by-turn announcements + remaining-progress stats (nav mode only)
     const route = routeDataRef.current;
     if (route && navModeRef.current) {
       const result = findNextTurn(route, lat, lng);
       setNextTurn(result);
+      const prog = routeProgress(route, lat, lng);
+      if (prog) setNavProgress(prog);
 
       if (result) {
         const { instruction, dist } = result;
@@ -708,10 +893,13 @@ export default function App() {
 
   // ── Navigation ────────────────────────────────────────────────────────────
   function speak(text) {
+    if (voiceMutedRef.current) return;
     if (!window.speechSynthesis) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.0; u.volume = 1.0;
+    const v = pickBestVoice();
+    if (v) u.voice = v;
+    u.rate = 1.0; u.volume = 1.0; u.pitch = 1.0;
     window.speechSynthesis.speak(u);
   }
 
@@ -734,16 +922,25 @@ export default function App() {
     setNavMode(true);
     navModeRef.current = true;
     lastAnnouncedRef.current = null;
+    lastNavPosRef.current = null;
+
+    // Prime bearing to the route direction at the rider's position so the
+    // very first frame already points up the road (no spin-into-place once
+    // the first GPS heading arrives).
+    const r = routeData;
+    const initialBearing = (r && userLocation)
+      ? (routeBearingAt(r, userLocation.lat, userLocation.lng) ?? 0)
+      : 0;
+    navBearingRef.current = initialBearing;
 
     navigator.wakeLock?.request('screen')
       .then(lock => { wakeLockRef.current = lock; })
       .catch(() => {});
 
-    // Immediately fly to rider position at navigation zoom (north-up)
     if (userLocation && mapRef.current) {
       mapRef.current.easeTo({
         center: [userLocation.lng, userLocation.lat],
-        zoom: 16, bearing: 0, pitch: 0,
+        zoom: 17, pitch: 55, bearing: initialBearing,
         duration: 800,
       });
     }
@@ -760,8 +957,13 @@ export default function App() {
     setNavMode(false);
     navModeRef.current = false;
     setNextTurn(null);
+    setNavProgress(null);
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
+    // Restore a normal flat north-up view.
+    if (mapRef.current) {
+      mapRef.current.easeTo({ bearing: 0, pitch: 0, zoom: 13, duration: 600 });
+    }
   }
 
   function centerOnUser() {
@@ -791,7 +993,11 @@ export default function App() {
           pos => {
             const { latitude: lat, longitude: lng } = pos.coords;
             if (mapRef.current) {
-              mapRef.current.easeTo({ center: [lng, lat], zoom: 16, bearing: 0, pitch: 0, duration: 600 });
+              mapRef.current.easeTo({
+                center: [lng, lat], zoom: 17,
+                bearing: navBearingRef.current, pitch: 55,
+                duration: 600,
+              });
             }
           },
           () => {},
@@ -1005,10 +1211,43 @@ export default function App() {
                 <span className="nav-turn-text">Follow the route</span>
               )}
             </div>
+            <button
+              className={`nav-voice-btn${voiceMuted ? ' nav-voice-btn--muted' : ''}`}
+              onClick={toggleVoiceMute}
+              aria-pressed={voiceMuted}
+              aria-label={voiceMuted ? 'Unmute voice directions' : 'Mute voice directions'}
+            >
+              {voiceMuted ? (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                  <line x1="22" y1="9"  x2="16" y2="15"/>
+                  <line x1="16" y1="9"  x2="22" y2="15"/>
+                </svg>
+              ) : (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                </svg>
+              )}
+            </button>
             <button className="nav-stop-btn" onClick={stopNavigation} aria-label="Stop navigation">✕</button>
           </div>
 
           <div className="nav-bottom-bar">
+            <div className="nav-progress">
+              <span className="nav-stat nav-stat--time">
+                {navProgress ? formatRemainingTime(navProgress.timeMs) : '—'}
+              </span>
+              <span className="nav-stat-sep">·</span>
+              <span className="nav-stat">
+                {navProgress ? formatMilesShort(navProgress.distM) : (routeData?.distance_mi?.toFixed(0) + ' mi')}
+              </span>
+              <span className="nav-stat-sep">·</span>
+              <span className="nav-stat nav-stat--eta">
+                {navProgress ? `ETA ${formatETA(navProgress.timeMs)}` : ''}
+              </span>
+            </div>
             <span className="nav-route-title">{routeData?.title}</span>
           </div>
         </div>
@@ -1042,12 +1281,13 @@ export default function App() {
               {/* Hero row: mic + recents toggle, side-by-side, both glove-friendly */}
               <div className="idle-hero-row">
                 {loading ? (
-                  <div className="mic-hero" style={{cursor:'default', pointerEvents:'none'}}>
-                    <span className="dot-spin" style={{width:30,height:30,borderWidth:3}}/>
+                  <div className="hero-btn hero-btn--mic" style={{cursor:'default', pointerEvents:'none'}}>
+                    <span className="dot-spin" style={{width:22,height:22,borderWidth:2.5}}/>
+                    <span>Working…</span>
                   </div>
                 ) : (
                   <button
-                    className={`mic-hero${voice.listening ? ' mic-listening' : ''}`}
+                    className={`hero-btn hero-btn--mic${voice.listening ? ' hero-btn--listening' : ''}`}
                     onClick={() => {
                       if (query.trim()) { submitQuery(); }
                       else if (voice.supported) { voice.listening ? voice.stop() : voice.start(); }
@@ -1056,37 +1296,47 @@ export default function App() {
                   >
                     {voice.listening && <span className="mic-pulse"/>}
                     {query.trim() ? (
-                      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
-                      </svg>
+                      <>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+                        </svg>
+                        <span>Send</span>
+                      </>
                     ) : (
-                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                        <line x1="12" y1="19" x2="12" y2="23"/>
-                      </svg>
+                      <>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
+                          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                          <line x1="12" y1="19" x2="12" y2="23"/>
+                        </svg>
+                        <span>{voice.listening ? 'Listening…' : 'Record'}</span>
+                      </>
                     )}
                   </button>
                 )}
-                {recent.length > 0 && (
-                  <button
-                    className={`recents-hero${recentsOpen ? ' recents-hero--open' : ''}`}
-                    onClick={() => setRecentsOpen(x => !x)}
-                    aria-expanded={recentsOpen}
-                    aria-label={recentsOpen ? 'Hide recent rides' : 'Show recent rides'}
-                  >
-                    {recentsOpen ? (
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <button
+                  className={`hero-btn hero-btn--recents${recentsOpen ? ' hero-btn--active' : ''}`}
+                  onClick={() => setRecentsOpen(x => !x)}
+                  aria-expanded={recentsOpen}
+                  aria-label={recentsOpen ? 'Hide recent rides' : 'Show recent rides'}
+                >
+                  {recentsOpen ? (
+                    <>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
                       </svg>
-                    ) : (
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <span>Close</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <circle cx="12" cy="12" r="9"/>
                         <polyline points="12 7 12 12 15.5 14"/>
                       </svg>
-                    )}
-                  </button>
-                )}
+                      <span>Recents</span>
+                    </>
+                  )}
+                </button>
               </div>
               {/* Text input — auto-resizing pill; sheet grows with it via --idle-height */}
               <div className="idle-input-row">
@@ -1108,20 +1358,33 @@ export default function App() {
               {/* Recents drawer fills the area below the input when open.
                   Mic + input remain visible at the top so the user can still
                   type/speak to filter or replace the query. */}
-              {recentsOpen && recent.length > 0 && (
+              {recentsOpen && (
                 <div className="idle-recents">
                   <div className="idle-recents-header">Recent rides</div>
-                  <div className="idle-recents-list">
-                    {recent.map(r => (
-                      <button key={r.id} className="idle-recent-item"
-                        onClick={() => { setRecentsOpen(false); restoreRecentRoute(r); }}>
-                        <span className="idle-recent-title">{r.title}</span>
-                        <span className="idle-recent-meta">
-                          {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
+                  {recent.length > 0 ? (
+                    <div className="idle-recents-list">
+                      {recent.map(r => (
+                        <button key={r.id} className="idle-recent-item"
+                          onClick={() => { setRecentsOpen(false); restoreRecentRoute(r); }}>
+                          <span className="idle-recent-title">{r.title}</span>
+                          <span className="idle-recent-meta">
+                            {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="idle-recents-empty">
+                      <span className="idle-recents-empty-icon">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="9"/>
+                          <polyline points="12 7 12 12 15.5 14"/>
+                        </svg>
+                      </span>
+                      <span className="idle-recents-empty-title">No rides yet</span>
+                      <span className="idle-recents-empty-sub">Plan your first ride — it’ll show up here for quick re-runs.</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
