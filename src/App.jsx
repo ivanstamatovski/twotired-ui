@@ -491,15 +491,18 @@ export default function App() {
     if (voice.listening && voice.transcript) setQuery(voice.transcript);
   }, [voice.listening, voice.transcript]);
 
-  // Sheet base (padding + hero + gap + bottom pad + chevron) ≈ 180px.
-  // Add textarea height, optional error banner, and optional recents drawer.
+  // When recents are open, the sheet covers the map (mic + input stay at the
+  // top, recents list fills the rest). Otherwise: base + textarea + optional
+  // error banner.
   const computeIdleHeight = useCallback((textH) => {
+    if (recentsOpen) {
+      // Near full screen, leaving room for the status bar/notch.
+      const vh = (typeof window !== 'undefined' ? window.innerHeight : 800);
+      return Math.min(900, vh - 40);
+    }
     const errH = voice.error ? 40 : 0;
-    const recentsH = recentsOpen
-      ? Math.min(40 + recent.length * 56, 260)   // header + items, capped
-      : 0;
-    return Math.max(220, Math.min(180 + textH + errH + recentsH, 560));
-  }, [voice.error, recentsOpen, recent.length]);
+    return Math.max(220, Math.min(180 + textH + errH, 480));
+  }, [voice.error, recentsOpen]);
 
   // Auto-resize the idle textarea; grow the sheet so the whole prompt stays
   // visible. Uses RAF so iOS WKWebView has time to lay out before scrollHeight
@@ -1036,25 +1039,7 @@ export default function App() {
 
           {!menuOpen && sheetMode === 'idle' && (
             <div className="sheet-idle">
-              {/* Recents drawer — slides in above the hero when chevron is tapped */}
-              {recentsOpen && recent.length > 0 && (
-                <div className="idle-recents">
-                  <div className="idle-recents-header">Recent rides</div>
-                  <div className="idle-recents-list">
-                    {recent.map(r => (
-                      <button key={r.id} className="idle-recent-item"
-                        onClick={() => { setRecentsOpen(false); restoreRecentRoute(r); }}>
-                        <span className="idle-recent-title">{r.title}</span>
-                        <span className="idle-recent-meta">
-                          {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Hero button: spinner while loading, mic when idle, arrow when text present */}
+              {/* Hero row: mic + recents toggle, side-by-side, both glove-friendly */}
               <div className="idle-hero-row">
                 {loading ? (
                   <div className="mic-hero" style={{cursor:'default', pointerEvents:'none'}}>
@@ -1083,6 +1068,25 @@ export default function App() {
                     )}
                   </button>
                 )}
+                {recent.length > 0 && (
+                  <button
+                    className={`recents-hero${recentsOpen ? ' recents-hero--open' : ''}`}
+                    onClick={() => setRecentsOpen(x => !x)}
+                    aria-expanded={recentsOpen}
+                    aria-label={recentsOpen ? 'Hide recent rides' : 'Show recent rides'}
+                  >
+                    {recentsOpen ? (
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
+                      </svg>
+                    ) : (
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="9"/>
+                        <polyline points="12 7 12 12 15.5 14"/>
+                      </svg>
+                    )}
+                  </button>
+                )}
               </div>
               {/* Text input — auto-resizing pill; sheet grows with it via --idle-height */}
               <div className="idle-input-row">
@@ -1101,17 +1105,24 @@ export default function App() {
                 <div className="voice-error">{voice.error}</div>
               )}
 
-              {/* Chevron — toggles the recents drawer; hidden when no recents exist */}
-              {recent.length > 0 && (
-                <button
-                  className={`recents-toggle${recentsOpen ? ' recents-toggle--open' : ''}`}
-                  onClick={() => setRecentsOpen(x => !x)}
-                  aria-label={recentsOpen ? 'Hide recent rides' : 'Show recent rides'}
-                >
-                  <svg width="22" height="12" viewBox="0 0 22 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 9 11 3 19 9"/>
-                  </svg>
-                </button>
+              {/* Recents drawer fills the area below the input when open.
+                  Mic + input remain visible at the top so the user can still
+                  type/speak to filter or replace the query. */}
+              {recentsOpen && recent.length > 0 && (
+                <div className="idle-recents">
+                  <div className="idle-recents-header">Recent rides</div>
+                  <div className="idle-recents-list">
+                    {recent.map(r => (
+                      <button key={r.id} className="idle-recent-item"
+                        onClick={() => { setRecentsOpen(false); restoreRecentRoute(r); }}>
+                        <span className="idle-recent-title">{r.title}</span>
+                        <span className="idle-recent-meta">
+                          {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}

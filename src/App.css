@@ -491,12 +491,35 @@ body {
   overflow: hidden;
 }
 
-/* Centered row for the mic/send hero button */
+/* Centered row for the mic/send hero + recents toggle. Both buttons are the
+ * same size so the row is glove-friendly even from the bike. */
 .idle-hero-row {
   display: flex;
   justify-content: center;
   align-items: center;
+  gap: 24px;
 }
+
+/* Recents toggle — circle button matching the mic-hero so they look paired.
+ * Neutral by default, accent-tinted when open or hovered. */
+.recents-hero {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--surface-alt, #f3f4f6);
+  border: 1.5px solid var(--border, #e5e7eb);
+  color: var(--text-dim, #4b5563);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+}
+
+.recents-hero:hover  { background: var(--accent-dim, #fff0e6); border-color: var(--accent, #f97316); color: var(--accent, #f97316); }
+.recents-hero:active { transform: scale(0.95); }
+.recents-hero--open  { background: var(--accent-dim, #fff0e6); border-color: var(--accent, #f97316); color: var(--accent, #f97316); }
 
 /* Input row — full-width pill, no button inside */
 .idle-input-row {
@@ -514,14 +537,17 @@ body {
   text-align: center;
 }
 
-/* ─── Recents drawer (idle sheet) ────────────────────────────────── */
+/* ─── Recents drawer (idle sheet) ──────────────────────────────────
+ * When open, fills the area below the input — sheet has grown to ~full
+ * screen so the user is committed to picking a recent ride. */
 .idle-recents {
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-  max-height: 240px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  margin-bottom: 12px;
+  margin-top: 12px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 
 .idle-recents-header {
@@ -566,24 +592,7 @@ body {
 
 .idle-recent-meta { font-size: 12px; color: var(--text-dim); }
 
-/* Chevron toggle below the input pill */
-.recents-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  margin-top: 6px;
-  padding: 6px 0 2px;
-  background: transparent;
-  border: none;
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: color 0.15s;
-}
-
-.recents-toggle:hover { color: var(--accent, #f97316); }
-.recents-toggle svg { transition: transform 0.25s ease; }
-.recents-toggle--open svg { transform: rotate(180deg); }
+/* Old bottom recents pill — superseded by the circle button next to the mic. */
 
 /* Tall pill input — textarea so it can grow with multi-line transcripts.
  * field-sizing: content lets the browser grow it natively (iOS 17.4+, Chrome 123+);
