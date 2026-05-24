@@ -1,5 +1,10 @@
 {
   "appId": "net.twotired.app",
   "appName": "TwoTired",
-  "webDir": "dist"
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "automatic",
+    "allowsLinkPreview": false,
+    "scrollEnabled": false
+  }
 }
