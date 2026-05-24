@@ -174,11 +174,14 @@ body {
 }
 
 .maplibregl-ctrl-attrib { display: none !important; }
+.maplibregl-ctrl-zoom-in,
+.maplibregl-ctrl-zoom-out,
+.maplibregl-ctrl-group { display: none !important; }
 
 /* ─── Always-visible locate button ─────────────────────────────── */
 .map-locate-btn {
   position: absolute;
-  bottom: 216px; /* above the idle sheet peek (200px) + 16px gap */
+  bottom: calc(104px + env(safe-area-inset-bottom, 0px)); /* above idle input bar */
   right: 12px;
   z-index: 50;
   width: 42px;
@@ -393,8 +396,8 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* Default (idle): peek 200px from bottom */
-  transform: translateY(calc(100% - 200px));
+  /* Default (idle): large glove-friendly input bar */
+  transform: translateY(calc(100% - 96px - env(safe-area-inset-bottom, 0px)));
   /* Only animate transform (sheet open/close); bottom tracks keyboard in real time */
   transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
   will-change: transform;
@@ -462,15 +465,54 @@ body {
   color: var(--accent);
 }
 
+/* Hide handle row in idle — sheet is a floating input bar only */
+.sheet--idle .sheet-handle-row { display: none; }
+
 /* ─── Idle sheet ────────────────────────────────────────────────── */
 .sheet-idle {
   flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 8px 20px 20px;
-  gap: 16px;
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 10px 16px max(16px, env(safe-area-inset-bottom));
+  gap: 10px;
   overflow: hidden;
+}
+
+/* Row containing send button + text input */
+.idle-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Big glove-friendly send button on the left */
+.idle-send-btn {
+  flex-shrink: 0;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(249,115,22,0.4);
+  transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+  touch-action: manipulation;
+}
+.idle-send-btn:disabled { opacity: 0.45; box-shadow: none; }
+.idle-send-btn:not(:disabled):active { transform: scale(0.93); }
+
+/* Tall pill input */
+.query-input--idle {
+  height: 60px;
+  font-size: 16px;
+  border-radius: 30px;
+  padding: 0 20px;
 }
 
 .mic-hero {
@@ -523,12 +565,7 @@ body {
   100% { transform: scale(1.5); opacity: 0; }
 }
 
-.idle-input-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
+/* (idle-input-row defined above near .sheet-idle) */
 
 /* Idle sheet — recent rides vertical list */
 .recent-peek {

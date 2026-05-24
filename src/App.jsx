@@ -855,39 +855,20 @@ export default function App() {
 
           {!menuOpen && sheetMode === 'idle' && (
             <div className="sheet-idle">
-              {voice.supported ? (
-                <button className={`mic-hero${voice.listening?' mic-listening':''}`}
-                  onClick={voice.listening?voice.stop:voice.start} aria-label="Speak your route">
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" y1="19" x2="12" y2="23"/>
-                    <line x1="8" y1="23" x2="16" y2="23"/>
-                  </svg>
-                  {voice.listening && <span className="mic-pulse"/>}
-                </button>
-              ) : null}
               <div className="idle-input-row">
-                <input className="query-input"
-                  placeholder={voice.listening ? 'Listening…' : 'Where do you want to ride?'}
+                {/* Big send button on the left — glove-friendly primary action */}
+                <button className="idle-send-btn" onClick={()=>submitQuery()} disabled={loading||!query.trim()} aria-label="Go">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+                  </svg>
+                </button>
+                <input className="query-input query-input--idle"
+                  placeholder="Where do you want to ride?"
                   value={query} onChange={e=>setQuery(e.target.value)}
                   onKeyDown={e=>e.key==='Enter'&&submitQuery()}
                   onFocus={()=>setSheetMode('expanded')}
-                  disabled={loading||voice.listening}/>
-                <button className="go-btn" onClick={()=>submitQuery()} disabled={loading||!query.trim()}>→</button>
+                  disabled={loading}/>
               </div>
-              {recent.length > 0 && !voice.listening && (
-                <div className="recent-peek">
-                  <div className="recent-peek-label">Recent rides</div>
-                  {recent.map(r=>(
-                    <button key={r.id} className="recent-item"
-                      onClick={()=>restoreRecentRoute(r)}>
-                      <span className="recent-title">{r.title}</span>
-                      <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 
