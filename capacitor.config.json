@@ -6,5 +6,9 @@
     "contentInset": "automatic",
     "allowsLinkPreview": false,
     "scrollEnabled": false
+  },
+  "server": {
+    "url": "http://192.168.1.163:5173",
+    "cleartext": true
   }
 }
