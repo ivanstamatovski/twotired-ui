@@ -181,7 +181,7 @@ body {
 /* ─── Always-visible locate button ─────────────────────────────── */
 .map-locate-btn {
   position: absolute;
-  bottom: 170px; /* above idle sheet (160px visible) + small gap */
+  bottom: 228px; /* above idle sheet (220px visible) + small gap */
   right: 12px;
   z-index: 50;
   width: 42px;
@@ -396,8 +396,8 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* Default (idle): large glove-friendly input bar — generous height covers all safe areas */
-  transform: translateY(calc(100% - 160px));
+  /* Default (idle): large glove-friendly input bar — mic hero + input row */
+  transform: translateY(calc(100% - 220px));
   /* Only animate transform (sheet open/close); bottom tracks keyboard in real time */
   transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
   will-change: transform;
@@ -470,9 +470,9 @@ body {
 
 /* ─── Idle sheet ────────────────────────────────────────────────── */
 /*
- * translateY(100% - 160px) slides the sheet DOWN, so the TOP 160px of the
- * sheet element is what's visible at the screen bottom. Content must be at
- * the TOP of the container (flex-start), not the bottom (flex-end).
+ * translateY(100% - 220px) slides the sheet DOWN, so the TOP 220px of the
+ * sheet element is visible at the screen bottom. Content must be at the TOP
+ * of this container (flex-start). Layout: mic/send hero → input pill.
  */
 .sheet-idle {
   flex: 1;
@@ -480,40 +480,27 @@ body {
   flex-direction: column;
   justify-content: flex-start;
   align-items: stretch;
-  padding: 14px 16px 0;
+  padding: 18px 24px 0;
   gap: 10px;
   overflow: hidden;
 }
 
-/* Row containing send button + text input */
+/* Centered row for the mic/send hero button */
+.idle-hero-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Input row — full-width pill, no button inside */
 .idle-input-row {
   display: flex;
   align-items: center;
-  gap: 10px;
 }
-
-/* Big glove-friendly send button on the left */
-.idle-send-btn {
-  flex-shrink: 0;
-  width: 60px;
-  height: 60px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: none;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 4px 16px rgba(249,115,22,0.4);
-  transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
-  touch-action: manipulation;
-}
-.idle-send-btn:disabled { opacity: 0.45; box-shadow: none; }
-.idle-send-btn:not(:disabled):active { transform: scale(0.93); }
 
 /* Tall pill input */
 .query-input--idle {
+  flex: 1;
   height: 60px;
   font-size: 16px;
   border-radius: 30px;

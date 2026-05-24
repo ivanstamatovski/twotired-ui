@@ -697,7 +697,8 @@ export default function App() {
     setQuery('');
     setMessages([{ role:'user', content:text }]);
     setRouteData(null); setRouteApproved(false);
-    if (isMobile) setSheetMode('expanded');
+    // Don't expand the sheet — stay in idle/compact view while loading.
+    // Sheet transitions to 'collapsed' automatically when route arrives.
 
     // Prefer the live watch position (maximumAge:2000) over a fresh one-shot fetch.
     // The watch is always running so userLocation is the most accurate fix we have.
@@ -855,18 +856,42 @@ export default function App() {
 
           {!menuOpen && sheetMode === 'idle' && (
             <div className="sheet-idle">
+              {/* Hero button: spinner while loading, mic when idle, arrow when text present */}
+              <div className="idle-hero-row">
+                {loading ? (
+                  <div className="mic-hero" style={{cursor:'default', pointerEvents:'none'}}>
+                    <span className="dot-spin" style={{width:30,height:30,borderWidth:3}}/>
+                  </div>
+                ) : (
+                  <button
+                    className={`mic-hero${voice.listening ? ' mic-listening' : ''}`}
+                    onClick={() => {
+                      if (query.trim()) { submitQuery(); }
+                      else if (voice.supported) { voice.listening ? voice.stop() : voice.start(); }
+                    }}
+                    aria-label={query.trim() ? 'Submit' : 'Voice input'}
+                  >
+                    {voice.listening && <span className="mic-pulse"/>}
+                    {query.trim() ? (
+                      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+                      </svg>
+                    ) : (
+                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        <line x1="12" y1="19" x2="12" y2="23"/>
+                      </svg>
+                    )}
+                  </button>
+                )}
+              </div>
+              {/* Text input — full width pill, typing does NOT expand the sheet */}
               <div className="idle-input-row">
-                {/* Big send button on the left — glove-friendly primary action */}
-                <button className="idle-send-btn" onClick={()=>submitQuery()} disabled={loading||!query.trim()} aria-label="Go">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
-                  </svg>
-                </button>
                 <input className="query-input query-input--idle"
-                  placeholder="Where do you want to ride?"
+                  placeholder={loading ? loadingMsg : 'Where do you want to ride?'}
                   value={query} onChange={e=>setQuery(e.target.value)}
                   onKeyDown={e=>e.key==='Enter'&&submitQuery()}
-                  onFocus={()=>setSheetMode('expanded')}
                   disabled={loading}/>
               </div>
             </div>
