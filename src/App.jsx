@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
@@ -123,26 +124,158 @@ function getCurrentGPS({ timeout = 6000, maximumAge = 30000 } = {}) {
 }
 
 // ── Voice hook ────────────────────────────────────────────────────────────────
+// Two paths:
+//   • Native (Capacitor iOS): @capacitor-community/speech-recognition plugin.
+//     Loaded via dynamic import + try/catch so this file still compiles before
+//     the plugin is npm-installed; native path just stays disabled until then.
+//   • Web: window.(webkit)SpeechRecognition with interim results + error logging.
 function useVoice(onResult) {
   const [listening, setListening] = useState(false);
   const [supported, setSupported] = useState(false);
-  const recogRef = useRef(null);
+  const [error, setError]         = useState(null);
+  const [transcript, setTranscript] = useState('');
+
+  const isNative = Capacitor.isNativePlatform();
+  const pluginRef    = useRef(null);   // native plugin module (when loaded)
+  const recogRef     = useRef(null);   // web SpeechRecognition instance
+  const latestRef    = useRef('');     // last transcript heard (native)
+  const firedRef     = useRef(false);  // dedupe onResult per session (native)
+  const onResultRef  = useRef(onResult);
+  useEffect(() => { onResultRef.current = onResult; }, [onResult]);
 
   useEffect(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
-    setSupported(true);
-    const r = new SR();
-    r.continuous = false; r.interimResults = false; r.lang = 'en-US';
-    r.onresult = e => { onResult(e.results[0][0].transcript); setListening(false); };
-    r.onerror = () => setListening(false);
-    r.onend = () => setListening(false);
-    recogRef.current = r;
-  }, [onResult]);
+    let cancelled = false;
+    const cleanups = [];
 
-  const start = useCallback(() => { recogRef.current?.start(); setListening(true); }, []);
-  const stop = useCallback(() => { recogRef.current?.stop(); setListening(false); }, []);
-  return { listening, supported, start, stop };
+    async function setupNative() {
+      try {
+        const mod = await import('@capacitor-community/speech-recognition');
+        const SR = mod.SpeechRecognition;
+        const avail = await SR.available();
+        if (cancelled) return;
+        if (!avail?.available) { setSupported(false); return; }
+        pluginRef.current = SR;
+        setSupported(true);
+
+        const partialL = await SR.addListener('partialResults', (data) => {
+          const text = data?.matches?.[0];
+          if (text) { latestRef.current = text; setTranscript(text); }
+        });
+        const stateL = await SR.addListener('listeningState', (data) => {
+          if (data?.status === 'stopped') {
+            setListening(false);
+            const final = latestRef.current.trim();
+            if (final && !firedRef.current) {
+              firedRef.current = true;
+              onResultRef.current?.(final);
+            }
+          }
+        });
+        cleanups.push(() => partialL?.remove?.(), () => stateL?.remove?.());
+      } catch (e) {
+        console.warn('[voice] native plugin unavailable:', e?.message || e);
+        setSupported(false);
+      }
+    }
+
+    function setupWeb() {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { setSupported(false); return; }
+      const r = new SR();
+      r.continuous = false;
+      r.interimResults = true;
+      r.lang = 'en-US';
+      r.onstart  = () => { setError(null); };
+      r.onresult = (e) => {
+        let finalText = '', interimText = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const res = e.results[i];
+          if (res.isFinal) finalText += res[0].transcript;
+          else interimText += res[0].transcript;
+        }
+        if (finalText) {
+          setTranscript(finalText);
+          setListening(false);
+          onResultRef.current?.(finalText.trim());
+        } else if (interimText) {
+          setTranscript(interimText);
+        }
+      };
+      r.onerror = (e) => {
+        const code = e?.error || 'unknown';
+        console.warn('[voice] recognition error:', code, e);
+        setError(code === 'not-allowed' ? 'Microphone permission denied'
+              : code === 'no-speech'    ? 'Didn’t catch that — try again'
+              : code === 'network'      ? 'Network error — voice needs internet'
+              : `Voice error: ${code}`);
+        setListening(false);
+      };
+      r.onend = () => setListening(false);
+      recogRef.current = r;
+      setSupported(true);
+    }
+
+    if (isNative) setupNative(); else setupWeb();
+
+    return () => {
+      cancelled = true;
+      cleanups.forEach(fn => { try { fn(); } catch {} });
+      try { recogRef.current?.abort?.(); } catch {}
+      try { pluginRef.current?.stop?.(); } catch {}
+    };
+  }, [isNative]);
+
+  const start = useCallback(async () => {
+    setError(null);
+    setTranscript('');
+    latestRef.current = '';
+    firedRef.current  = false;
+    if (isNative) {
+      const SR = pluginRef.current;
+      if (!SR) { setError('Voice plugin not installed'); return; }
+      try {
+        const perm = await SR.requestPermissions();
+        const state = perm?.speechRecognition || perm?.permission;
+        if (state && state !== 'granted') {
+          setError('Microphone permission denied');
+          return;
+        }
+        await SR.start({ language: 'en-US', partialResults: true, popup: false });
+        setListening(true);
+      } catch (e) {
+        console.warn('[voice] native start failed:', e);
+        setError(e?.message || 'Could not start voice');
+        setListening(false);
+      }
+    } else {
+      try {
+        recogRef.current?.start();
+        setListening(true);
+      } catch (e) {
+        // Calling start() while already started throws InvalidStateError
+        console.warn('[voice] web start failed:', e);
+        setError(e?.message || 'Could not start voice');
+      }
+    }
+  }, [isNative]);
+
+  const stop = useCallback(async () => {
+    if (isNative) {
+      try { await pluginRef.current?.stop(); }
+      catch (e) { console.warn('[voice] native stop failed:', e); }
+      // Fallback: fire onResult here in case listeningState event doesn't arrive
+      const final = latestRef.current.trim();
+      if (final && !firedRef.current) {
+        firedRef.current = true;
+        onResultRef.current?.(final);
+      }
+    } else {
+      try { recogRef.current?.stop(); } catch {}
+    }
+    setListening(false);
+  }, [isNative]);
+
+  return { listening, supported, error, transcript, start, stop };
 }
 
 // ── Mobile detect ─────────────────────────────────────────────────────────────
@@ -348,6 +481,12 @@ export default function App() {
     submitQuery(transcript);
   }, []);
   const voice = useVoice(handleVoiceResult);
+
+  // Live mirror of interim voice transcript into the input box, so the user
+  // sees their words appear as they speak.
+  useEffect(() => {
+    if (voice.listening && voice.transcript) setQuery(voice.transcript);
+  }, [voice.listening, voice.transcript]);
 
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -892,11 +1031,16 @@ export default function App() {
               {/* Text input — full width pill, typing does NOT expand the sheet */}
               <div className="idle-input-row">
                 <input className="query-input query-input--idle"
-                  placeholder={loading ? loadingMsg : 'Where do you want to ride?'}
+                  placeholder={loading ? loadingMsg
+                    : voice.listening ? 'Listening…'
+                    : 'Where do you want to ride?'}
                   value={query} onChange={e=>setQuery(e.target.value)}
                   onKeyDown={e=>e.key==='Enter'&&submitQuery()}
                   disabled={loading}/>
               </div>
+              {voice.error && (
+                <div className="voice-error">{voice.error}</div>
+              )}
             </div>
           )}
 
@@ -906,8 +1050,41 @@ export default function App() {
                 <span className="collapsed-title">{routeData.title}</span>
                 <span className="collapsed-meta">{routeData.duration_str} · {routeData.distance_mi?.toFixed(0)} mi</span>
               </div>
-              <div className="collapsed-actions">
-                <button className="start-nav-btn" onClick={startNavigation}>▶ Navigate</button>
+              <button className="start-nav-btn" onClick={startNavigation}>▶ Navigate</button>
+              <div className="route-secondary-actions">
+                <button className="route-action-btn" onClick={() => {
+                  setRouteData(null); setRouteApproved(false);
+                  setMessages([]); setFollowUpInput(''); setQuery('');
+                  setRefineOpen(false); setSheetMode('idle');
+                  const m = mapRef.current;
+                  if (m) {
+                    if (m.getLayer('route-line'))   m.removeLayer('route-line');
+                    if (m.getLayer('route-casing')) m.removeLayer('route-casing');
+                    if (m.getSource('route'))       m.removeSource('route');
+                  }
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  New
+                </button>
+                <button className="route-action-btn" onClick={() => {
+                  setRouteApproved(false); setRefineOpen(true);
+                  setSheetMode('expanded');
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+                  </svg>
+                  Edit
+                </button>
+                <button className="route-action-btn" onClick={() => {
+                  setMenuOpen(true); setSheetMode('expanded');
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                  Report
+                </button>
               </div>
             </div>
           )}

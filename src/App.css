@@ -403,9 +403,9 @@ body {
   will-change: transform;
 }
 
-/* Collapsed: show just the route bar (~110px) */
+/* Collapsed: route bar + Navigate + 3 secondary actions (~210px) */
 .sheet--collapsed {
-  transform: translateY(calc(100% - 110px));
+  transform: translateY(calc(100% - 210px));
 }
 
 /* Expanded: slide up to leave only the top safe area visible */
@@ -496,6 +496,16 @@ body {
 .idle-input-row {
   display: flex;
   align-items: center;
+}
+
+.voice-error {
+  margin-top: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #b91c1c;
+  background: #fee2e2;
+  border-radius: 10px;
+  text-align: center;
 }
 
 /* Tall pill input */
@@ -596,23 +606,22 @@ body {
 
 /* ─── Collapsed sheet ───────────────────────────────────────────── */
 /*
- * Same translateY logic: top 110px visible. Handle row is ~44px, leaving
- * ~66px for the route bar. flex: 1 would make this container full viewport
- * height with content centered at y~400px — invisible. Use flex-shrink: 0
- * so it's only as tall as its content.
+ * Top ~210px visible (handle ~44px + content ~166px). Content stacks
+ * vertically: route info, Navigate (full width), then 3 secondary actions.
+ * flex-shrink: 0 keeps the container only as tall as its content.
  */
 .sheet-collapsed-content {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 16px 10px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 16px 12px;
   padding-right: max(16px, env(safe-area-inset-right));
-  gap: 12px;
-  overflow: visible; /* don't clip the nav button */
+  padding-left:  max(16px, env(safe-area-inset-left));
+  overflow: visible;
 }
 
-.collapsed-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.collapsed-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 
 .collapsed-title {
   font-size: 15px;
@@ -625,24 +634,48 @@ body {
 
 .collapsed-meta { font-size: 12px; color: var(--text-dim); }
 
-.collapsed-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-
 .start-nav-btn {
   background: var(--accent);
   color: #fff;
   border: none;
-  border-radius: 20px;
-  padding: 9px 18px;
-  font-size: 14px;
+  border-radius: 22px;
+  padding: 12px 18px;
+  font-size: 15px;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  width: 100%;
   transition: background 0.15s, transform 0.1s;
   box-shadow: 0 2px 10px rgba(249,115,22,0.3);
 }
 
-.start-nav-btn:hover { background: var(--accent-hover); transform: scale(1.03); }
-.start-nav-btn:active { transform: scale(0.96); }
+.start-nav-btn:hover { background: var(--accent-hover); transform: scale(1.02); }
+.start-nav-btn:active { transform: scale(0.97); }
+
+.route-secondary-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.route-action-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background: var(--surface-alt, #f3f4f6);
+  color: var(--text, #111);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 14px;
+  padding: 10px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.08s;
+}
+
+.route-action-btn:hover  { background: var(--accent-dim, #fff0e6); border-color: var(--accent, #f97316); color: var(--accent, #f97316); }
+.route-action-btn:active { transform: scale(0.97); }
 
 /* ─── Expanded sheet ────────────────────────────────────────────── */
 .sheet-expanded-content {
