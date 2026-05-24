@@ -437,7 +437,8 @@ export default function App() {
   // Mobile sheet
   const [sheetMode, setSheetMode] = useState('idle');
   const [refineOpen, setRefineOpen] = useState(false);
-  const [idleSheetHeight, setIdleSheetHeight] = useState(220); // grows with multi-line input
+  const [idleSheetHeight, setIdleSheetHeight] = useState(220); // grows with multi-line input and the recents drawer
+  const [recentsOpen, setRecentsOpen] = useState(false);
   const idleInputRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -490,6 +491,16 @@ export default function App() {
     if (voice.listening && voice.transcript) setQuery(voice.transcript);
   }, [voice.listening, voice.transcript]);
 
+  // Sheet base (padding + hero + gap + bottom pad + chevron) ≈ 180px.
+  // Add textarea height, optional error banner, and optional recents drawer.
+  const computeIdleHeight = useCallback((textH) => {
+    const errH = voice.error ? 40 : 0;
+    const recentsH = recentsOpen
+      ? Math.min(40 + recent.length * 56, 260)   // header + items, capped
+      : 0;
+    return Math.max(220, Math.min(180 + textH + errH + recentsH, 560));
+  }, [voice.error, recentsOpen, recent.length]);
+
   // Auto-resize the idle textarea; grow the sheet so the whole prompt stays
   // visible. Uses RAF so iOS WKWebView has time to lay out before scrollHeight
   // is read, and a ResizeObserver so we also react when the browser changes the
@@ -502,12 +513,11 @@ export default function App() {
       ta.style.height = 'auto';
       const textH = Math.min(ta.scrollHeight, TEXT_MAX);
       ta.style.height = textH + 'px';
-      const errH = voice.error ? 40 : 0;
-      setIdleSheetHeight(Math.max(220, Math.min(160 + textH + errH, 480)));
+      setIdleSheetHeight(computeIdleHeight(textH));
     };
     const raf = requestAnimationFrame(recalc);
     return () => cancelAnimationFrame(raf);
-  }, [query, voice.error, sheetMode]);
+  }, [query, sheetMode, computeIdleHeight]);
 
   // Continuously observe textarea size changes (covers voice partial updates
   // and the browser growing the field via field-sizing).
@@ -515,12 +525,14 @@ export default function App() {
     const ta = idleInputRef.current;
     if (!ta || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
-      const errH = voice.error ? 40 : 0;
-      setIdleSheetHeight(Math.max(220, Math.min(160 + ta.offsetHeight + errH, 480)));
+      setIdleSheetHeight(computeIdleHeight(ta.offsetHeight));
     });
     ro.observe(ta);
     return () => ro.disconnect();
-  }, [sheetMode, voice.error]);
+  }, [sheetMode, computeIdleHeight]);
+
+  // Close the recents drawer whenever we leave idle mode.
+  useEffect(() => { if (sheetMode !== 'idle') setRecentsOpen(false); }, [sheetMode]);
 
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -555,20 +567,11 @@ export default function App() {
       if (pendingRoute.current) {
         drawRouteOnMap(pendingRoute.current);
         pendingRoute.current = null;
-      } else {
-        // Restore last active route so tab switches / reloads don't wipe the map
-        try {
-          const last = JSON.parse(localStorage.getItem(LAST_ROUTE_KEY) || 'null');
-          if (last?.geometry) {
-            setRouteData(last);
-            // Always strip round_trip from restored intent — never carry a loop across sessions
-            const restoredIntent = last.intent ? { ...last.intent, round_trip: false } : null;
-            setCurrentIntent(restoredIntent);
-            setMessages([{ role:'route', route:last }]);
-            drawRouteOnMap(last);
-          }
-        } catch {}
       }
+      // Note: the previous build auto-restored LAST_ROUTE_KEY from localStorage
+      // here so that reopening the app or refreshing showed yesterday's route.
+      // Removed — users prefer the app to start blank. Previous rides are
+      // reachable via the recents drawer in the idle sheet.
 
       // Center on user location once on startup
       getCurrentGPS({ timeout: 5000, maximumAge: 60000 }).then(gps => {
@@ -1033,6 +1036,24 @@ export default function App() {
 
           {!menuOpen && sheetMode === 'idle' && (
             <div className="sheet-idle">
+              {/* Recents drawer — slides in above the hero when chevron is tapped */}
+              {recentsOpen && recent.length > 0 && (
+                <div className="idle-recents">
+                  <div className="idle-recents-header">Recent rides</div>
+                  <div className="idle-recents-list">
+                    {recent.map(r => (
+                      <button key={r.id} className="idle-recent-item"
+                        onClick={() => { setRecentsOpen(false); restoreRecentRoute(r); }}>
+                        <span className="idle-recent-title">{r.title}</span>
+                        <span className="idle-recent-meta">
+                          {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Hero button: spinner while loading, mic when idle, arrow when text present */}
               <div className="idle-hero-row">
                 {loading ? (
@@ -1078,6 +1099,19 @@ export default function App() {
               </div>
               {voice.error && (
                 <div className="voice-error">{voice.error}</div>
+              )}
+
+              {/* Chevron — toggles the recents drawer; hidden when no recents exist */}
+              {recent.length > 0 && (
+                <button
+                  className={`recents-toggle${recentsOpen ? ' recents-toggle--open' : ''}`}
+                  onClick={() => setRecentsOpen(x => !x)}
+                  aria-label={recentsOpen ? 'Hide recent rides' : 'Show recent rides'}
+                >
+                  <svg width="22" height="12" viewBox="0 0 22 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 9 11 3 19 9"/>
+                  </svg>
+                </button>
               )}
             </div>
           )}
