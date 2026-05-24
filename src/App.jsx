@@ -700,13 +700,16 @@ export default function App() {
     // Don't expand the sheet — stay in idle/compact view while loading.
     // Sheet transitions to 'collapsed' automatically when route arrives.
 
-    // Prefer the live watch position (maximumAge:2000) over a fresh one-shot fetch.
-    // The watch is always running so userLocation is the most accurate fix we have.
-    // Only fall back to getCurrentGPS if the watch hasn't fired yet.
-    setLoading(true);
-    setLoadingMsg('Getting your location…');
-    const gps = userLocation || await getCurrentGPS({ timeout: 6000, maximumAge: 0 });
-    setLoading(false);
+    // Use the always-on watch position instantly if available.
+    // Only block on a GPS call if the watch hasn't fired yet — and cap it at 1.5s
+    // so the app never hangs. Route generation works fine without GPS (uses query text).
+    let gps = userLocation;
+    if (!gps) {
+      setLoading(true);
+      setLoadingMsg('Getting your location…');
+      gps = await getCurrentGPS({ timeout: 1500, maximumAge: 30000 });
+      setLoading(false);
+    }
 
     generateRoute({ query: text }, gps);
   }
@@ -719,7 +722,7 @@ export default function App() {
     setMessages(prev => [...prev, { role:'user', content:t }]);
     if (isMobile) setSheetMode('expanded');
 
-    const gps = userLocation || await getCurrentGPS({ timeout: 4000, maximumAge: 0 });
+    const gps = userLocation || await getCurrentGPS({ timeout: 1500, maximumAge: 30000 });
     await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t }, gps);
   }
 

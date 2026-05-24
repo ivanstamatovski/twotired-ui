@@ -47,5 +47,9 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>TwoTired uses your location to plan motorcycle routes starting from where you are.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>TwoTired uses your location to plan motorcycle routes starting from where you are.</string>
 </dict>
 </plist>
