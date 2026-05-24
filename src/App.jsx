@@ -490,6 +490,20 @@ export default function App() {
     if (voice.listening && voice.transcript) setQuery(voice.transcript);
   }, [voice.listening, voice.transcript]);
 
+  // Auto-resize the idle textarea; grow the sheet so the whole prompt stays visible.
+  useEffect(() => {
+    const ta = idleInputRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    const TEXT_MAX = 220;            // textarea caps here, scrolls beyond
+    const textH = Math.min(ta.scrollHeight, TEXT_MAX);
+    ta.style.height = textH + 'px';
+    // Sheet base (padding + hero + gap + bottom pad) ≈ 160px, plus textarea, plus
+    // error banner (~40px when present). Clamp so sheet stays >=220 and reasonable.
+    const errH = voice.error ? 40 : 0;
+    setIdleSheetHeight(Math.max(220, Math.min(160 + textH + errH, 480)));
+  }, [query, voice.error]);
+
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -978,7 +992,8 @@ export default function App() {
 
       {/* ════════════════ MOBILE bottom sheet ════════════════ */}
       {isMobile && !navMode ? (
-        <div className={`sheet sheet--${sheetMode}`}>
+        <div className={`sheet sheet--${sheetMode}`}
+             style={sheetMode==='idle' ? { '--idle-height': idleSheetHeight + 'px' } : undefined}>
 
           {/* Handle row: drag bar (centre) + always-visible menu button (right) */}
           <div className="sheet-handle-row">
@@ -1030,14 +1045,17 @@ export default function App() {
                   </button>
                 )}
               </div>
-              {/* Text input — full width pill, typing does NOT expand the sheet */}
+              {/* Text input — auto-resizing pill; sheet grows with it via --idle-height */}
               <div className="idle-input-row">
-                <input className="query-input query-input--idle"
+                <textarea ref={idleInputRef} rows={1}
+                  className="query-input query-input--idle"
                   placeholder={loading ? loadingMsg
                     : voice.listening ? 'Listening…'
                     : 'Where do you want to ride?'}
                   value={query} onChange={e=>setQuery(e.target.value)}
-                  onKeyDown={e=>e.key==='Enter'&&submitQuery()}
+                  onKeyDown={e=>{
+                    if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitQuery(); }
+                  }}
                   disabled={loading}/>
               </div>
               {voice.error && (

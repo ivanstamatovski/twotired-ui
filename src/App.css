@@ -468,6 +468,12 @@ body {
 /* Hide handle row in idle — sheet is a floating input bar only */
 .sheet--idle .sheet-handle-row { display: none; }
 
+/* Idle sheet height is driven by --idle-height (set from JS as the textarea
+ * grows). Falls back to 220px if the var isn't set. */
+.sheet--idle {
+  transform: translateY(calc(100% - var(--idle-height, 220px)));
+}
+
 /* ─── Idle sheet ────────────────────────────────────────────────── */
 /*
  * translateY(100% - 220px) slides the sheet DOWN, so the TOP 220px of the
@@ -508,13 +514,20 @@ body {
   text-align: center;
 }
 
-/* Tall pill input */
+/* Tall pill input — textarea so it can grow with multi-line transcripts */
 .query-input--idle {
   flex: 1;
-  height: 60px;
+  width: 100%;
+  min-height: 60px;
+  max-height: 220px;
   font-size: 16px;
-  border-radius: 30px;
-  padding: 0 20px;
+  line-height: 1.35;
+  border-radius: 22px;
+  padding: 17px 20px;
+  resize: none;
+  overflow-y: auto;
+  font-family: inherit;
+  box-sizing: border-box;
 }
 
 .mic-hero {
