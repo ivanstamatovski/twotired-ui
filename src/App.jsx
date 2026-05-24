@@ -437,6 +437,8 @@ export default function App() {
   // Mobile sheet
   const [sheetMode, setSheetMode] = useState('idle');
   const [refineOpen, setRefineOpen] = useState(false);
+  const [idleSheetHeight, setIdleSheetHeight] = useState(220); // grows with multi-line input
+  const idleInputRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Navigation
