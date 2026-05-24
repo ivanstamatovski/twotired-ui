@@ -396,8 +396,8 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* Default (idle): large glove-friendly input bar */
-  transform: translateY(calc(100% - 96px - env(safe-area-inset-bottom, 0px)));
+  /* Default (idle): large glove-friendly input bar — generous height covers all safe areas */
+  transform: translateY(calc(100% - 160px));
   /* Only animate transform (sheet open/close); bottom tracks keyboard in real time */
   transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
   will-change: transform;
