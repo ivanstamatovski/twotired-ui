@@ -490,19 +490,37 @@ export default function App() {
     if (voice.listening && voice.transcript) setQuery(voice.transcript);
   }, [voice.listening, voice.transcript]);
 
-  // Auto-resize the idle textarea; grow the sheet so the whole prompt stays visible.
+  // Auto-resize the idle textarea; grow the sheet so the whole prompt stays
+  // visible. Uses RAF so iOS WKWebView has time to lay out before scrollHeight
+  // is read, and a ResizeObserver so we also react when the browser changes the
+  // textarea height itself (e.g. via `field-sizing: content` in supporting browsers).
   useEffect(() => {
     const ta = idleInputRef.current;
     if (!ta) return;
-    ta.style.height = 'auto';
-    const TEXT_MAX = 220;            // textarea caps here, scrolls beyond
-    const textH = Math.min(ta.scrollHeight, TEXT_MAX);
-    ta.style.height = textH + 'px';
-    // Sheet base (padding + hero + gap + bottom pad) ≈ 160px, plus textarea, plus
-    // error banner (~40px when present). Clamp so sheet stays >=220 and reasonable.
-    const errH = voice.error ? 40 : 0;
-    setIdleSheetHeight(Math.max(220, Math.min(160 + textH + errH, 480)));
-  }, [query, voice.error]);
+    const TEXT_MAX = 220;
+    const recalc = () => {
+      ta.style.height = 'auto';
+      const textH = Math.min(ta.scrollHeight, TEXT_MAX);
+      ta.style.height = textH + 'px';
+      const errH = voice.error ? 40 : 0;
+      setIdleSheetHeight(Math.max(220, Math.min(160 + textH + errH, 480)));
+    };
+    const raf = requestAnimationFrame(recalc);
+    return () => cancelAnimationFrame(raf);
+  }, [query, voice.error, sheetMode]);
+
+  // Continuously observe textarea size changes (covers voice partial updates
+  // and the browser growing the field via field-sizing).
+  useEffect(() => {
+    const ta = idleInputRef.current;
+    if (!ta || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      const errH = voice.error ? 40 : 0;
+      setIdleSheetHeight(Math.max(220, Math.min(160 + ta.offsetHeight + errH, 480)));
+    });
+    ro.observe(ta);
+    return () => ro.disconnect();
+  }, [sheetMode, voice.error]);
 
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {

@@ -514,7 +514,9 @@ body {
   text-align: center;
 }
 
-/* Tall pill input — textarea so it can grow with multi-line transcripts */
+/* Tall pill input — textarea so it can grow with multi-line transcripts.
+ * field-sizing: content lets the browser grow it natively (iOS 17.4+, Chrome 123+);
+ * the JS in App.jsx covers older WebViews. */
 .query-input--idle {
   flex: 1;
   width: 100%;
@@ -526,8 +528,13 @@ body {
   padding: 17px 20px;
   resize: none;
   overflow-y: auto;
+  overflow-wrap: break-word;
+  word-break: break-word;
   font-family: inherit;
   box-sizing: border-box;
+  -webkit-appearance: none;
+  appearance: none;
+  field-sizing: content;
 }
 
 .mic-hero {
