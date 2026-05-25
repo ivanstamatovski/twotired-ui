@@ -1159,6 +1159,178 @@ body {
 
 .menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
 
+/* ─── Friends / profile (overflow menu) ──────────────────────────── */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+}
+
+.profile-name-block {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.profile-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-code {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.profile-code strong {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  letter-spacing: 0.5px;
+  color: var(--text);
+}
+
+.profile-edit-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+.profile-edit-btn:hover { background: var(--surface-alt, #f3f4f6); color: var(--accent); }
+
+.profile-name-input {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+}
+.profile-name-input:focus { border-color: var(--accent); }
+
+.profile-save-btn,
+.profile-cancel-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.profile-save-btn  { background: var(--accent); color: #fff; border-color: var(--accent); }
+.profile-cancel-btn:hover { background: var(--surface-alt, #f3f4f6); }
+
+.friend-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+}
+
+.friend-row--pending  { background: rgba(249,115,22,0.06); }
+.friend-row--outgoing { opacity: 0.7; }
+
+.friend-name-block {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.friend-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.friend-sub { font-size: 12px; color: var(--text-dim); }
+
+.friend-accept-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.friend-accept-btn:hover { background: var(--accent-hover); }
+
+.friend-reject-btn,
+.friend-remove-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.friend-reject-btn:hover,
+.friend-remove-btn:hover { color: #ef4444; border-color: #ef4444; background: rgba(239,68,68,0.06); }
+
+.add-friend-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px 4px;
+}
+
+.add-friend-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+}
+.add-friend-input:focus { border-color: var(--accent); }
+
+.add-friend-btn {
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.add-friend-btn:hover { background: var(--accent-hover); }
+.add-friend-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.add-friend-status {
+  padding: 4px 14px 8px;
+  font-size: 13px;
+}
+.add-friend-status--success { color: #16a34a; }
+.add-friend-status--error   { color: #ef4444; }
+
 .menu-section-label {
   padding: 6px 14px 2px;
   font-size: 11px;

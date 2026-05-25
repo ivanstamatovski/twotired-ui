@@ -71,6 +71,35 @@ function formatETA(ms) {
   return eta.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// Deterministic avatar: initials + colour derived from the display name so
+// the same rider always gets the same chip across sessions.
+function avatarColorForName(name) {
+  let h = 0;
+  for (let i = 0; i < (name || '').length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  const palette = ['#f97316','#0ea5e9','#10b981','#a855f7','#ef4444','#eab308','#06b6d4','#ec4899','#6366f1'];
+  return palette[h % palette.length];
+}
+
+function initialsForName(name) {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function Avatar({ name, size = 32 }) {
+  return (
+    <span className="avatar"
+      style={{
+        width: size, height: size,
+        background: avatarColorForName(name),
+        fontSize: Math.round(size * 0.42),
+      }}>
+      {initialsForName(name)}
+    </span>
+  );
+}
+
 function turnArrow(sign) {
   const map = { '-7':'↰','-3':'↰','-2':'←','-1':'↖','0':'↑','1':'↗','2':'→','3':'↱','4':'🏁','5':'⟳','6':'⟲' };
   return map[String(sign)] ?? '↑';
@@ -576,6 +605,15 @@ export default function App() {
   // Bug report
   const [bugComment, setBugComment] = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
+
+  // Friends & profile (Phase 1: friendship plumbing; Phase 2: live position sharing)
+  const [profile, setProfile] = useState(null);                  // { user_id, display_name, share_code }
+  const [friendships, setFriendships] = useState([]);            // [{ id, status, initiated_by, friend: { user_id, display_name, share_code } }]
+  const [addFriendInput, setAddFriendInput] = useState('');
+  const [addFriendStatus, setAddFriendStatus] = useState(null);  // { kind: 'success' | 'error', msg }
+  const [addingFriend, setAddingFriend] = useState(false);
+  const [editingDisplayName, setEditingDisplayName] = useState(false);
+  const [draftDisplayName, setDraftDisplayName] = useState('');
   const [bugDone, setBugDone] = useState(false);
 
   // Recent
@@ -682,6 +720,144 @@ export default function App() {
 
   // Close the recents drawer whenever we leave idle mode.
   useEffect(() => { if (sheetMode !== 'idle') setRecentsOpen(false); }, [sheetMode]);
+
+  // ── Friends data layer ────────────────────────────────────────────────────
+  const loadProfile = useCallback(async () => {
+    if (!session?.user) return;
+    const { data, error: err } = await supabase
+      .from('profiles')
+      .select('user_id, display_name, share_code')
+      .eq('user_id', session.user.id)
+      .single();
+    if (!err && data) setProfile(data);
+  }, [session?.user]);
+
+  const loadFriendships = useCallback(async () => {
+    if (!session?.user) return;
+    const uid = session.user.id;
+    const { data: rows, error: err } = await supabase
+      .from('friendships')
+      .select('id, status, initiated_by, user_id_a, user_id_b, created_at');
+    if (err || !rows) return;
+    const otherIds = rows.map(r => r.user_id_a === uid ? r.user_id_b : r.user_id_a);
+    if (otherIds.length === 0) { setFriendships([]); return; }
+    const { data: profs } = await supabase
+      .from('profiles')
+      .select('user_id, display_name, share_code')
+      .in('user_id', otherIds);
+    const profById = Object.fromEntries((profs || []).map(p => [p.user_id, p]));
+    setFriendships(rows.map(r => ({
+      id: r.id,
+      status: r.status,
+      initiated_by: r.initiated_by,
+      created_at: r.created_at,
+      friend: profById[r.user_id_a === uid ? r.user_id_b : r.user_id_a] || null,
+    })));
+  }, [session?.user]);
+
+  useEffect(() => {
+    if (!session?.user) { setProfile(null); setFriendships([]); return; }
+    loadProfile();
+    loadFriendships();
+    // Realtime: any change to friendships involving me → reload.
+    const ch = supabase
+      .channel('friendships:' + session.user.id)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'friendships' },
+        () => loadFriendships())
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [session?.user, loadProfile, loadFriendships]);
+
+  async function sendFriendRequest() {
+    const raw = addFriendInput.trim();
+    if (!raw || addingFriend || !session?.user) return;
+    setAddingFriend(true); setAddFriendStatus(null);
+    try {
+      let targetProfile = null;
+      if (raw.includes('@')) {
+        // Email lookup via edge function (auth.users isn't queryable from client)
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/find-rider`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ email: raw }),
+        });
+        const body = await r.json();
+        if (body.self) { setAddFriendStatus({ kind: 'error', msg: 'That’s you.' }); return; }
+        if (!body.found) { setAddFriendStatus({ kind: 'error', msg: 'No rider with that email.' }); return; }
+        targetProfile = body.profile;
+      } else {
+        // Share-code lookup — direct via profiles (allowed by RLS)
+        const code = raw.toUpperCase();
+        if (!/^[A-Z2-9]{6}$/.test(code)) {
+          setAddFriendStatus({ kind: 'error', msg: 'Codes are 6 letters/digits.' });
+          return;
+        }
+        if (profile && code === profile.share_code) {
+          setAddFriendStatus({ kind: 'error', msg: 'That’s your own code.' });
+          return;
+        }
+        const { data, error: err } = await supabase
+          .from('profiles')
+          .select('user_id, display_name, share_code')
+          .eq('share_code', code)
+          .maybeSingle();
+        if (err || !data) {
+          setAddFriendStatus({ kind: 'error', msg: 'No rider with that code.' });
+          return;
+        }
+        targetProfile = data;
+      }
+
+      // Canonicalise (a, b) so the unique constraint matches regardless of caller.
+      const me = session.user.id;
+      const other = targetProfile.user_id;
+      const [a, b] = me < other ? [me, other] : [other, me];
+
+      const { error: insertErr } = await supabase
+        .from('friendships')
+        .insert({ user_id_a: a, user_id_b: b, status: 'pending', initiated_by: me });
+
+      if (insertErr) {
+        const msg = /duplicate/i.test(insertErr.message || '')
+          ? 'You’re already connected (or have a pending request).'
+          : (insertErr.message || 'Could not send request.');
+        setAddFriendStatus({ kind: 'error', msg });
+        return;
+      }
+
+      setAddFriendStatus({ kind: 'success', msg: `Request sent to ${targetProfile.display_name}.` });
+      setAddFriendInput('');
+      loadFriendships();
+    } finally {
+      setAddingFriend(false);
+    }
+  }
+
+  async function acceptFriendship(id) {
+    await supabase.from('friendships').update({ status: 'accepted' }).eq('id', id);
+    loadFriendships();
+  }
+  async function deleteFriendship(id) {
+    await supabase.from('friendships').delete().eq('id', id);
+    loadFriendships();
+  }
+
+  async function saveDisplayName() {
+    const name = draftDisplayName.trim();
+    if (!name || !session?.user) return;
+    const { error: err } = await supabase
+      .from('profiles')
+      .update({ display_name: name, updated_at: new Date().toISOString() })
+      .eq('user_id', session.user.id);
+    if (!err) {
+      setProfile(p => p ? { ...p, display_name: name } : p);
+      setEditingDisplayName(false);
+    }
+  }
 
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1455,6 +1631,88 @@ export default function App() {
                   <div className="menu-divider"/>
                 </>
               )}
+              {/* ── Riding buddies ─────────────────────────────────────── */}
+              <div className="menu-section-label">Riding buddies</div>
+              {profile && (
+                <div className="profile-row">
+                  {editingDisplayName ? (
+                    <>
+                      <input className="profile-name-input"
+                        value={draftDisplayName}
+                        onChange={e=>setDraftDisplayName(e.target.value.slice(0, 40))}
+                        onKeyDown={e=>{ if (e.key === 'Enter') saveDisplayName(); }}
+                        autoFocus />
+                      <button className="profile-save-btn" onClick={saveDisplayName}>Save</button>
+                      <button className="profile-cancel-btn" onClick={()=>setEditingDisplayName(false)}>Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <Avatar name={profile.display_name} size={32} />
+                      <div className="profile-name-block">
+                        <div className="profile-name">{profile.display_name}</div>
+                        <div className="profile-code">Your code: <strong>{profile.share_code}</strong></div>
+                      </div>
+                      <button className="profile-edit-btn"
+                        onClick={()=>{ setDraftDisplayName(profile.display_name); setEditingDisplayName(true); }}
+                        aria-label="Edit display name">✎</button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {friendships.filter(f => f.status === 'pending' && f.initiated_by !== session.user.id && f.friend).map(f => (
+                <div key={f.id} className="friend-row friend-row--pending">
+                  <Avatar name={f.friend.display_name} size={32} />
+                  <div className="friend-name-block">
+                    <div className="friend-name">{f.friend.display_name}</div>
+                    <div className="friend-sub">wants to ride with you</div>
+                  </div>
+                  <button className="friend-accept-btn" onClick={()=>acceptFriendship(f.id)}>Accept</button>
+                  <button className="friend-reject-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Decline">✕</button>
+                </div>
+              ))}
+
+              {friendships.filter(f => f.status === 'accepted' && f.friend).map(f => (
+                <div key={f.id} className="friend-row">
+                  <Avatar name={f.friend.display_name} size={32} />
+                  <div className="friend-name-block">
+                    <div className="friend-name">{f.friend.display_name}</div>
+                    <div className="friend-sub">Connected</div>
+                  </div>
+                  <button className="friend-remove-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Remove friend">✕</button>
+                </div>
+              ))}
+
+              {friendships.filter(f => f.status === 'pending' && f.initiated_by === session.user.id && f.friend).map(f => (
+                <div key={f.id} className="friend-row friend-row--outgoing">
+                  <Avatar name={f.friend.display_name} size={32} />
+                  <div className="friend-name-block">
+                    <div className="friend-name">{f.friend.display_name}</div>
+                    <div className="friend-sub">Request sent</div>
+                  </div>
+                  <button className="friend-remove-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Cancel request">✕</button>
+                </div>
+              ))}
+
+              <div className="add-friend-row">
+                <input className="add-friend-input"
+                  placeholder="Email or 6-char code"
+                  value={addFriendInput}
+                  onChange={e=>{ setAddFriendInput(e.target.value); setAddFriendStatus(null); }}
+                  onKeyDown={e=>{ if (e.key === 'Enter') sendFriendRequest(); }} />
+                <button className="add-friend-btn"
+                  onClick={sendFriendRequest}
+                  disabled={addingFriend || !addFriendInput.trim()}>
+                  {addingFriend ? '…' : 'Add'}
+                </button>
+              </div>
+              {addFriendStatus && (
+                <div className={`add-friend-status add-friend-status--${addFriendStatus.kind}`}>
+                  {addFriendStatus.msg}
+                </div>
+              )}
+
+              <div className="menu-divider"/>
               <div className="menu-section-label">Routing model</div>
               <div className="variant-toggle-row">
                 <button
