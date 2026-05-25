@@ -1,0 +1,13 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["V45L5PJJF9.net.twotired.app"],
+        "components": [
+          { "/": "/",       "?": { "add": "*" }, "comment": "Add-friend invite link" },
+          { "/": "/add/*",                       "comment": "Reserved for future path-style invites" }
+        ]
+      }
+    ]
+  }
+}

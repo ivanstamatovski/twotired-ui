@@ -522,13 +522,18 @@ body {
   color: var(--accent);
 }
 
-/* Hide handle row in idle — sheet is a floating input bar only */
-.sheet--idle .sheet-handle-row { display: none; }
+/* In idle: keep the row visible (so the ⋯ menu button is reachable) but hide
+ * the drag bar — it would otherwise read as a swipe-up handle and conflict
+ * with the iOS home gesture. The handle area also loses its click-to-expand
+ * affordance since the conversation thread is empty in idle. */
+.sheet--idle .sheet-handle-row { padding: 6px 12px 0; }
+.sheet--idle .sheet-bar        { display: none; }
+.sheet--idle .sheet-handle     { pointer-events: none; min-height: 0; }
 
 /* Idle sheet height is driven by --idle-height (set from JS as the textarea
- * grows or recents drawer opens). Falls back to 160px if the var isn't set. */
+ * grows or recents drawer opens). Falls back to 200px if the var isn't set. */
 .sheet--idle {
-  transform: translateY(calc(100% - var(--idle-height, 160px)));
+  transform: translateY(calc(100% - var(--idle-height, 200px)));
 }
 
 /* ─── Idle sheet ──────────────────────────────────────────────────
@@ -1239,6 +1244,28 @@ body {
 .profile-save-btn  { background: var(--accent); color: #fff; border-color: var(--accent); }
 .profile-cancel-btn:hover { background: var(--surface-alt, #f3f4f6); }
 
+/* Primary CTA to bring a new buddy onboard via the native share sheet. */
+.invite-share-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: calc(100% - 28px);
+  margin: 4px 14px 10px;
+  padding: 11px 14px;
+  background: var(--accent, #f97316);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.08s;
+  box-shadow: 0 2px 8px rgba(249,115,22,0.25);
+}
+.invite-share-btn:hover  { background: var(--accent-hover, #ea580c); }
+.invite-share-btn:active { transform: scale(0.98); }
+
 .friend-row {
   display: flex;
   align-items: center;
@@ -1364,6 +1391,39 @@ body {
 .add-friend-status--success { color: #16a34a; }
 .add-friend-status--error   { color: #ef4444; }
 
+/* Friendship status toast — floats at the top of the screen, taps anywhere
+ * to open the menu (where the change is visible). Safe-area aware so it
+ * clears the Dynamic Island. */
+.friend-toast {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  max-width: calc(100vw - 32px);
+  padding: 12px 18px;
+  border-radius: 14px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+  cursor: pointer;
+  animation: friendToastIn 0.25s ease-out;
+}
+
+.friend-toast--success {
+  background: #10b981;
+  color: #fff;
+}
+.friend-toast--info {
+  background: var(--accent, #f97316);
+  color: #fff;
+}
+
+@keyframes friendToastIn {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
 .menu-section-label {
   padding: 6px 14px 2px;
   font-size: 11px;
@@ -1372,6 +1432,33 @@ body {
   letter-spacing: 0.08em;
   color: var(--text-muted);
 }
+
+/* Collapsible variant of .menu-section-label — tappable header with chevron. */
+.menu-section-collapsible {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+}
+.menu-section-collapsible:hover { color: var(--text); }
+
+.menu-section-count { font-weight: 500; opacity: 0.7; text-transform: none; }
+
+.menu-section-chevron {
+  transition: transform 0.2s ease;
+  color: inherit;
+}
+.menu-section-chevron--open { transform: rotate(180deg); }
 
 .menu-item {
   display: flex;

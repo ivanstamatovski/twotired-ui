@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
@@ -650,6 +651,9 @@ export default function App() {
   const [buddyPositions, setBuddyPositions] = useState({});      // { [friendshipId]: { user_id, lat, lng, name, ts } }
   const channelsRef       = useRef({});                          // { [friendshipId]: RealtimeChannel }
   const buddyMarkersRef   = useRef({});                          // { [friendshipId]: maplibregl.Marker }
+  // Toast for friendship state changes (e.g. someone accepted my request)
+  const [friendToast, setFriendToast] = useState(null);          // { msg, kind }
+  const prevFriendshipsRef = useRef([]);                         // snapshot for diffing
   const [bugDone, setBugDone] = useState(false);
 
   // Recent
@@ -720,8 +724,8 @@ export default function App() {
       return Math.min(900, vh - 40);
     }
     const errH = voice.error ? 40 : 0;
-    // Base: 14px top + 56px buttons + 10px gap + textarea + 22px safe-area pad ≈ 102 + textH
-    return Math.max(160, Math.min(102 + textH + errH, 420));
+    // Base: 38px handle/⋯ row + 14px top + 56px buttons + 10px gap + textarea + 22px safe-area pad ≈ 140 + textH
+    return Math.max(200, Math.min(140 + textH + errH, 460));
   }, [voice.error, recentsOpen]);
 
   // Auto-resize the idle textarea; grow the sheet so the whole prompt stays
@@ -796,6 +800,8 @@ export default function App() {
     loadProfile();
     loadFriendships();
     // Realtime: any change to friendships involving me → reload.
+    // Requires `alter publication supabase_realtime add table public.friendships`
+    // in the database, otherwise no event reaches the client.
     const ch = supabase
       .channel('friendships:' + session.user.id)
       .on('postgres_changes',
@@ -804,6 +810,34 @@ export default function App() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [session?.user, loadProfile, loadFriendships]);
+
+  // Watch friendships for transitions worth surfacing as toasts.
+  useEffect(() => {
+    if (!session?.user) { prevFriendshipsRef.current = []; return; }
+    const prev = prevFriendshipsRef.current;
+    const prevById = Object.fromEntries(prev.map(f => [f.id, f]));
+    for (const f of friendships) {
+      const before = prevById[f.id];
+      const name = f.friend?.display_name || 'A rider';
+      // My outgoing request just got accepted by the other side.
+      if (before && before.status === 'pending' && f.status === 'accepted' &&
+          before.initiated_by === session.user.id) {
+        setFriendToast({ kind: 'success', msg: `${name} accepted your friend request!` });
+      }
+      // A new incoming request just arrived.
+      else if (!before && f.status === 'pending' && f.initiated_by !== session.user.id) {
+        setFriendToast({ kind: 'info', msg: `${name} wants to ride with you` });
+      }
+    }
+    prevFriendshipsRef.current = friendships;
+  }, [friendships, session?.user]);
+
+  // Auto-dismiss toast after a few seconds.
+  useEffect(() => {
+    if (!friendToast) return;
+    const t = setTimeout(() => setFriendToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [friendToast]);
 
   async function sendFriendRequest() {
     const raw = addFriendInput.trim();
@@ -882,6 +916,21 @@ export default function App() {
     loadFriendships();
   }
 
+  async function shareInvite() {
+    if (!profile) return;
+    const url = `https://twotired.net/?add=${profile.share_code}`;
+    const text = `Ride with me on TwoTired — use my code ${profile.share_code} or tap: ${url}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: 'Join me on TwoTired', text, url }); }
+      catch { /* user cancelled */ }
+    } else if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      setAddFriendStatus({ kind: 'success', msg: 'Invite copied to clipboard' });
+    } else {
+      setAddFriendStatus({ kind: 'error', msg: 'Sharing not supported on this device' });
+    }
+  }
+
   async function saveDisplayName() {
     const name = draftDisplayName.trim();
     if (!name || !session?.user) return;
@@ -894,6 +943,40 @@ export default function App() {
       setEditingDisplayName(false);
     }
   }
+
+  // Deep-link friend-add: when the app boots OR is foregrounded via an invite
+  // URL (?add=CODE), prefill the Add input and open the menu so the user
+  // confirms with one tap.
+  //   • Cold start (Universal Link OR web URL): code is in window.location
+  //   • Warm app (Universal Link tapped while app is in background): Capacitor's
+  //     appUrlOpen event fires with the original URL
+  const handleAddDeepLink = useCallback((rawUrl) => {
+    if (!profile || !session?.user) return;
+    let code = '';
+    try {
+      const u = new URL(rawUrl, window.location.origin);
+      code = (u.searchParams.get('add') || '').toUpperCase();
+    } catch { /* ignore malformed */ }
+    if (!code) return;
+    if (code === profile.share_code) return; // own invite — ignore silently
+    setAddFriendInput(code);
+    setMenuOpen(true);
+    if (isMobile) setSheetMode('expanded');
+  }, [profile, session?.user, isMobile]);
+
+  useEffect(() => {
+    if (!profile || !session?.user) return;
+    // Cold-start: consume the URL once and strip it.
+    handleAddDeepLink(window.location.href);
+    if (new URLSearchParams(window.location.search).get('add')) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    // Warm-foreground: listen for Universal Link taps via Capacitor's App plugin.
+    const sub = CapacitorApp.addListener('appUrlOpen', ({ url }) => {
+      handleAddDeepLink(url);
+    });
+    return () => { sub?.then?.(s => s.remove()); };
+  }, [profile, session?.user, handleAddDeepLink]);
 
   // ── Live position sharing (Phase 2) ───────────────────────────────────────
   // For each accepted friendship we open a Supabase Realtime Presence channel.
@@ -1504,6 +1587,14 @@ export default function App() {
   return (
     <div className="app-shell">
 
+      {/* Friendship status toast — floats over everything, auto-dismissed */}
+      {friendToast && (
+        <div className={`friend-toast friend-toast--${friendToast.kind}`}
+             onClick={() => { setFriendToast(null); setMenuOpen(true); if (isMobile) setSheetMode('expanded'); }}>
+          {friendToast.msg}
+        </div>
+      )}
+
       {/* Map panel — always-visible locate button lives here */}
       <div className="map-panel">
         <div ref={mapContainerRef} className="map-canvas"/>
@@ -1769,45 +1860,45 @@ export default function App() {
                 <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
               </div>
               <div className="menu-divider"/>
-              {recent.length > 0 && (
-                <>
-                  <div className="menu-section-label">Recent rides</div>
-                  {recent.map(r=>(
-                    <button key={r.id} className="menu-item"
-                      onClick={()=>{ setMenuOpen(false); restoreRecentRoute(r); }}>
-                      {r.title}<span className="menu-item-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
-                    </button>
-                  ))}
-                  <div className="menu-divider"/>
-                </>
-              )}
+              {/* Recent rides removed from menu — accessible via the
+                  Recents button next to the mic in the idle sheet. */}
               {/* ── Riding buddies ─────────────────────────────────────── */}
               <div className="menu-section-label">Riding buddies</div>
               {profile && (
-                <div className="profile-row">
-                  {editingDisplayName ? (
-                    <>
-                      <input className="profile-name-input"
-                        value={draftDisplayName}
-                        onChange={e=>setDraftDisplayName(e.target.value.slice(0, 40))}
-                        onKeyDown={e=>{ if (e.key === 'Enter') saveDisplayName(); }}
-                        autoFocus />
-                      <button className="profile-save-btn" onClick={saveDisplayName}>Save</button>
-                      <button className="profile-cancel-btn" onClick={()=>setEditingDisplayName(false)}>Cancel</button>
-                    </>
-                  ) : (
-                    <>
-                      <Avatar name={profile.display_name} size={32} />
-                      <div className="profile-name-block">
-                        <div className="profile-name">{profile.display_name}</div>
-                        <div className="profile-code">Your code: <strong>{profile.share_code}</strong></div>
-                      </div>
-                      <button className="profile-edit-btn"
-                        onClick={()=>{ setDraftDisplayName(profile.display_name); setEditingDisplayName(true); }}
-                        aria-label="Edit display name">✎</button>
-                    </>
-                  )}
-                </div>
+                <>
+                  <div className="profile-row">
+                    {editingDisplayName ? (
+                      <>
+                        <input className="profile-name-input"
+                          value={draftDisplayName}
+                          onChange={e=>setDraftDisplayName(e.target.value.slice(0, 40))}
+                          onKeyDown={e=>{ if (e.key === 'Enter') saveDisplayName(); }}
+                          autoFocus />
+                        <button className="profile-save-btn" onClick={saveDisplayName}>Save</button>
+                        <button className="profile-cancel-btn" onClick={()=>setEditingDisplayName(false)}>Cancel</button>
+                      </>
+                    ) : (
+                      <>
+                        <Avatar name={profile.display_name} size={32} />
+                        <div className="profile-name-block">
+                          <div className="profile-name">{profile.display_name}</div>
+                          <div className="profile-code">Your code: <strong>{profile.share_code}</strong></div>
+                        </div>
+                        <button className="profile-edit-btn"
+                          onClick={()=>{ setDraftDisplayName(profile.display_name); setEditingDisplayName(true); }}
+                          aria-label="Edit display name">✎</button>
+                      </>
+                    )}
+                  </div>
+                  <button className="invite-share-btn" onClick={shareInvite}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+                      <polyline points="16 6 12 2 8 6"/>
+                      <line x1="12" y1="2" x2="12" y2="15"/>
+                    </svg>
+                    <span>Invite a friend to ride</span>
+                  </button>
+                </>
               )}
 
               {friendships.filter(f => f.status === 'pending' && f.initiated_by !== session.user.id && f.friend).map(f => (
@@ -1887,16 +1978,8 @@ export default function App() {
                   className={`variant-btn${routeVariant==='scoring'?' variant-btn--active':''}`}
                   onClick={()=>setRouteVariant('scoring')}>Scoring</button>
               </div>
-              <div className="menu-divider"/>
-              <div className="menu-section-label">Report an issue</div>
-              <textarea className="bug-textarea" placeholder="What went wrong?"
-                value={bugComment} onChange={e=>setBugComment(e.target.value)}/>
-              {bugDone
-                ? <p className="bug-done">Thanks! Reported.</p>
-                : <button className="menu-submit" onClick={submitBug} disabled={bugSubmitting||!bugComment.trim()}>
-                    {bugSubmitting?'Sending…':'Submit report'}
-                  </button>
-              }
+              {/* Bug report removed from menu — to be wired up to its
+                  dedicated Report button (see collapsed sheet). */}
             </div>
           )}
 
