@@ -178,40 +178,27 @@ body {
 .maplibregl-ctrl-zoom-out,
 .maplibregl-ctrl-group { display: none !important; }
 
-/* ─── Always-visible locate button ─────────────────────────────── */
-.map-locate-btn {
-  position: absolute;
-  bottom: 228px; /* above idle sheet (220px visible) + small gap */
-  right: 12px;
-  z-index: 50;
-  width: 42px;
-  height: 42px;
+/* Locate button — lives in the sheet handle row, mirrors the hamburger
+ * button on the opposite side. Size matched so the row reads symmetrically. */
+.sheet-locate-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  background: #fff;
-  border: 1px solid rgba(0,0,0,0.12);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-  color: #1f2937;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+  touch-action: manipulation;
 }
-
-.map-locate-btn:hover {
-  background: #f9fafb;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.22);
-  transform: scale(1.05);
-}
-
-.map-locate-btn:active { transform: scale(0.93); }
-
-.map-locate-btn--dim { opacity: 0.4; cursor: default; }
-.map-locate-btn--dim:hover { transform: none; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
-
-@media (min-width: 769px) {
-  .map-locate-btn { bottom: 48px; right: 12px; }
-}
+.sheet-locate-btn:hover  { background: #e5e7eb; color: var(--accent); }
+.sheet-locate-btn:active { transform: scale(0.93); }
+.sheet-locate-btn--dim   { opacity: 0.45; cursor: default; }
+.sheet-locate-btn--dim:hover { background: var(--surface2); color: var(--text-dim); transform: none; }
 
 /* ─── POI stop markers (coffee, lunch, gas, etc.) ───────────────── */
 .map-stop-marker {
@@ -471,6 +458,19 @@ body {
   border-radius: 0;
 }
 
+/* When the ⋯ menu is open, size the sheet to the menu's actual content (JS
+ * sets --menu-height from a ResizeObserver) instead of taking the whole screen.
+ * Higher specificity than .sheet--expanded so this wins naturally. */
+.sheet.sheet--menu-open {
+  transform: translateY(calc(100% - var(--menu-height, 460px)));
+  border-radius: 20px 20px 0 0;
+}
+
+/* The redundant drag bar at the top is hidden in this mode — the ⋯ button
+ * alone controls open/close. */
+.sheet--menu-open .sheet-bar    { display: none; }
+.sheet--menu-open .sheet-handle { pointer-events: none; }
+
 /* Sheet handle row — drag bar + always-visible menu button */
 .sheet-handle-row {
   flex-shrink: 0;
@@ -490,12 +490,8 @@ body {
   min-height: 28px;
 }
 
-.sheet-bar {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
-  background: #d1d5db;
-}
+.sheet-bar { display: none; } /* drag bar removed per design */
+.sheet-handle-spacer { flex: 1; }
 
 /* Always-visible menu button in sheet header */
 .sheet-menu-btn {
@@ -1119,16 +1115,18 @@ body {
   overflow-y: auto;
 }
 
-/* Sheet-mode menu: in-flow below the handle, takes remaining flex space */
+/* Sheet-mode menu: in-flow below the handle. Sized to its own content so
+ * the sheet can shrink to fit (see --menu-height in App.jsx). Caps at the
+ * viewport so very long lists scroll internally. */
 .overflow-menu-sheet {
-  flex: 1;
+  flex: 0 0 auto;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   border-radius: 0;
   border: none;
   border-top: 1px solid var(--border);
   box-shadow: none;
-  max-height: none;
+  max-height: calc(85vh - 60px);
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 

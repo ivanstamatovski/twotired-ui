@@ -101,6 +101,25 @@ function Avatar({ name, size = 32 }) {
   );
 }
 
+// ── Dev convenience: simulator GPS override ──────────────────────────────
+// iOS Simulator has no real GPS; it falls back to a hard-coded Apple/SF
+// location. For specific developer accounts, when the first GPS fix looks
+// like one of those defaults, we re-anchor to a real-world spot near where
+// Ivan actually tests. Never triggers on real-device coordinates because
+// the bounding boxes are 0.1° wide around known simulator defaults.
+const SIM_OVERRIDE_ACCOUNTS = {
+  'ivan@easyaerial.com': { lat: 40.762340, lng: -73.918442, label: 'Balancero Cafe, Astoria' },
+};
+const SIM_DEFAULT_LOCATIONS = [
+  { lat: 37.3349, lng: -122.0090 }, // Apple HQ (Cupertino) — default static sim location
+  { lat: 37.7838, lng: -122.4090 }, // City Bicycle Ride (San Francisco)
+  { lat: 37.7749, lng: -122.4194 }, // Generic SF
+  { lat: 37.3318, lng: -122.0312 }, // Other Apple-area
+];
+function isSimulatorDefaultCoord(lat, lng) {
+  return SIM_DEFAULT_LOCATIONS.some(d => Math.abs(d.lat - lat) < 0.1 && Math.abs(d.lng - lng) < 0.1);
+}
+
 // Map marker for a riding buddy — coloured initials chip with a white ring.
 function makeBuddyMarkerEl(name) {
   const el = document.createElement('div');
@@ -615,6 +634,8 @@ export default function App() {
   const [sheetMode, setSheetMode] = useState('idle');
   const [refineOpen, setRefineOpen] = useState(false);
   const [idleSheetHeight, setIdleSheetHeight] = useState(220); // grows with multi-line input and the recents drawer
+  const [menuSheetHeight, setMenuSheetHeight] = useState(460); // grows with the menu content while open
+  const menuContentRef = useRef(null);
   const [recentsOpen, setRecentsOpen] = useState(false);
   const idleInputRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -632,7 +653,7 @@ export default function App() {
   const navBearingRef = useRef(0);      // smoothed bearing currently applied to the map
 
   // Routing variant A/B toggle (dev tool)
-  const [routeVariant, setRouteVariant] = useState('classic');
+  const [routeVariant, setRouteVariant] = useState('scoring');
 
   // Bug report
   const [bugComment, setBugComment] = useState('');
@@ -674,12 +695,14 @@ export default function App() {
   const lastAnnouncedRef = useRef(null);
   const routeDataRef = useRef(null);
   const navModeRef = useRef(false); // mirror of navMode for geolocation callback
+  const sessionEmailRef = useRef(null); // mirror of current account email for dev sim override
 
   const isMobile = useIsMobile();
 
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
   useEffect(() => { navModeRef.current = navMode; }, [navMode]);
   useEffect(() => { voiceMutedRef.current = voiceMuted; }, [voiceMuted]);
+  useEffect(() => { sessionEmailRef.current = session?.user?.email || null; }, [session?.user?.email]);
 
   // Prime the SpeechSynthesis voice list — many browsers load voices async and
   // return [] from the first getVoices() call. We listen so the picker can
@@ -760,6 +783,26 @@ export default function App() {
 
   // Close the recents drawer whenever we leave idle mode.
   useEffect(() => { if (sheetMode !== 'idle') setRecentsOpen(false); }, [sheetMode]);
+
+  // Measure menu content height so the sheet sizes itself to the menu instead
+  // of expanding to fill the whole screen (which leaves a sea of empty white
+  // below the actual buttons).
+  useEffect(() => {
+    if (!menuOpen) return;
+    const el = menuContentRef.current;
+    if (!el) return;
+    const HANDLE_ROW = 52;       // sheet-handle-row height (⋯ button + padding)
+    const MAX_VH = 0.85;
+    const measure = () => {
+      const cap = Math.floor((window.innerHeight || 800) * MAX_VH);
+      setMenuSheetHeight(Math.min(HANDLE_ROW + el.scrollHeight + 16, cap));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [menuOpen]);
 
   // ── Friends data layer ────────────────────────────────────────────────────
   const loadProfile = useCallback(async () => {
@@ -1131,11 +1174,17 @@ export default function App() {
       // Removed — users prefer the app to start blank. Previous rides are
       // reachable via the recents drawer in the idle sheet.
 
-      // Center on user location once on startup
+      // Center on user location once on startup. Same dev sim override as
+      // onGeoPosition so the map doesn't fly to SF on the simulator for
+      // whitelisted accounts.
       getCurrentGPS({ timeout: 5000, maximumAge: 60000 }).then(gps => {
-        if (gps && mapRef.current) {
-          mapRef.current.flyTo({ center: [gps.lng, gps.lat], zoom: 12, duration: 1200 });
+        if (!gps || !mapRef.current) return;
+        let { lat, lng } = gps;
+        const override = SIM_OVERRIDE_ACCOUNTS[sessionEmailRef.current];
+        if (override && isSimulatorDefaultCoord(lat, lng)) {
+          lat = override.lat; lng = override.lng;
         }
+        mapRef.current.flyTo({ center: [lng, lat], zoom: 12, duration: 1200 });
       });
 
       // Start always-on position watch for live marker
@@ -1164,7 +1213,16 @@ export default function App() {
 
   // ── Position callback — always-on, refs avoid stale closures ─────────────
   function onGeoPosition(pos) {
-    const { latitude: lat, longitude: lng } = pos.coords;
+    let { latitude: lat, longitude: lng } = pos.coords;
+
+    // Dev sim override: re-anchor known simulator default coordinates to a
+    // real-world spot for whitelisted accounts. Bounded so real-device GPS
+    // is never affected.
+    const override = SIM_OVERRIDE_ACCOUNTS[sessionEmailRef.current];
+    if (override && isSimulatorDefaultCoord(lat, lng)) {
+      lat = override.lat; lng = override.lng;
+    }
+
     setUserLocation({ lat, lng });
 
     const map = mapRef.current;
@@ -1595,20 +1653,9 @@ export default function App() {
         </div>
       )}
 
-      {/* Map panel — always-visible locate button lives here */}
+      {/* Map panel — locate button moved into the sheet handle row */}
       <div className="map-panel">
         <div ref={mapContainerRef} className="map-canvas"/>
-        {/* Always-visible centre-on-me button */}
-        <button
-          className={`map-locate-btn${userLocation ? '' : ' map-locate-btn--dim'}`}
-          onClick={centerOnUser}
-          aria-label="Centre on my location"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
-          </svg>
-        </button>
       </div>
 
       {/* ── Navigation overlay ── */}
@@ -1672,25 +1719,45 @@ export default function App() {
 
       {/* ════════════════ MOBILE bottom sheet ════════════════ */}
       {isMobile && !navMode ? (
-        <div className={`sheet sheet--${sheetMode}`}
-             style={sheetMode==='idle' ? { '--idle-height': idleSheetHeight + 'px' } : undefined}>
+        <div className={`sheet sheet--${sheetMode}${menuOpen ? ' sheet--menu-open' : ''}`}
+             style={{
+               ...(sheetMode === 'idle' ? { '--idle-height': idleSheetHeight + 'px' } : {}),
+               ...(menuOpen           ? { '--menu-height': menuSheetHeight + 'px' } : {}),
+             }}>
 
           {/* Handle row: drag bar (centre) + always-visible menu button (right) */}
           <div className="sheet-handle-row">
-            <div className="sheet-handle" onClick={() =>
-              setSheetMode(m => m==='expanded' ? (routeData?'collapsed':'idle') : 'expanded')
-            }>
-              <div className="sheet-bar"/>
-            </div>
+            <button
+              className={`sheet-locate-btn${userLocation ? '' : ' sheet-locate-btn--dim'}`}
+              onClick={centerOnUser}
+              aria-label="Centre on my location"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+              </svg>
+            </button>
+            {/* Centre spacer — pushes locate + hamburger to opposite edges. */}
+            <div className="sheet-handle-spacer"/>
             <button
               className={`sheet-menu-btn${menuOpen ? ' active' : ''}`}
               onClick={() => {
-                // Always expand to show full menu
-                if (!menuOpen) setSheetMode('expanded');
-                setMenuOpen(x => !x);
+                if (menuOpen) {
+                  setSheetMode(routeData ? 'collapsed' : 'idle');
+                  setMenuOpen(false);
+                } else {
+                  setSheetMode('expanded');
+                  setMenuOpen(true);
+                }
               }}
               aria-label="Menu"
-            >⋯</button>
+            >
+              <svg width="18" height="14" viewBox="0 0 24 18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="3"  x2="21" y2="3"/>
+                <line x1="3" y1="9"  x2="21" y2="9"/>
+                <line x1="3" y1="15" x2="21" y2="15"/>
+              </svg>
+            </button>
           </div>
 
           {!menuOpen && sheetMode === 'idle' && (
@@ -1700,7 +1767,6 @@ export default function App() {
                 {loading ? (
                   <div className="hero-btn hero-btn--mic" style={{cursor:'default', pointerEvents:'none'}}>
                     <span className="dot-spin" style={{width:22,height:22,borderWidth:2.5}}/>
-                    <span>Working…</span>
                   </div>
                 ) : (
                   <button
@@ -1713,21 +1779,15 @@ export default function App() {
                   >
                     {voice.listening && <span className="mic-pulse"/>}
                     {query.trim() ? (
-                      <>
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
-                        </svg>
-                        <span>Send</span>
-                      </>
+                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+                      </svg>
                     ) : (
-                      <>
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
-                          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                          <line x1="12" y1="19" x2="12" y2="23"/>
-                        </svg>
-                        <span>{voice.listening ? 'Listening…' : 'Record'}</span>
-                      </>
+                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        <line x1="12" y1="19" x2="12" y2="23"/>
+                      </svg>
                     )}
                   </button>
                 )}
@@ -1738,20 +1798,14 @@ export default function App() {
                   aria-label={recentsOpen ? 'Hide recent rides' : 'Show recent rides'}
                 >
                   {recentsOpen ? (
-                    <>
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
-                      </svg>
-                      <span>Close</span>
-                    </>
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
+                    </svg>
                   ) : (
-                    <>
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="12" r="9"/>
-                        <polyline points="12 7 12 12 15.5 14"/>
-                      </svg>
-                      <span>Recents</span>
-                    </>
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="9"/>
+                      <polyline points="12 7 12 12 15.5 14"/>
+                    </svg>
                   )}
                 </button>
               </div>
@@ -1854,14 +1908,10 @@ export default function App() {
 
           {/* ── Overflow menu — shown in all sheet modes via handle ⋯ button ── */}
           {menuOpen && (
-            <div className="overflow-menu overflow-menu-sheet">
-              <div className="menu-user-row">
-                <span className="menu-user-email">{session.user.email}</span>
-                <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
-              </div>
-              <div className="menu-divider"/>
+            <div className="overflow-menu overflow-menu-sheet" ref={menuContentRef}>
               {/* Recent rides removed from menu — accessible via the
-                  Recents button next to the mic in the idle sheet. */}
+                  Recents button next to the mic in the idle sheet.
+                  User email + Sign out moved to the bottom. */}
               {/* ── Riding buddies ─────────────────────────────────────── */}
               <div className="menu-section-label">Riding buddies</div>
               {profile && (
@@ -1980,6 +2030,12 @@ export default function App() {
               </div>
               {/* Bug report removed from menu — to be wired up to its
                   dedicated Report button (see collapsed sheet). */}
+
+              <div className="menu-divider"/>
+              <div className="menu-user-row">
+                <span className="menu-user-email">{session.user.email}</span>
+                <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
+              </div>
             </div>
           )}
 
