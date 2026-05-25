@@ -1817,6 +1817,12 @@ export default function App() {
                     : voice.listening ? 'Listening…'
                     : 'Where do you want to ride?'}
                   value={query} onChange={e=>setQuery(e.target.value)}
+                  onFocus={() => {
+                    // If recents drawer is open when the user starts typing,
+                    // close it. Otherwise the keyboard pushes the near-full-screen
+                    // sheet up far enough that the input scrolls off the top.
+                    if (recentsOpen) setRecentsOpen(false);
+                  }}
                   onKeyDown={e=>{
                     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitQuery(); }
                   }}
