@@ -1248,6 +1248,7 @@ body {
 
 .friend-row--pending  { background: rgba(249,115,22,0.06); }
 .friend-row--outgoing { opacity: 0.7; }
+.friend-row--live     { background: rgba(16,185,129,0.08); }
 
 .friend-name-block {
   flex: 1;
@@ -1279,6 +1280,38 @@ body {
   cursor: pointer;
 }
 .friend-accept-btn:hover { background: var(--accent-hover); }
+
+/* Share-location toggle on each accepted-friend row. */
+.friend-share-btn {
+  background: var(--surface-alt, #f3f4f6);
+  color: var(--text, #1f2937);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.friend-share-btn:hover { border-color: var(--accent); color: var(--accent); }
+.friend-share-btn--active {
+  background: rgba(16,185,129,0.15);
+  border-color: #10b981;
+  color: #047857;
+}
+.friend-share-btn--active::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  margin-right: 6px;
+  animation: pulseDot 1.4s ease-in-out infinite;
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.7); }
+}
 
 .friend-reject-btn,
 .friend-remove-btn {

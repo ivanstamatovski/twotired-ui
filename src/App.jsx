@@ -100,6 +100,37 @@ function Avatar({ name, size = 32 }) {
   );
 }
 
+// Map marker for a riding buddy — coloured initials chip with a white ring.
+function makeBuddyMarkerEl(name) {
+  const el = document.createElement('div');
+  el.className = 'buddy-marker';
+  Object.assign(el.style, {
+    width: '42px', height: '42px',
+    background: avatarColorForName(name),
+    border: '3px solid #fff',
+    borderRadius: '50%',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    color: '#fff', fontWeight: '700', fontSize: '14px',
+    boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+    userSelect: 'none',
+  });
+  el.textContent = initialsForName(name);
+  return el;
+}
+
+// "1.2 mi NE" or "230 m SW" — compact compass + distance for the buddy badge.
+function formatBuddyDistance(buddyPos, userPos) {
+  if (!userPos) return 'sharing';
+  const distM = haversineM(userPos.lat, userPos.lng, buddyPos.lat, buddyPos.lng);
+  const mi = distM / 1609.34;
+  const distStr = mi < 0.1
+    ? `${Math.round(distM)} m`
+    : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`;
+  const b = bearingBetween(userPos.lat, userPos.lng, buddyPos.lat, buddyPos.lng);
+  const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+  return `${distStr} ${dirs[Math.round(b / 45) % 8]}`;
+}
+
 function turnArrow(sign) {
   const map = { '-7':'↰','-3':'↰','-2':'←','-1':'↖','0':'↑','1':'↗','2':'→','3':'↱','4':'🏁','5':'⟳','6':'⟲' };
   return map[String(sign)] ?? '↑';
@@ -606,7 +637,7 @@ export default function App() {
   const [bugComment, setBugComment] = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
 
-  // Friends & profile (Phase 1: friendship plumbing; Phase 2: live position sharing)
+  // Friends & profile (Phase 1 plumbing; Phase 2 live sharing)
   const [profile, setProfile] = useState(null);                  // { user_id, display_name, share_code }
   const [friendships, setFriendships] = useState([]);            // [{ id, status, initiated_by, friend: { user_id, display_name, share_code } }]
   const [addFriendInput, setAddFriendInput] = useState('');
@@ -614,6 +645,11 @@ export default function App() {
   const [addingFriend, setAddingFriend] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [draftDisplayName, setDraftDisplayName] = useState('');
+  // Live position sharing
+  const [sharingFriendIds, setSharingFriendIds] = useState(new Set());
+  const [buddyPositions, setBuddyPositions] = useState({});      // { [friendshipId]: { user_id, lat, lng, name, ts } }
+  const channelsRef       = useRef({});                          // { [friendshipId]: RealtimeChannel }
+  const buddyMarkersRef   = useRef({});                          // { [friendshipId]: maplibregl.Marker }
   const [bugDone, setBugDone] = useState(false);
 
   // Recent
@@ -858,6 +894,120 @@ export default function App() {
       setEditingDisplayName(false);
     }
   }
+
+  // ── Live position sharing (Phase 2) ───────────────────────────────────────
+  // For each accepted friendship we open a Supabase Realtime Presence channel.
+  // We're always subscribed (so we can see buddies the moment they share),
+  // but we only call track() with our own position when the user has explicitly
+  // toggled "Share" on for that friend — asymmetric is intentional for privacy.
+  useEffect(() => {
+    if (!session?.user) return;
+    const me = session.user.id;
+    const accepted = friendships.filter(f => f.status === 'accepted' && f.friend);
+
+    // Add channels for newly-accepted friendships.
+    for (const f of accepted) {
+      if (channelsRef.current[f.id]) continue;
+      const ch = supabase.channel(`presence:friendship:${f.id}`, {
+        config: { presence: { key: me } },
+      });
+      const handleSync = () => {
+        const state = ch.presenceState();
+        let other = null;
+        for (const [key, entries] of Object.entries(state)) {
+          if (key === me) continue;
+          const entry = entries?.[0];
+          if (entry?.lat != null && entry?.lng != null) {
+            other = { user_id: key, lat: entry.lat, lng: entry.lng, name: f.friend.display_name, ts: entry.ts || Date.now() };
+            break;
+          }
+        }
+        setBuddyPositions(prev => {
+          const next = { ...prev };
+          if (other) next[f.id] = other; else delete next[f.id];
+          return next;
+        });
+      };
+      ch.on('presence', { event: 'sync' },  handleSync);
+      ch.on('presence', { event: 'join' },  handleSync);
+      ch.on('presence', { event: 'leave' }, handleSync);
+      ch.subscribe();
+      channelsRef.current[f.id] = ch;
+    }
+
+    // Tear down channels for friendships that disappeared (removed or rejected).
+    const acceptedIds = new Set(accepted.map(f => f.id));
+    for (const id of Object.keys(channelsRef.current)) {
+      if (!acceptedIds.has(id)) {
+        supabase.removeChannel(channelsRef.current[id]);
+        delete channelsRef.current[id];
+        setBuddyPositions(prev => { const n = { ...prev }; delete n[id]; return n; });
+        setSharingFriendIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+      }
+    }
+  }, [friendships, session?.user]);
+
+  // Cleanup on sign-out / unmount: leave every channel.
+  useEffect(() => () => {
+    for (const ch of Object.values(channelsRef.current)) supabase.removeChannel(ch);
+    channelsRef.current = {};
+  }, []);
+
+  // Whenever our position updates AND we're sharing with someone, push it to
+  // their channel via presence track(). Throttled by the GPS watcher itself
+  // (maximumAge 2000 ms is plenty for a buddy tracker).
+  useEffect(() => {
+    if (!userLocation || sharingFriendIds.size === 0) return;
+    const payload = { lat: userLocation.lat, lng: userLocation.lng, ts: Date.now() };
+    for (const id of sharingFriendIds) {
+      const ch = channelsRef.current[id];
+      if (ch) ch.track(payload).catch(() => {});
+    }
+  }, [userLocation, sharingFriendIds]);
+
+  const toggleShareWith = useCallback((friendshipId) => {
+    setSharingFriendIds(prev => {
+      const next = new Set(prev);
+      if (next.has(friendshipId)) {
+        next.delete(friendshipId);
+        const ch = channelsRef.current[friendshipId];
+        if (ch) ch.untrack().catch(() => {});
+      } else {
+        next.add(friendshipId);
+        if (userLocation) {
+          const ch = channelsRef.current[friendshipId];
+          if (ch) ch.track({ lat: userLocation.lat, lng: userLocation.lng, ts: Date.now() }).catch(() => {});
+        }
+      }
+      return next;
+    });
+  }, [userLocation]);
+
+  // Render buddy markers on the map. Reusable: setLngLat for existing markers,
+  // create for new buddies, remove for buddies who stopped sharing.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    const currentIds = new Set(Object.keys(buddyPositions));
+    for (const [id, pos] of Object.entries(buddyPositions)) {
+      let marker = buddyMarkersRef.current[id];
+      if (marker) {
+        marker.setLngLat([pos.lng, pos.lat]);
+      } else {
+        const el = makeBuddyMarkerEl(pos.name);
+        marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+          .setLngLat([pos.lng, pos.lat])
+          .addTo(map);
+        buddyMarkersRef.current[id] = marker;
+      }
+    }
+    for (const id of Object.keys(buddyMarkersRef.current)) {
+      if (!currentIds.has(id)) {
+        buddyMarkersRef.current[id].remove();
+        delete buddyMarkersRef.current[id];
+      }
+    }
+  }, [buddyPositions]);
 
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1672,16 +1822,31 @@ export default function App() {
                 </div>
               ))}
 
-              {friendships.filter(f => f.status === 'accepted' && f.friend).map(f => (
-                <div key={f.id} className="friend-row">
-                  <Avatar name={f.friend.display_name} size={32} />
-                  <div className="friend-name-block">
-                    <div className="friend-name">{f.friend.display_name}</div>
-                    <div className="friend-sub">Connected</div>
+              {friendships.filter(f => f.status === 'accepted' && f.friend).map(f => {
+                const sharing = sharingFriendIds.has(f.id);
+                const buddy = buddyPositions[f.id];
+                let sub = 'Connected';
+                if (buddy) sub = `📍 ${formatBuddyDistance(buddy, userLocation)}`;
+                else if (sharing) sub = 'You’re sharing — waiting on them';
+                return (
+                  <div key={f.id} className={`friend-row${buddy ? ' friend-row--live' : ''}`}>
+                    <Avatar name={f.friend.display_name} size={32} />
+                    <div className="friend-name-block">
+                      <div className="friend-name">{f.friend.display_name}</div>
+                      <div className="friend-sub">{sub}</div>
+                    </div>
+                    <button
+                      className={`friend-share-btn${sharing ? ' friend-share-btn--active' : ''}`}
+                      onClick={() => toggleShareWith(f.id)}
+                      aria-pressed={sharing}
+                      title={sharing ? 'Stop sharing your location' : 'Share your location with this friend'}
+                    >
+                      {sharing ? 'Sharing' : 'Share'}
+                    </button>
+                    <button className="friend-remove-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Remove friend">✕</button>
                   </div>
-                  <button className="friend-remove-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Remove friend">✕</button>
-                </div>
-              ))}
+                );
+              })}
 
               {friendships.filter(f => f.status === 'pending' && f.initiated_by === session.user.id && f.friend).map(f => (
                 <div key={f.id} className="friend-row friend-row--outgoing">
