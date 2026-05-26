@@ -685,6 +685,7 @@ export default function App() {
   // Friends & profile (Phase 1 plumbing; Phase 2 live sharing)
   const [profile, setProfile] = useState(null);                  // { user_id, display_name, share_code }
   const [friendships, setFriendships] = useState([]);            // [{ id, status, initiated_by, friend: { user_id, display_name, share_code } }]
+  const [friendshipsLoaded, setFriendshipsLoaded] = useState(false); // true after the first successful load (vs default empty)
   const [addFriendInput, setAddFriendInput] = useState('');
   const [addFriendStatus, setAddFriendStatus] = useState(null);  // { kind: 'success' | 'error', msg }
   const [addingFriend, setAddingFriend] = useState(false);
@@ -850,7 +851,11 @@ export default function App() {
       .select('id, status, initiated_by, user_id_a, user_id_b, created_at');
     if (err || !rows) return;
     const otherIds = rows.map(r => r.user_id_a === uid ? r.user_id_b : r.user_id_a);
-    if (otherIds.length === 0) { setFriendships([]); return; }
+    if (otherIds.length === 0) {
+      setFriendships([]);
+      setFriendshipsLoaded(true);
+      return;
+    }
     const { data: profs } = await supabase
       .from('profiles')
       .select('user_id, display_name, share_code')
@@ -863,10 +868,11 @@ export default function App() {
       created_at: r.created_at,
       friend: profById[r.user_id_a === uid ? r.user_id_b : r.user_id_a] || null,
     })));
+    setFriendshipsLoaded(true);
   }, [session?.user]);
 
   useEffect(() => {
-    if (!session?.user) { setProfile(null); setFriendships([]); return; }
+    if (!session?.user) { setProfile(null); setFriendships([]); setFriendshipsLoaded(false); return; }
     loadProfile();
     loadFriendships();
     // Realtime: any change to friendships involving me → reload.
@@ -1229,8 +1235,13 @@ export default function App() {
 
   // Drop sharing entries (and the corresponding rows) for friendships that
   // disappeared. Also clean stale matePositions for removed friendships.
+  //
+  // Gated on `friendshipsLoaded` so we don't run on the initial default-[]
+  // state — otherwise hydrating sharingFriendIds from localStorage (12h
+  // sessions) would be immediately wiped because the empty initial
+  // friendships array has no accepted ids.
   useEffect(() => {
-    if (!session?.user) return;
+    if (!session?.user || !friendshipsLoaded) return;
     const accepted = friendships.filter(f => f.status === 'accepted' && f.friend);
     const acceptedIds = new Set(accepted.map(f => f.id));
     for (const id of Array.from(sharingFriendIds)) {
@@ -1248,7 +1259,7 @@ export default function App() {
       }
       return changed ? next : prev;
     });
-  }, [friendships, session?.user, sharingFriendIds]);
+  }, [friendships, friendshipsLoaded, session?.user, sharingFriendIds]);
 
   const toggleShareWith = useCallback((friendshipId) => {
     const f = friendships.find(x => x.id === friendshipId);
