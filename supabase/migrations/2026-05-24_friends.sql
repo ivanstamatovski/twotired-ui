@@ -1,4 +1,4 @@
--- Friendship plumbing for TwoTired ride-buddy tracking.
+-- Friendship plumbing for TwoTired ride-mate tracking.
 --
 -- Two tables:
 --   profiles      — one per auth user; stores display name + a 6-char share code

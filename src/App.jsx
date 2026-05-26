@@ -11,6 +11,29 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const EDGE_URL = `${SUPABASE_URL}/functions/v1/generate-route`;
 const RECENT_KEY = 'twistyroute_recent';
 const LAST_ROUTE_KEY = 'twistyroute_last';
+// Per-mate sharing sessions persist across app restarts. Each entry expires
+// after SHARING_TTL_MS unless the user re-toggles Share to refresh it.
+const SHARING_KEY = 'twotired_sharing_sessions';
+const SHARING_TTL_MS = 12 * 60 * 60 * 1000;   // 12 hours
+
+function loadSharingSessions() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SHARING_KEY) || '{}');
+    const now = Date.now();
+    const valid = {};
+    for (const [id, entry] of Object.entries(raw)) {
+      if (entry?.expiresAt && entry.expiresAt > now) valid[id] = entry;
+    }
+    // Prune stale entries so storage doesn't accumulate forever.
+    if (Object.keys(raw).length !== Object.keys(valid).length) {
+      try { localStorage.setItem(SHARING_KEY, JSON.stringify(valid)); } catch {}
+    }
+    return valid;
+  } catch { return {}; }
+}
+function saveSharingSessions(sessions) {
+  try { localStorage.setItem(SHARING_KEY, JSON.stringify(sessions)); } catch {}
+}
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const DEFAULT_CENTER = [-74.3, 41.4];
 const DEFAULT_ZOOM = 9;
@@ -120,10 +143,10 @@ function isSimulatorDefaultCoord(lat, lng) {
   return SIM_DEFAULT_LOCATIONS.some(d => Math.abs(d.lat - lat) < 0.1 && Math.abs(d.lng - lng) < 0.1);
 }
 
-// Map marker for a riding buddy — coloured initials chip with a white ring.
-function makeBuddyMarkerEl(name) {
+// Map marker for a riding mate — coloured initials chip with a white ring.
+function makeMateMarkerEl(name) {
   const el = document.createElement('div');
-  el.className = 'buddy-marker';
+  el.className = 'mate-marker';
   Object.assign(el.style, {
     width: '42px', height: '42px',
     background: avatarColorForName(name),
@@ -138,15 +161,15 @@ function makeBuddyMarkerEl(name) {
   return el;
 }
 
-// "1.2 mi NE" or "230 m SW" — compact compass + distance for the buddy badge.
-function formatBuddyDistance(buddyPos, userPos) {
+// "1.2 mi NE" or "230 m SW" — compact compass + distance for the mate badge.
+function formatMateDistance(matePos, userPos) {
   if (!userPos) return 'sharing';
-  const distM = haversineM(userPos.lat, userPos.lng, buddyPos.lat, buddyPos.lng);
+  const distM = haversineM(userPos.lat, userPos.lng, matePos.lat, matePos.lng);
   const mi = distM / 1609.34;
   const distStr = mi < 0.1
     ? `${Math.round(distM)} m`
     : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`;
-  const b = bearingBetween(userPos.lat, userPos.lng, buddyPos.lat, buddyPos.lng);
+  const b = bearingBetween(userPos.lat, userPos.lng, matePos.lat, matePos.lng);
   const dirs = ['N','NE','E','SE','S','SW','W','NW'];
   return `${distStr} ${dirs[Math.round(b / 45) % 8]}`;
 }
@@ -667,11 +690,15 @@ export default function App() {
   const [addingFriend, setAddingFriend] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [draftDisplayName, setDraftDisplayName] = useState('');
-  // Live position sharing
-  const [sharingFriendIds, setSharingFriendIds] = useState(new Set());
-  const [buddyPositions, setBuddyPositions] = useState({});      // { [friendshipId]: { user_id, lat, lng, name, ts } }
-  const channelsRef       = useRef({});                          // { [friendshipId]: RealtimeChannel }
-  const buddyMarkersRef   = useRef({});                          // { [friendshipId]: maplibregl.Marker }
+  // Live position sharing — hydrated from storage so 12h sessions survive
+  // app restarts (and don't reset just because the user backgrounded the app).
+  const [sharingFriendIds, setSharingFriendIds] = useState(
+    () => new Set(Object.keys(loadSharingSessions()))
+  );
+  const [matePositions, setMatePositions] = useState({});      // { [friendshipId]: { user_id, lat, lng, name, ts } }
+  // (channelsRef removed — old Realtime Presence approach. Live tracking is
+  //  now DB-backed via the mate_positions table.)
+  const mateMarkersRef   = useRef({});                          // { [friendshipId]: maplibregl.Marker }
   // Toast for friendship state changes (e.g. someone accepted my request)
   const [friendToast, setFriendToast] = useState(null);          // { msg, kind }
   const prevFriendshipsRef = useRef([]);                         // snapshot for diffing
@@ -1021,119 +1048,274 @@ export default function App() {
     return () => { sub?.then?.(s => s.remove()); };
   }, [profile, session?.user, handleAddDeepLink]);
 
-  // ── Live position sharing (Phase 2) ───────────────────────────────────────
-  // For each accepted friendship we open a Supabase Realtime Presence channel.
-  // We're always subscribed (so we can see buddies the moment they share),
-  // but we only call track() with our own position when the user has explicitly
-  // toggled "Share" on for that friend — asymmetric is intentional for privacy.
-  useEffect(() => {
+  // ── Live position sharing (DB-backed) ─────────────────────────────────────
+  // Each user upserts a row in `mate_positions` (sharer, recipient, lat, lng,
+  // updated_at) every ~5s while their per-mate Share toggle is on. Recipients
+  // subscribe to postgres_changes on that table (same mechanism powering the
+  // friendship toasts — proven reliable) and also poll every 60s.
+  //
+  // Replaces an earlier Realtime Presence approach which proved brittle on
+  // iOS WKWebView: presence is connection-bound and the handshake regularly
+  // failed to establish, leaving both peers broadcasting but neither seeing
+  // the other.
+  const userLocationRef = useRef(null);
+  useEffect(() => { userLocationRef.current = userLocation; }, [userLocation]);
+
+  // Load all positions shared TO me, keyed by friendship_id on the map.
+  const loadMatePositions = useCallback(async () => {
     if (!session?.user) return;
     const me = session.user.id;
-    const accepted = friendships.filter(f => f.status === 'accepted' && f.friend);
-
-    // Add channels for newly-accepted friendships.
-    for (const f of accepted) {
-      if (channelsRef.current[f.id]) continue;
-      const ch = supabase.channel(`presence:friendship:${f.id}`, {
-        config: { presence: { key: me } },
-      });
-      const handleSync = () => {
-        const state = ch.presenceState();
-        let other = null;
-        for (const [key, entries] of Object.entries(state)) {
-          if (key === me) continue;
-          const entry = entries?.[0];
-          if (entry?.lat != null && entry?.lng != null) {
-            other = { user_id: key, lat: entry.lat, lng: entry.lng, name: f.friend.display_name, ts: entry.ts || Date.now() };
-            break;
-          }
-        }
-        setBuddyPositions(prev => {
-          const next = { ...prev };
-          if (other) next[f.id] = other; else delete next[f.id];
-          return next;
-        });
-      };
-      ch.on('presence', { event: 'sync' },  handleSync);
-      ch.on('presence', { event: 'join' },  handleSync);
-      ch.on('presence', { event: 'leave' }, handleSync);
-      ch.subscribe();
-      channelsRef.current[f.id] = ch;
+    const acceptedById = Object.fromEntries(
+      friendships.filter(f => f.status === 'accepted' && f.friend)
+                 .map(f => [f.friend.user_id, f])
+    );
+    const sharerIds = Object.keys(acceptedById);
+    if (sharerIds.length === 0) {
+      setMatePositions({});
+      return;
     }
-
-    // Tear down channels for friendships that disappeared (removed or rejected).
-    const acceptedIds = new Set(accepted.map(f => f.id));
-    for (const id of Object.keys(channelsRef.current)) {
-      if (!acceptedIds.has(id)) {
-        supabase.removeChannel(channelsRef.current[id]);
-        delete channelsRef.current[id];
-        setBuddyPositions(prev => { const n = { ...prev }; delete n[id]; return n; });
-        setSharingFriendIds(prev => { const n = new Set(prev); n.delete(id); return n; });
-      }
+    const { data, error } = await supabase
+      .from('mate_positions')
+      .select('sharer_id, lat, lng, updated_at')
+      .eq('recipient_id', me)
+      .in('sharer_id', sharerIds);
+    if (error) {
+      console.warn('[mate_positions] select failed:', error.code, error.message);
+      return;                              // transient failure — keep existing markers
     }
-  }, [friendships, session?.user]);
-
-  // Cleanup on sign-out / unmount: leave every channel.
-  useEffect(() => () => {
-    for (const ch of Object.values(channelsRef.current)) supabase.removeChannel(ch);
-    channelsRef.current = {};
-  }, []);
-
-  // Whenever our position updates AND we're sharing with someone, push it to
-  // their channel via presence track(). Throttled by the GPS watcher itself
-  // (maximumAge 2000 ms is plenty for a buddy tracker).
-  useEffect(() => {
-    if (!userLocation || sharingFriendIds.size === 0) return;
-    const payload = { lat: userLocation.lat, lng: userLocation.lng, ts: Date.now() };
-    for (const id of sharingFriendIds) {
-      const ch = channelsRef.current[id];
-      if (ch) ch.track(payload).catch(() => {});
-    }
-  }, [userLocation, sharingFriendIds]);
-
-  const toggleShareWith = useCallback((friendshipId) => {
-    setSharingFriendIds(prev => {
-      const next = new Set(prev);
-      if (next.has(friendshipId)) {
-        next.delete(friendshipId);
-        const ch = channelsRef.current[friendshipId];
-        if (ch) ch.untrack().catch(() => {});
-      } else {
-        next.add(friendshipId);
-        if (userLocation) {
-          const ch = channelsRef.current[friendshipId];
-          if (ch) ch.track({ lat: userLocation.lat, lng: userLocation.lng, ts: Date.now() }).catch(() => {});
-        }
+    if (!data) return;
+    // Merge fresh rows in (don't blow away existing state on a transient empty
+    // response — toggle-off is handled separately via the postgres_changes
+    // DELETE event; absolute expiry is handled by the stale-cleanup interval).
+    const cutoff = Date.now() - 45000;
+    setMatePositions(prev => {
+      const next = { ...prev };
+      for (const row of data) {
+        const f = acceptedById[row.sharer_id];
+        if (!f) continue;
+        const ts = new Date(row.updated_at).getTime();
+        if (ts < cutoff) continue;
+        next[f.id] = {
+          user_id: row.sharer_id, lat: row.lat, lng: row.lng,
+          name: f.friend.display_name, ts,
+        };
       }
       return next;
     });
-  }, [userLocation]);
+  }, [session?.user, friendships]);
 
-  // Render buddy markers on the map. Reusable: setLngLat for existing markers,
-  // create for new buddies, remove for buddies who stopped sharing.
+  // Subscribe to postgres_changes on mate_positions where recipient_id = me.
+  // INSERT/UPDATE triggers a fresh load (merge); DELETE removes that mate's
+  // marker immediately so toggle-off is reflected without waiting.
+  useEffect(() => {
+    if (!session?.user) return;
+    const me = session.user.id;
+    const ch = supabase
+      .channel('mate-positions:' + me)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'mate_positions',
+        filter: `recipient_id=eq.${me}`,
+      }, () => loadMatePositions())
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'mate_positions',
+        filter: `recipient_id=eq.${me}`,
+      }, () => loadMatePositions())
+      .on('postgres_changes', {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'mate_positions',
+        filter: `recipient_id=eq.${me}`,
+      }, (payload) => {
+        const sharerId = payload?.old?.sharer_id;
+        if (!sharerId) return;
+        setMatePositions(prev => {
+          const f = friendships.find(x => x.friend?.user_id === sharerId);
+          if (!f) return prev;
+          if (!(f.id in prev)) return prev;
+          const next = { ...prev };
+          delete next[f.id];
+          return next;
+        });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [session?.user, loadMatePositions, friendships]);
+
+  // Initial / friendship-change snapshot.
+  useEffect(() => { loadMatePositions(); }, [loadMatePositions]);
+
+  // Foreground refresh: friendships + positions.
+  useEffect(() => {
+    const sub = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      if (!isActive) return;
+      try { supabase.realtime.disconnect(); } catch {}
+      try { supabase.realtime.connect();    } catch {}
+      loadFriendships();
+      loadMatePositions();
+    });
+    return () => { sub?.then?.(s => s.remove()); };
+  }, [loadFriendships, loadMatePositions]);
+
+  // 60s safety-net poll for both friendships and positions.
+  useEffect(() => {
+    if (!session?.user) return;
+    const interval = setInterval(() => {
+      loadFriendships();
+      loadMatePositions();
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [session?.user, loadFriendships, loadMatePositions]);
+
+  // Stale-position cleanup: every 15s evict mate markers older than 45s.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const cutoff = Date.now() - 45000;
+      setMatePositions(prev => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [id, pos] of Object.entries(prev)) {
+          if (pos?.ts && pos.ts < cutoff) { delete next[id]; changed = true; }
+        }
+        return changed ? next : prev;
+      });
+    }, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Upsert my position every 5s while sharing with at least one mate.
+  // One DB write per mate per 5s — cheap and survives socket blips.
+  useEffect(() => {
+    console.log('[mate_positions] effect run',
+      'user:', !!session?.user, 'sharing:', sharingFriendIds.size,
+      'friendships:', friendships.length);
+    if (!session?.user || sharingFriendIds.size === 0) return;
+    const me = session.user.id;
+    const recipientFor = (id) =>
+      friendships.find(f => f.id === id && f.status === 'accepted' && f.friend)?.friend?.user_id;
+
+    const tick = async () => {
+      const loc = userLocationRef.current;
+      if (!loc) { console.log('[mate_positions] tick skip: no GPS yet'); return; }
+      const rows = [];
+      const idsTried = [];
+      for (const id of sharingFriendIds) {
+        idsTried.push(id.slice(0, 8));
+        const recipient = recipientFor(id);
+        if (!recipient) {
+          console.warn('[mate_positions] no recipient for friendship', id.slice(0, 8));
+          continue;
+        }
+        rows.push({
+          sharer_id: me, recipient_id: recipient,
+          lat: loc.lat, lng: loc.lng,
+          updated_at: new Date().toISOString(),
+        });
+      }
+      if (rows.length) {
+        const { error: upErr } = await supabase
+          .from('mate_positions')
+          .upsert(rows, { onConflict: 'sharer_id,recipient_id' });
+        if (upErr) console.warn('[mate_positions] upsert failed:', upErr.code, upErr.message);
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 5000);
+    return () => clearInterval(interval);
+  }, [session?.user, sharingFriendIds, friendships]);
+
+  // Drop sharing entries (and the corresponding rows) for friendships that
+  // disappeared. Also clean stale matePositions for removed friendships.
+  useEffect(() => {
+    if (!session?.user) return;
+    const accepted = friendships.filter(f => f.status === 'accepted' && f.friend);
+    const acceptedIds = new Set(accepted.map(f => f.id));
+    for (const id of Array.from(sharingFriendIds)) {
+      if (!acceptedIds.has(id)) {
+        setSharingFriendIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+        const sessions = loadSharingSessions();
+        if (sessions[id]) { delete sessions[id]; saveSharingSessions(sessions); }
+      }
+    }
+    setMatePositions(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id of Object.keys(prev)) {
+        if (!acceptedIds.has(id)) { delete next[id]; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [friendships, session?.user, sharingFriendIds]);
+
+  const toggleShareWith = useCallback((friendshipId) => {
+    const f = friendships.find(x => x.id === friendshipId);
+    const recipient = f?.friend?.user_id;
+    setSharingFriendIds(prev => {
+      const next = new Set(prev);
+      const sessions = loadSharingSessions();
+      if (next.has(friendshipId)) {
+        next.delete(friendshipId);
+        delete sessions[friendshipId];
+        // Delete the shared row so the mate's marker disappears for them.
+        if (recipient && session?.user) {
+          supabase.from('mate_positions').delete()
+            .eq('sharer_id', session.user.id).eq('recipient_id', recipient)
+            .then(() => {});
+        }
+      } else {
+        next.add(friendshipId);
+        sessions[friendshipId] = { expiresAt: Date.now() + SHARING_TTL_MS };
+      }
+      saveSharingSessions(sessions);
+      return next;
+    });
+  }, [friendships, session?.user]);
+
+  // Schedule auto-stop for any active sharing session at its expiry timestamp.
+  useEffect(() => {
+    if (sharingFriendIds.size === 0) return;
+    const sessions = loadSharingSessions();
+    const timers = [];
+    for (const id of sharingFriendIds) {
+      const entry = sessions[id];
+      if (!entry) continue;
+      const msLeft = entry.expiresAt - Date.now();
+      const t = setTimeout(() => {
+        if (sharingFriendIds.has(id)) toggleShareWith(id);
+      }, Math.max(0, msLeft));
+      timers.push(t);
+    }
+    return () => timers.forEach(clearTimeout);
+  }, [sharingFriendIds, toggleShareWith]);
+
+  // Render mate markers on the map. Reusable: setLngLat for existing markers,
+  // create for new mates, remove for mates who stopped sharing.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapLoadedRef.current) return;
-    const currentIds = new Set(Object.keys(buddyPositions));
-    for (const [id, pos] of Object.entries(buddyPositions)) {
-      let marker = buddyMarkersRef.current[id];
+    const currentIds = new Set(Object.keys(matePositions));
+    for (const [id, pos] of Object.entries(matePositions)) {
+      let marker = mateMarkersRef.current[id];
       if (marker) {
         marker.setLngLat([pos.lng, pos.lat]);
       } else {
-        const el = makeBuddyMarkerEl(pos.name);
+        const el = makeMateMarkerEl(pos.name);
         marker = new maplibregl.Marker({ element: el, anchor: 'center' })
           .setLngLat([pos.lng, pos.lat])
           .addTo(map);
-        buddyMarkersRef.current[id] = marker;
+        mateMarkersRef.current[id] = marker;
       }
     }
-    for (const id of Object.keys(buddyMarkersRef.current)) {
+    for (const id of Object.keys(mateMarkersRef.current)) {
       if (!currentIds.has(id)) {
-        buddyMarkersRef.current[id].remove();
-        delete buddyMarkersRef.current[id];
+        mateMarkersRef.current[id].remove();
+        delete mateMarkersRef.current[id];
       }
     }
-  }, [buddyPositions]);
+  }, [matePositions]);
 
   // ── Auth init ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1918,8 +2100,8 @@ export default function App() {
               {/* Recent rides removed from menu — accessible via the
                   Recents button next to the mic in the idle sheet.
                   User email + Sign out moved to the bottom. */}
-              {/* ── Riding buddies ─────────────────────────────────────── */}
-              <div className="menu-section-label">Riding buddies</div>
+              {/* ── Riding mates ─────────────────────────────────────── */}
+              <div className="menu-section-label">Riding mates</div>
               {profile && (
                 <>
                   <div className="profile-row">
@@ -1971,12 +2153,12 @@ export default function App() {
 
               {friendships.filter(f => f.status === 'accepted' && f.friend).map(f => {
                 const sharing = sharingFriendIds.has(f.id);
-                const buddy = buddyPositions[f.id];
+                const mate = matePositions[f.id];
                 let sub = 'Connected';
-                if (buddy) sub = `📍 ${formatBuddyDistance(buddy, userLocation)}`;
+                if (mate) sub = `📍 ${formatMateDistance(mate, userLocation)}`;
                 else if (sharing) sub = 'You’re sharing — waiting on them';
                 return (
-                  <div key={f.id} className={`friend-row${buddy ? ' friend-row--live' : ''}`}>
+                  <div key={f.id} className={`friend-row${mate ? ' friend-row--live' : ''}`}>
                     <Avatar name={f.friend.display_name} size={32} />
                     <div className="friend-name-block">
                       <div className="friend-name">{f.friend.display_name}</div>

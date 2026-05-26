@@ -1242,7 +1242,7 @@ body {
 .profile-save-btn  { background: var(--accent); color: #fff; border-color: var(--accent); }
 .profile-cancel-btn:hover { background: var(--surface-alt, #f3f4f6); }
 
-/* Primary CTA to bring a new buddy onboard via the native share sheet. */
+/* Primary CTA to bring a new mate onboard via the native share sheet. */
 .invite-share-btn {
   display: flex;
   align-items: center;
