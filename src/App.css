@@ -357,6 +357,7 @@ body {
 .nav-voice-btn:active { transform: scale(0.95); }
 .nav-voice-btn--muted { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.5); color: var(--red, #ef4444); }
 
+
 .nav-bottom-bar {
   pointer-events: all;
   display: flex;

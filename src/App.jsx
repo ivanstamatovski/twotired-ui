@@ -508,6 +508,26 @@ function useIsMobile() {
   return mobile;
 }
 
+// ── App Review demo bypass ────────────────────────────────────────────────────
+// The app uses email-OTP auth which can't be tested by Apple's reviewers (they
+// have no way to receive our OTP emails). For the single review-account email
+// below, we skip the OTP send entirely and accept a fixed magic "code" that
+// signs the user in with a known password we control. The real Supabase user
+// for this email must exist; password is created from the Supabase dashboard.
+//
+// What we hand to Apple in the "Sign-In Information" field on App Store Connect:
+//   User Name: apple-review@twotired.net
+//   Password:  999999
+//
+// The "password" Apple sees is actually our magic OTP code; the real Supabase
+// password is internal to the client. This means anyone reading the JS bundle
+// can also sign in as this account, but the account is just a regular user
+// with no special privileges, so the worst they can do is browse around as
+// that user. Acceptable for a review bypass.
+const REVIEW_EMAIL = 'apple-review@twotired.net';
+const REVIEW_CODE  = '999999';
+const REVIEW_PASSWORD = 'rev-bypass-7K4ZpqV2nmW9aY3B';   // matches the password set in Supabase dashboard
+
 // ── Login screen ──────────────────────────────────────────────────────────────
 function LoginScreen() {
   const [email, setEmail]   = useState('');
@@ -519,6 +539,10 @@ function LoginScreen() {
   async function sendOtp() {
     if (!email.includes('@')) return;
     setLoading(true); setError(null);
+    // Review bypass: skip the actual OTP send for the review account.
+    if (email.trim().toLowerCase() === REVIEW_EMAIL) {
+      setStep('code'); setLoading(false); return;
+    }
     const { error: err } = await supabase.auth.signInWithOtp({
       email,
       options: { shouldCreateUser: true },
@@ -531,6 +555,16 @@ function LoginScreen() {
     const token = code.trim();
     if (token.length !== 6) return;
     setLoading(true); setError(null);
+    // Review bypass: if the magic code is entered for the review email, log in
+    // via the pre-known Supabase password instead of validating an OTP token.
+    if (email.trim().toLowerCase() === REVIEW_EMAIL && token === REVIEW_CODE) {
+      const { error: err } = await supabase.auth.signInWithPassword({
+        email: REVIEW_EMAIL, password: REVIEW_PASSWORD,
+      });
+      if (err) { setError(err.message); setLoading(false); return; }
+      setLoading(false);
+      return;
+    }
     const { error: err } = await supabase.auth.verifyOtp({
       email, token, type: 'email',
     });
@@ -1489,6 +1523,7 @@ export default function App() {
           speak(`${distPhrase}, ${instruction.text}`);
         }
       }
+
     }
   }
 
