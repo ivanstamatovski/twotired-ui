@@ -737,6 +737,13 @@ export default function App() {
   // Toast for friendship state changes (e.g. someone accepted my request)
   const [friendToast, setFriendToast] = useState(null);          // { msg, kind }
   const prevFriendshipsRef = useRef([]);                         // snapshot for diffing
+  // Routes that mates have shared with me (inbox).
+  const [sharedRoutes, setSharedRoutes] = useState([]);          // [{ id, sharer_id, sharer_name, title, distance_mi, duration_str, geometry, shared_at, viewed_at }]
+  const prevSharedRouteIdsRef = useRef(new Set());                // diff seen to fire toasts only on new arrivals
+  const sharedRoutesHydratedRef = useRef(false);                  // true after first load — distinguishes initial hydration from later arrivals
+  const [shareModalOpen, setShareModalOpen] = useState(false);    // mate-picker modal for "Share this route"
+  const [sharingRoute, setSharingRoute] = useState(false);        // in-flight write
+  const [sharedWithOpen, setSharedWithOpen] = useState(false);    // "Shared with me" list section in menu
   const [bugDone, setBugDone] = useState(false);
 
   // Recent
@@ -1039,6 +1046,137 @@ export default function App() {
     } else {
       setAddFriendStatus({ kind: 'error', msg: 'Sharing not supported on this device' });
     }
+  }
+
+  // ── Shared routes (inbox + outgoing) ──────────────────────────────────────
+  const loadSharedRoutes = useCallback(async () => {
+    if (!session?.user) return;
+    const me = session.user.id;
+    const { data, error } = await supabase
+      .from('shared_routes')
+      .select('id, sharer_id, recipient_id, title, distance_mi, duration_str, geometry, stops, intent, instructions, shared_at, viewed_at')
+      .eq('recipient_id', me)
+      .order('shared_at', { ascending: false })
+      .limit(50);
+    if (error || !data) return;
+    // Resolve sharer names from already-loaded friendships.
+    const nameById = Object.fromEntries(
+      friendships.filter(f => f.friend).map(f => [f.friend.user_id, f.friend.display_name])
+    );
+    setSharedRoutes(data.map(r => ({ ...r, sharer_name: nameById[r.sharer_id] || 'A rider' })));
+  }, [session?.user, friendships]);
+
+  // Realtime: any change to shared_routes where recipient_id = me → reload.
+  useEffect(() => {
+    if (!session?.user) return;
+    const me = session.user.id;
+    const ch = supabase
+      .channel('shared-routes:' + me)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'shared_routes',
+        filter: `recipient_id=eq.${me}`,
+      }, () => loadSharedRoutes())
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [session?.user, loadSharedRoutes]);
+
+  useEffect(() => { loadSharedRoutes(); }, [loadSharedRoutes]);
+
+  // Toast on new arrivals (vs initial hydration). The first time this effect
+  // runs we just snapshot; afterwards any newly-arrived id triggers a toast.
+  useEffect(() => {
+    const prev = prevSharedRouteIdsRef.current;
+    if (sharedRoutesHydratedRef.current) {
+      for (const r of sharedRoutes) {
+        if (!prev.has(r.id) && !r.viewed_at) {
+          setFriendToast({ kind: 'info', msg: `${r.sharer_name} shared a route with you — tap to open` });
+          break;
+        }
+      }
+    }
+    prevSharedRouteIdsRef.current = new Set(sharedRoutes.map(r => r.id));
+    sharedRoutesHydratedRef.current = true;
+  }, [sharedRoutes]);
+
+  async function shareRouteWith(friendUserId) {
+    if (!session?.user || !routeData) return;
+    setSharingRoute(true);
+    try {
+      const payload = {
+        sharer_id: session.user.id,
+        recipient_id: friendUserId,
+        title: routeData.title || 'Shared ride',
+        distance_mi: routeData.distance_mi ?? null,
+        duration_str: routeData.duration_str ?? null,
+        geometry: routeData.geometry,
+        stops: routeData.stops || [],
+        intent: routeData.intent || null,
+        instructions: routeData.instructions || [],
+      };
+      const { error } = await supabase.from('shared_routes').insert(payload);
+      if (error) {
+        console.warn('[shared_routes] insert failed:', error.code, error.message);
+        setFriendToast({ kind: 'error', msg: 'Could not share — ' + (error.message || error.code) });
+      } else {
+        const friend = friendships.find(f => f.friend?.user_id === friendUserId)?.friend;
+        setFriendToast({ kind: 'success', msg: `Sent to ${friend?.display_name || 'mate'}` });
+      }
+    } finally {
+      setSharingRoute(false);
+      setShareModalOpen(false);
+    }
+  }
+
+  async function openSharedRoute(shared) {
+    if (!shared) return;
+    const route = {
+      id: shared.id,
+      title: shared.title,
+      distance_mi: shared.distance_mi,
+      duration_str: shared.duration_str,
+      geometry: shared.geometry,
+      stops: shared.stops || [],
+      intent: shared.intent || null,
+      instructions: shared.instructions || [],
+    };
+    setRouteData(route);
+    setCurrentIntent(route.intent);
+    setRouteApproved(false);
+    setRefineOpen(false);
+    setMessages([{ role: 'route', route }]);
+    drawRouteOnMap(route);
+    if (isMobile) setSheetMode('collapsed');
+    setMenuOpen(false);
+
+    // Add to local Recents so it shows up alongside user-planned routes (with
+    // a `shared_from` field that the UI uses to tint the row orange).
+    const entry = {
+      id: Date.now(),
+      title: route.title,
+      distance_mi: route.distance_mi,
+      duration_str: route.duration_str,
+      geometry: route.geometry,
+      intent: route.intent,
+      stops: route.stops,
+      instructions: route.instructions,
+      shared_from: shared.sharer_name || 'A rider',
+    };
+    setRecent(prev => {
+      const updated = [entry, ...prev.filter(x => x.title !== entry.title)].slice(0, 5);
+      try { localStorage.setItem(RECENT_KEY, JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+
+    // Mark viewed (best-effort).
+    if (!shared.viewed_at) {
+      supabase.from('shared_routes').update({ viewed_at: new Date().toISOString() })
+        .eq('id', shared.id).then(() => {});
+    }
+  }
+
+  async function deleteSharedRoute(id) {
+    await supabase.from('shared_routes').delete().eq('id', id);
+    loadSharedRoutes();
   }
 
   async function saveDisplayName() {
@@ -1876,14 +2014,71 @@ export default function App() {
       {/* Friendship status toast — floats over everything, auto-dismissed */}
       {friendToast && (
         <div className={`friend-toast friend-toast--${friendToast.kind}`}
-             onClick={() => { setFriendToast(null); setMenuOpen(true); if (isMobile) setSheetMode('expanded'); }}>
+             onClick={() => {
+               setFriendToast(null);
+               // If it's a shared-route notification, expand that section
+               // immediately so the new route is one tap away.
+               if (/shared a route/.test(friendToast.msg)) setSharedWithOpen(true);
+               setMenuOpen(true);
+               if (isMobile) setSheetMode('expanded');
+             }}>
           {friendToast.msg}
+        </div>
+      )}
+
+      {/* Share-this-route modal — pick a mate to send the current route to. */}
+      {shareModalOpen && (
+        <div className="share-modal-backdrop" onClick={() => setShareModalOpen(false)}>
+          <div className="share-modal" onClick={e => e.stopPropagation()}>
+            <div className="share-modal-header">
+              <h3>Share this ride</h3>
+              <button className="share-modal-close" onClick={() => setShareModalOpen(false)} aria-label="Close">✕</button>
+            </div>
+            {routeData && (
+              <div className="share-modal-route">
+                <div className="share-modal-route-title">{routeData.title || 'Route'}</div>
+                <div className="share-modal-route-meta">
+                  {routeData.distance_mi != null ? `${routeData.distance_mi.toFixed(0)} mi` : ''}
+                  {routeData.duration_str ? ` · ${routeData.duration_str}` : ''}
+                </div>
+              </div>
+            )}
+            <div className="share-modal-section-label">Send to</div>
+            {friendships.filter(f => f.status === 'accepted' && f.friend).length === 0 && (
+              <div className="share-modal-empty">No connected mates yet. Invite a friend first.</div>
+            )}
+            <div className="share-modal-list">
+              {friendships.filter(f => f.status === 'accepted' && f.friend).map(f => (
+                <button key={f.id} className="share-modal-friend"
+                  disabled={sharingRoute}
+                  onClick={() => shareRouteWith(f.friend.user_id)}>
+                  <Avatar name={f.friend.display_name} size={36} />
+                  <span className="share-modal-friend-name">{f.friend.display_name}</span>
+                  <span className="share-modal-friend-action">{sharingRoute ? '…' : 'Send'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
       {/* Map panel — locate button moved into the sheet handle row */}
       <div className="map-panel">
         <div ref={mapContainerRef} className="map-canvas"/>
+        {/* Floating Report-issue button. Always visible above the map so users
+            can report bad routes/cameras/anything at any time. The full
+            screenshot+comment flow lives behind setMenuOpen for now;
+            dedicated UI is a separate pass. */}
+        {!navMode && (
+          <button className="report-fab"
+            onClick={() => { setMenuOpen(true); if (isMobile) setSheetMode('expanded'); }}
+            aria-label="Report an issue">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 22V4c0-.6.4-1 1-1h13l-2 5 2 5H5"/>
+              <line x1="4" y1="22" x2="4" y2="15"/>
+            </svg>
+          </button>
+        )}
       </div>
 
       {/* ── Navigation overlay ── */}
@@ -2069,10 +2264,12 @@ export default function App() {
                   {recent.length > 0 ? (
                     <div className="idle-recents-list">
                       {recent.map(r => (
-                        <button key={r.id} className="idle-recent-item"
+                        <button key={r.id}
+                          className={`idle-recent-item${r.shared_from ? ' idle-recent-item--shared' : ''}`}
                           onClick={() => { setRecentsOpen(false); restoreRecentRoute(r); }}>
                           <span className="idle-recent-title">{r.title}</span>
                           <span className="idle-recent-meta">
+                            {r.shared_from ? `↪ from ${r.shared_from} · ` : ''}
                             {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
                           </span>
                         </button>
@@ -2128,13 +2325,13 @@ export default function App() {
                   </svg>
                   Edit
                 </button>
-                <button className="route-action-btn" onClick={() => {
-                  setMenuOpen(true); setSheetMode('expanded');
-                }}>
+                <button className="route-action-btn" onClick={() => setShareModalOpen(true)}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                    <circle cx="18" cy="5"  r="3"/><circle cx="6"  cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                    <line x1="15.41" y1="6.51" x2="8.59"  y2="10.49"/>
                   </svg>
-                  Report
+                  Share
                 </button>
               </div>
             </div>
@@ -2146,6 +2343,37 @@ export default function App() {
               {/* Recent rides removed from menu — accessible via the
                   Recents button next to the mic in the idle sheet.
                   User email + Sign out moved to the bottom. */}
+              {/* ── Shared with me (inbox of routes mates sent) ───────── */}
+              {sharedRoutes.length > 0 && (
+                <>
+                  <button className="menu-section-collapsible"
+                    onClick={() => setSharedWithOpen(x => !x)}
+                    aria-expanded={sharedWithOpen}>
+                    <span>Shared with me<span className="menu-section-count"> ({sharedRoutes.length})</span></span>
+                    <svg className={`menu-section-chevron${sharedWithOpen ? ' menu-section-chevron--open' : ''}`}
+                      width="12" height="8" viewBox="0 0 12 8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="2 2 6 6 10 2"/>
+                    </svg>
+                  </button>
+                  {sharedWithOpen && sharedRoutes.map(r => (
+                    <div key={r.id} className={`shared-route-row${r.viewed_at ? '' : ' shared-route-row--unread'}`}>
+                      <Avatar name={r.sharer_name} size={28} />
+                      <button className="shared-route-body" onClick={() => openSharedRoute(r)}>
+                        <div className="shared-route-title">{r.title}</div>
+                        <div className="shared-route-meta">
+                          from {r.sharer_name}
+                          {r.distance_mi != null ? ` · ${r.distance_mi.toFixed(0)} mi` : ''}
+                          {r.duration_str ? ` · ${r.duration_str}` : ''}
+                        </div>
+                      </button>
+                      <button className="shared-route-delete"
+                        onClick={() => deleteSharedRoute(r.id)} aria-label="Delete">✕</button>
+                    </div>
+                  ))}
+                  <div className="menu-divider"/>
+                </>
+              )}
+
               {/* ── Riding mates ─────────────────────────────────────── */}
               <div className="menu-section-label">Riding mates</div>
               {profile && (
