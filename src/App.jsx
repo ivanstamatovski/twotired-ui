@@ -715,6 +715,9 @@ export default function App() {
   // Bug report
   const [bugComment, setBugComment] = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
+  const [bugReportOpen, setBugReportOpen] = useState(false);          // dedicated report sheet
+  const [bugScreenshot, setBugScreenshot] = useState(null);           // base64 captured at tap-time
+  const [bugScreenshotZoom, setBugScreenshotZoom] = useState(false);  // tap-to-enlarge preview
 
   // Friends & profile (Phase 1 plumbing; Phase 2 live sharing)
   const [profile, setProfile] = useState(null);                  // { user_id, display_name, share_code }
@@ -1944,31 +1947,53 @@ export default function App() {
     await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t }, gps);
   }
 
+  // Capture the current map view to a JPEG data URL. Requires the MapLibre
+  // canvas to have been created with preserveDrawingBuffer:true (already set
+  // in the map init).
+  async function captureMapNow() {
+    const map = mapRef.current;
+    if (!map) return null;
+    try {
+      map.triggerRepaint();
+      await new Promise(resolve => {
+        const done = () => resolve();
+        map.once('render', done);
+        setTimeout(done, 600);
+      });
+      const canvas = map.getCanvas();
+      const data = canvas.toDataURL('image/jpeg', 0.6);
+      if (!data || data === 'data:,' || data.length < 100) {
+        console.warn('[screenshot] blank or empty canvas');
+        return null;
+      }
+      return data;
+    } catch (e) {
+      console.error('[captureMapNow]', e?.name, e?.message);
+      return null;
+    }
+  }
+
+  // Open the dedicated bug-report sheet. Snapshot the map RIGHT NOW so the
+  // user's framing (zoom + pan) is preserved even if they keep scrolling
+  // around while typing the comment.
+  async function openBugReport() {
+    setBugComment('');
+    setBugDone(false);
+    setBugReportOpen(true);
+    const shot = await captureMapNow();
+    setBugScreenshot(shot);
+  }
+
+  async function retakeBugScreenshot() {
+    setBugScreenshot(null);
+    const shot = await captureMapNow();
+    setBugScreenshot(shot);
+  }
+
   async function submitBug() {
+    if (bugSubmitting) return;
     setBugSubmitting(true);
     try {
-      // Capture map screenshot
-      let imageData = null;
-      try {
-        if (mapRef.current) {
-          // Trigger a fresh render and wait for it
-          mapRef.current.triggerRepaint();
-          await new Promise(resolve => {
-            const done = () => resolve();
-            mapRef.current.once('render', done);
-            setTimeout(done, 600); // fallback
-          });
-          const canvas = mapRef.current.getCanvas();
-          console.log('[screenshot] canvas', canvas.width, 'x', canvas.height);
-          imageData = canvas.toDataURL('image/jpeg', 0.6);
-          console.log('[screenshot] result length:', imageData?.length, 'prefix:', imageData?.slice(0, 40));
-          if (!imageData || imageData === 'data:,' || imageData.length < 100) {
-            console.warn('[screenshot] blank or empty canvas');
-            imageData = null;
-          }
-        }
-      } catch(e) { console.error('[submitBug] screenshot error:', e.name, e.message); }
-
       const query = messages.find(m=>m.role==='user')?.content || '';
       await fetch(`${SUPABASE_URL}/rest/v1/bug_reports`, {
         method:'POST',
@@ -1979,7 +2004,7 @@ export default function App() {
           user_id: session?.user?.id || null,
           route_id: routeData?.id || null,
           comment: bugComment,
-          image_data: imageData,
+          image_data: bugScreenshot,
           page_context: query || null,
           created_at: new Date().toISOString(),
           route_context: routeData ? {
@@ -1992,14 +2017,18 @@ export default function App() {
             escape_via_waypoints: routeData.intent?.escape_via_waypoints || null,
             intermediate_waypoints: routeData.intent?.intermediate_waypoints || null,
             curviness: routeData.intent?.curviness || null,
-            // rawIntent.origin and .destination are plain strings, not {query} objects
             origin_query: routeData.intent?.origin || null,
             destination_query: routeData.intent?.destination || null,
           } : null,
         }),
       });
-      setBugDone(true); setBugComment('');
-      setTimeout(() => { setMenuOpen(false); setBugDone(false); }, 2000);
+      setBugDone(true);
+      setTimeout(() => {
+        setBugReportOpen(false);
+        setBugDone(false);
+        setBugComment('');
+        setBugScreenshot(null);
+      }, 1800);
     } finally { setBugSubmitting(false); }
   }
 
@@ -2023,6 +2052,82 @@ export default function App() {
                if (isMobile) setSheetMode('expanded');
              }}>
           {friendToast.msg}
+        </div>
+      )}
+
+      {/* Bug-report sheet — slides up over the map with the captured screenshot
+          + comment field. Snapshot was taken at the moment Report was tapped,
+          so the user's framing is preserved while they type. */}
+      {bugReportOpen && (
+        <div className="bug-modal-backdrop" onClick={() => { if (!bugSubmitting) setBugReportOpen(false); }}>
+          <div className="bug-modal" onClick={e => e.stopPropagation()}>
+            <div className="bug-modal-header">
+              <h3>Report an issue</h3>
+              <button className="bug-modal-close"
+                onClick={() => setBugReportOpen(false)}
+                disabled={bugSubmitting}
+                aria-label="Close">✕</button>
+            </div>
+
+            {bugDone ? (
+              <div className="bug-modal-done">
+                <div className="bug-modal-done-icon">✓</div>
+                <div className="bug-modal-done-title">Thanks!</div>
+                <div className="bug-modal-done-sub">Reviewing it now — your feedback improves future routes.</div>
+              </div>
+            ) : (
+              <>
+                <div className="bug-modal-shot">
+                  {bugScreenshot ? (
+                    <img src={bugScreenshot} alt="map snapshot"
+                         onClick={() => setBugScreenshotZoom(true)}/>
+                  ) : (
+                    <div className="bug-modal-shot-placeholder">
+                      <span className="dot-spin"/> capturing…
+                    </div>
+                  )}
+                  <button className="bug-modal-retake"
+                    onClick={retakeBugScreenshot}
+                    disabled={bugSubmitting}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="1 4 1 10 7 10"/>
+                      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                    </svg>
+                    Retake
+                  </button>
+                </div>
+
+                <label className="bug-modal-label">What's wrong here?</label>
+                <textarea className="bug-modal-comment"
+                  rows={4}
+                  placeholder="e.g. 'Why is there a weird loop through the city?' or 'Detour goes through a parking lot'"
+                  value={bugComment}
+                  onChange={e => setBugComment(e.target.value)}
+                  disabled={bugSubmitting}
+                  autoFocus/>
+
+                <div className="bug-modal-actions">
+                  <button className="bug-modal-cancel"
+                    onClick={() => setBugReportOpen(false)}
+                    disabled={bugSubmitting}>
+                    Cancel
+                  </button>
+                  <button className="bug-modal-submit"
+                    onClick={submitBug}
+                    disabled={bugSubmitting || !bugComment.trim()}>
+                    {bugSubmitting ? 'Sending…' : 'Send report'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Full-screen screenshot preview — tap-to-dismiss */}
+      {bugScreenshotZoom && bugScreenshot && (
+        <div className="bug-shot-zoom" onClick={() => setBugScreenshotZoom(false)}>
+          <img src={bugScreenshot} alt="map snapshot full size"/>
         </div>
       )}
 
@@ -2066,12 +2171,12 @@ export default function App() {
       <div className="map-panel">
         <div ref={mapContainerRef} className="map-canvas"/>
         {/* Floating Report-issue button. Always visible above the map so users
-            can report bad routes/cameras/anything at any time. The full
-            screenshot+comment flow lives behind setMenuOpen for now;
-            dedicated UI is a separate pass. */}
+            can flag whatever they're looking at (weird route, missing road,
+            etc.) without losing their place. Tapping snapshots the current
+            map view and opens the dedicated report sheet. */}
         {!navMode && (
           <button className="report-fab"
-            onClick={() => { setMenuOpen(true); if (isMobile) setSheetMode('expanded'); }}
+            onClick={openBugReport}
             aria-label="Report an issue">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 22V4c0-.6.4-1 1-1h13l-2 5 2 5H5"/>
@@ -2480,18 +2585,8 @@ export default function App() {
                 </div>
               )}
 
-              <div className="menu-divider"/>
-              <div className="menu-section-label">Routing model</div>
-              <div className="variant-toggle-row">
-                <button
-                  className={`variant-btn${routeVariant==='classic'?' variant-btn--active':''}`}
-                  onClick={()=>setRouteVariant('classic')}>Classic</button>
-                <button
-                  className={`variant-btn${routeVariant==='scoring'?' variant-btn--active':''}`}
-                  onClick={()=>setRouteVariant('scoring')}>Scoring</button>
-              </div>
-              {/* Bug report removed from menu — to be wired up to its
-                  dedicated Report button (see collapsed sheet). */}
+              {/* Routing model toggle hidden — defaults to 'scoring' for
+                  released builds. Re-expose if a dev/debug menu is added. */}
 
               <div className="menu-divider"/>
               <div className="menu-user-row">
@@ -2642,14 +2737,7 @@ export default function App() {
           </div>
 
           <div className="sidebar-bug">
-            <div className="variant-toggle-row">
-              <button
-                className={`variant-btn${routeVariant==='classic'?' variant-btn--active':''}`}
-                onClick={()=>setRouteVariant('classic')}>Classic</button>
-              <button
-                className={`variant-btn${routeVariant==='scoring'?' variant-btn--active':''}`}
-                onClick={()=>setRouteVariant('scoring')}>Scoring</button>
-            </div>
+            {/* Routing model toggle hidden for release. Default is 'scoring'. */}
             <button className="bug-trigger" onClick={()=>setMenuOpen(x=>!x)}>🐛 Report issue</button>
             {menuOpen && (
               <div className="bug-inline">

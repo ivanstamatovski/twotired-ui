@@ -1433,6 +1433,188 @@ body {
   color: #fff;
 }
 
+/* ─── Bug-report sheet ──────────────────────────────────────────── */
+.bug-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  background: rgba(0,0,0,0.55);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: shareBackdropIn 0.2s ease-out;
+}
+
+.bug-modal {
+  width: 100%;
+  max-width: 520px;
+  max-height: 92vh;
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 16px 18px max(18px, env(safe-area-inset-bottom));
+  padding-top: max(16px, calc(env(safe-area-inset-top) - 30px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.25);
+  animation: shareModalIn 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+  overflow-y: auto;
+}
+
+.bug-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.bug-modal-header h3 { font-size: 17px; font-weight: 700; color: var(--text); margin: 0; }
+
+.bug-modal-close {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text-dim); font-size: 14px; cursor: pointer;
+}
+.bug-modal-close:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.bug-modal-shot {
+  position: relative;
+  width: 100%;
+  background: #f3f4f6;
+  border-radius: 12px;
+  overflow: hidden;
+  aspect-ratio: 16 / 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bug-modal-shot img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.bug-modal-shot-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.bug-modal-retake {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.92);
+  border: 1px solid var(--border, rgba(0,0,0,0.12));
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.bug-modal-retake:hover  { background: #fff; }
+.bug-modal-retake:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.bug-modal-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bug-modal-comment {
+  width: 100%;
+  min-height: 90px;
+  padding: 12px 14px;
+  font-size: 15px;
+  line-height: 1.35;
+  font-family: inherit;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.bug-modal-comment:focus { border-color: var(--accent); }
+.bug-modal-comment:disabled { opacity: 0.6; }
+
+.bug-modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.bug-modal-cancel {
+  flex: 0 0 auto;
+  padding: 12px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+}
+.bug-modal-cancel:hover { background: #e5e7eb; }
+.bug-modal-cancel:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.bug-modal-submit {
+  flex: 1;
+  padding: 12px 18px;
+  font-size: 15px;
+  font-weight: 700;
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(220,38,38,0.3);
+  transition: background 0.15s, transform 0.08s;
+}
+.bug-modal-submit:hover  { background: #b91c1c; }
+.bug-modal-submit:active { transform: scale(0.98); }
+.bug-modal-submit:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+
+.bug-modal-done {
+  text-align: center;
+  padding: 24px 8px;
+}
+.bug-modal-done-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  background: #10b981;
+  color: #fff;
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+.bug-modal-done-title  { font-size: 18px; font-weight: 700; color: var(--text); }
+.bug-modal-done-sub    { font-size: 14px; color: var(--text-dim); margin-top: 4px; }
+
+.bug-shot-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0,0,0,0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  animation: shareBackdropIn 0.15s ease-out;
+}
+.bug-shot-zoom img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
 /* ─── Share-route modal ─────────────────────────────────────────── */
 .share-modal-backdrop {
   position: fixed;
