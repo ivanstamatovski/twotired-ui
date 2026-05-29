@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — TwoTired</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1a1a1a; --muted:#555; --accent:#ff6a13; --bg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e8e8e8; --muted:#aaa; --bg:#111; }
+  }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 720px; margin: 2.5rem auto; padding: 0 1.25rem; color: var(--fg); background: var(--bg); }
+  h1 { font-size: 1.75rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+  .meta { color: var(--muted); font-size: .9rem; margin-bottom: 2rem; }
+  .accent { color: var(--accent); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul { padding-left: 1.25rem; }
+  li { margin: .25rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0; font-size: .95rem; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid rgba(128,128,128,.25); vertical-align: top; }
+  th { font-weight: 600; }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 3rem; border-top: 1px solid rgba(128,128,128,.2); padding-top: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>TwoTired <span class="accent">·</span> Privacy Policy</h1>
+<p class="meta">Effective 29 May 2026.</p>
+
+<p>TwoTired is a motorcycle ride-planning app. We try to do as little with your data as possible, and we never sell it. This page is the truthful version of what gets collected and why.</p>
+
+<h2>Who we are</h2>
+<p>TwoTired is operated by Ivan Stamatovski. Reach us at <a href="mailto:support@twotired.net">support@twotired.net</a> for anything privacy-related.</p>
+
+<h2>What we collect and why</h2>
+<table>
+  <thead><tr><th>Data</th><th>Why</th><th>When</th></tr></thead>
+  <tbody>
+    <tr><td>Email address</td><td>Sign-in via one-time code; the only way we can reach you</td><td>At account creation</td></tr>
+    <tr><td>Display name</td><td>So friends recognise you when sharing routes or positions</td><td>You set it; optional</td></tr>
+    <tr><td>Precise GPS location</td><td>Plan a route starting from where you are; show your live position to friends you've invited</td><td>Continuously while the app is open; stops when you close it</td></tr>
+    <tr><td>Routes you generate</td><td>Save your past rides so you can pull them up again later</td><td>When you generate or save a route</td></tr>
+    <tr><td>Bug reports</td><td>A screenshot of the map plus your comment; lets us fix bad routes</td><td>Only when you tap the report button</td></tr>
+    <tr><td>Friendships and shared routes</td><td>Connect you with other riders you choose, and let you share routes with them</td><td>When you add a friend or share a route</td></tr>
+    <tr><td>Diagnostic logs</td><td>Per-route trace (prompt, GPS, intermediate steps) so we can debug routing quality</td><td>Every time you generate a route</td></tr>
+  </tbody>
+</table>
+
+<p>We do <strong>not</strong> collect: contacts list, advertising identifiers, or anything used for cross-app tracking.</p>
+
+<p><strong>Voice input</strong>: when you tap the microphone, what happens to your speech depends on where you're using TwoTired. On the iOS app, recognition runs on your device through Apple's built-in speech APIs — the audio doesn't leave your phone. On the web version, your browser (Chrome, Safari, etc.) handles recognition; that may involve sending audio to the browser maker's servers. We never receive or store the raw audio in either case; we only see the text the recogniser produces.</p>
+
+<h2>Who else sees your data</h2>
+<p>We use a small number of service providers to run the app. Each receives only the data they need to do their job:</p>
+<ul>
+  <li><strong>Supabase</strong> (database, authentication, file storage) — stores your account, routes, friendships, and bug reports.</li>
+  <li><strong>Anthropic</strong> (Claude AI) — receives the text of your ride prompt to turn it into a route plan. Your GPS and email are not sent.</li>
+  <li><strong>Google Places API</strong> — receives place names you mention (e.g. "Bear Mountain") to look up coordinates.</li>
+  <li><strong>Resend</strong> — sends your sign-in code by email.</li>
+  <li><strong>Vercel</strong> — hosts the web version and serves the app.</li>
+  <li><strong>OpenFreeMap</strong> — serves the map tiles you see.</li>
+</ul>
+<p>We do not share your data with anyone else. We do not sell it. We do not use it for advertising.</p>
+
+<h2>How long we keep it</h2>
+<p>While your account exists, your data stays. When you delete your account (see below), we wipe your rows from our database within 24 hours. Backups roll over within 30 days.</p>
+
+<h2>How to delete your data</h2>
+<p>Open the app menu and tap <strong>Delete account</strong>. This removes your profile, routes, bug reports, friendships, and shared positions from our servers within 24 hours.</p>
+<p>Prefer email? Write to <a href="mailto:support@twotired.net">support@twotired.net</a> from the address on your account and we'll do it manually.</p>
+
+<h2>Location specifically</h2>
+<p>Your location is the only sensitive data the app actively collects. We use it for two things:</p>
+<ul>
+  <li>Routing — we send your current coordinates to our routing engine to compute a path from where you are.</li>
+  <li>Sharing — if you've invited a friend, your live position is stored briefly so they can see you on the map. When you stop sharing or close the app, that stops.</li>
+</ul>
+<p>We never log your location history persistently for tracking purposes. We never sell location data.</p>
+
+<h2>Children</h2>
+<p>TwoTired is not designed for or directed at children under 13. We do not knowingly collect data from anyone under 13.</p>
+
+<h2>Changes to this policy</h2>
+<p>If we change anything material, we'll bump the effective date at the top and let existing users know in-app before the change takes effect.</p>
+
+<h2>Contact</h2>
+<p>Questions, deletion requests, data export, anything else: <a href="mailto:support@twotired.net">support@twotired.net</a>.</p>
+
+<footer>
+  TwoTired · <a href="https://twotired.net">twotired.net</a> · Last updated 29 May 2026
+</footer>
+
+</body>
+</html>
