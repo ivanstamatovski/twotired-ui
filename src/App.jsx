@@ -749,6 +749,12 @@ export default function App() {
   const [sharedWithOpen, setSharedWithOpen] = useState(false);    // "Shared with me" list section in menu
   const [bugDone, setBugDone] = useState(false);
 
+  // Delete-account modal (Apple Guideline 5.1.1(v))
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+
   // Recent
   const [recent, setRecent] = useState(() => {
     try { return JSON.parse(localStorage.getItem(RECENT_KEY)||'[]'); } catch { return []; }
@@ -2131,6 +2137,93 @@ export default function App() {
         </div>
       )}
 
+      {/* Delete-account confirmation — Apple Guideline 5.1.1(v).
+          Requires typing "DELETE" to enable the destructive button so an
+          accidental tap can't nuke the account. */}
+      {deleteAccountOpen && (
+        <div className="bug-modal-backdrop"
+          onClick={() => { if (!deleteSubmitting) setDeleteAccountOpen(false); }}>
+          <div className="bug-modal" onClick={e => e.stopPropagation()}>
+            <div className="bug-modal-header">
+              <h3>Delete account</h3>
+              <button className="bug-modal-close"
+                onClick={() => setDeleteAccountOpen(false)}
+                disabled={deleteSubmitting}
+                aria-label="Close">✕</button>
+            </div>
+
+            <p className="delete-account-warning">
+              This permanently removes your account, profile, friendships,
+              shared routes, and live position data. It cannot be undone.
+            </p>
+
+            <label className="bug-modal-label">
+              Type <strong>DELETE</strong> to confirm:
+            </label>
+            <input className="bug-modal-comment"
+              style={{ minHeight: 0, height: 44 }}
+              type="text"
+              inputMode="text"
+              name="confirmDelete"
+              autoComplete="off"
+              data-lpignore="true"
+              data-1p-ignore
+              value={deleteConfirmText}
+              onChange={e => setDeleteConfirmText(e.target.value)}
+              disabled={deleteSubmitting}
+              placeholder="DELETE"
+              autoFocus
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}/>
+
+            {deleteError && (
+              <div className="error-banner" style={{ marginTop: 8 }}>{deleteError}</div>
+            )}
+
+            <div className="bug-modal-actions">
+              <button className="bug-modal-cancel"
+                onClick={() => setDeleteAccountOpen(false)}
+                disabled={deleteSubmitting}>
+                Cancel
+              </button>
+              <button className="bug-modal-submit menu-delete-account"
+                onClick={async () => {
+                  setDeleteSubmitting(true);
+                  setDeleteError(null);
+                  try {
+                    const { data: sessionData } = await supabase.auth.getSession();
+                    const token = sessionData?.session?.access_token;
+                    if (!token) throw new Error('Not signed in.');
+                    const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-account`, {
+                      method: 'POST',
+                      headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'apikey': SUPABASE_ANON_KEY,
+                      },
+                    });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok || !body.ok) {
+                      throw new Error(body.error || `Server error (${res.status}).`);
+                    }
+                    // Wiped server-side — now clear local session + state.
+                    await supabase.auth.signOut();
+                    try { localStorage.removeItem(RECENT_KEY); } catch {}
+                    setDeleteAccountOpen(false);
+                  } catch (err) {
+                    setDeleteError(err.message || 'Delete failed. Try again or email support@twotired.net.');
+                  } finally {
+                    setDeleteSubmitting(false);
+                  }
+                }}
+                disabled={deleteSubmitting || deleteConfirmText !== 'DELETE'}>
+                {deleteSubmitting ? 'Deleting…' : 'Delete forever'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Share-this-route modal — pick a mate to send the current route to. */}
       {shareModalOpen && (
         <div className="share-modal-backdrop" onClick={() => setShareModalOpen(false)}>
@@ -2593,6 +2686,10 @@ export default function App() {
                 <span className="menu-user-email">{session.user.email}</span>
                 <button className="menu-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
               </div>
+              <button className="menu-delete-account"
+                onClick={() => { setDeleteConfirmText(''); setDeleteError(null); setDeleteAccountOpen(true); }}>
+                Delete account
+              </button>
             </div>
           )}
 

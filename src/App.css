@@ -1174,6 +1174,35 @@ body {
 
 .menu-divider { height: 1px; background: var(--border); margin: 4px 0; }
 
+/* Delete-account button — kept visible (Apple wants it not hidden) but
+   visually subdued so accidental tap is unlikely. Red on press / active. */
+.menu-delete-account {
+  margin-top: 8px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.menu-delete-account:hover,
+.menu-delete-account:focus-visible {
+  color: var(--red);
+  border-color: var(--red);
+}
+.menu-delete-account:active { background: rgba(255, 60, 60, 0.08); }
+
+/* Warning text inside the confirmation modal. */
+.delete-account-warning {
+  margin: 8px 0 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
 /* ─── Friends / profile (overflow menu) ──────────────────────────── */
 .avatar {
   display: inline-flex;

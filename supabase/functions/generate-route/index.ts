@@ -89,9 +89,12 @@ interface RouteRequest {
   stops?: StopRequest[];
   curviness?: 1 | 2 | 3;
   round_trip?: boolean;
-  intermediate_waypoints?: string[]; // Named places along the corridor to anchor GH on the right road
+  intermediate_waypoints?: string[]; // Forced visit points GH must pass through. Use ONLY for
+                                     // explicit rider-named stops, NEVER for corridor anchoring
+                                     // (see triangles in route 124).
   road_corridor?: string;            // Named road to follow (e.g. "9W", "NY-97", "NY-28").
-                                     // When set: corridor custom_model biases GH to stay on that road.
+                                     // When set: corridor model biases GH onto that road via
+                                     // the data-driven corridors table.
 }
 
 // ── Palisades Pkwy avoidance zone ─────────────────────────────────────────────
@@ -124,265 +127,163 @@ const PALISADES_ZONE_AREAS = {
   }],
 };
 
-// ── Route 17 / parallel-roads primary exclusion zone ──────────────────────────
-// v2.35: Both 9W and Route 17 are PRIMARY roads in OSM. The main corridor zone penalizes
-// secondary/tertiary, but when two primaries exist GraphHopper picks the shorter one.
-// Within this zone: PRIMARY and TRUNK are penalized an additional 0.1×.
+// ── Corridors (data-driven) ──────────────────────────────────────────────────
+// Source: supabase table `corridors` (migration 2026-05-28). Each row carries
+// a `kind` discriminator (polygon | way_ids) and a `config` jsonb whose shape
+// varies per kind. See the migration file for the full shape spec.
 //
-// v2.36: Stepped polygon — east edge extended to -73.95 in the Sparkill/Orangeburg band
-// (lat 40.90–41.10) to capture Route 303 / Palisades Pkwy connectors that run at
-// lng -73.97–74.00 and were previously east of the old -74.03 edge (i.e., unpenalized).
-// 9W at Sparkill sits at lng -73.931 — east of the -73.95 edge, unaffected.
-// At lat 41.10 the east edge steps back to -74.03 (9W curves west to -73.94 by that lat,
-// still safely east of both edges).
-//
-//   Route 17 (primary, inside zone):             0.7 × 0.1 = 0.07× — ruled out
-//   Route 303 / Palisades ramps (south section): 0.7 × 0.1 = 0.07× — ruled out
-//   9W (primary, outside zone throughout):       0.7×           — unchanged, wins
-const NINE_W_ROUTE17_EXCL_AREA = {
-  type: 'FeatureCollection',
-  features: [{
-    type: 'Feature',
-    id: 'nine_w_route17_excl',
-    properties: {},
-    geometry: {
-      type: 'Polygon',
-      // Stepped polygon:
-      // South (lat 40.90–41.10): W -74.25 → E -73.95  (wider — covers Sparkill parallel roads)
-      // North (lat 41.10–41.35): W -74.25 → E -74.03  (original — 9W curves west here, keep clear)
-      coordinates: [[
-        [-74.25, 40.90],
-        [-73.95, 40.90],
-        [-73.95, 41.10],
-        [-74.03, 41.10],
-        [-74.03, 41.35],
-        [-74.25, 41.35],
-        [-74.25, 40.90],
-      ]],
-    },
-  }],
+// Until Molly's GH config exposes `osm_way_id` in graph.encoded_values, all
+// active corridors use kind='polygon'. The polygon kind preserves the in-code
+// behaviour that lived in NINE_W_CORRIDOR_AREA / NY97_CORRIDOR_AREA / etc.
+// before this refactor — same polygons, same road-class multipliers, but
+// editable without redeploying.
+
+type CorridorPolygonConfig = {
+  geometry: any;                                // GeoJSON Polygon
+  global_road_classes?: Record<string, number>; // applied to every edge
+  in_corridor_road_classes?: Record<string, number>; // compounded inside polygon
+  exclusion_areas?: Array<{                     // optional sidekick polygons
+    key: string;
+    geometry: any;
+    road_class_multipliers: Record<string, number>;
+  }>;
 };
 
-// ── NY-97 / Delaware River Canyon corridor area ───────────────────────────────
-// NY-97 is a NY state highway — SECONDARY in OSM. Hawks Nest switchbacks are 2 miles
-// north of Sparrow Bush: tight cliff-face bends above the Delaware gorge, then 18 miles
-// of sweeping curves north to Narrowsburg.
-// INVERTED logic vs 9W: NY-97 is SECONDARY, so we penalize PRIMARY/TRUNK in the canyon
-// to prevent GraphHopper from routing via US-6 (PRIMARY) which runs parallel to the north.
-const NY97_CORRIDOR_AREA = {
-  type: 'FeatureCollection',
-  features: [{
-    type: 'Feature',
-    id: 'ny97_corridor',
-    properties: {},
-    geometry: {
-      type: 'Polygon',
-      // Delaware River canyon from Port Jervis north to Narrowsburg + approach roads.
-      // Wide enough to capture US-6 (PRIMARY) which bypasses the canyon.
-      coordinates: [[
-        [-74.55, 41.28],
-        [-75.10, 41.28],
-        [-75.10, 41.72],
-        [-74.55, 41.72],
-        [-74.55, 41.28],
-      ]],
-    },
-  }],
+type CorridorWayIdsConfig = {
+  osm_way_ids: number[];
+  multiply_by: number;
 };
 
-// ── NY-28 / Catskills corridor area ───────────────────────────────────────────
-// NY-28 is a NY state highway — SECONDARY in OSM. Runs east-west through the Catskill
-// peaks: Kingston → Woodstock → Phoenicia → Shandaken → Margaretville.
-// Same inverted logic as NY-97: penalize PRIMARY/TRUNK to keep route on the mountain
-// secondary instead of jumping to US-209 or I-87 bypasses.
-const NY28_CORRIDOR_AREA = {
-  type: 'FeatureCollection',
-  features: [{
-    type: 'Feature',
-    id: 'ny28_corridor',
-    properties: {},
-    geometry: {
-      type: 'Polygon',
-      // Catskills corridor: Kingston west to Margaretville/Delhi. Wide N/S to capture
-      // competing US-209 (E side) and I-86/NY-17 (S side).
-      coordinates: [[
-        [-73.95, 41.80],
-        [-74.80, 41.80],
-        [-74.80, 42.25],
-        [-73.95, 42.25],
-        [-73.95, 41.80],
-      ]],
-    },
-  }],
-};
+type Corridor = {
+  key: string;
+  name: string;
+  applies_to: string[];
+} & (
+  | { kind: 'polygon';  config: CorridorPolygonConfig  }
+  | { kind: 'way_ids';  config: CorridorWayIdsConfig   }
+);
 
-// ── 9W corridor area ──────────────────────────────────────────────────────────
-// v2.33: Used when rider requests "via 9W" or similar named-road routing.
-// The corridor covers the Hudson River west bank from Alpine/Fort Lee to Newburgh,
-// including the Harriman area where GraphHopper normally cuts shortcuts.
-// Within this zone: secondary/tertiary roads are heavily penalized so the
-// primary road (US Route 9W) becomes the highest-scoring option for the optimizer.
-// distance_influence stays at 90 (LM mode minimum). The 0.15x secondary penalty
-// creates a 4.67× preference for primary (9W) over secondary roads in the zone.
-const NINE_W_CORRIDOR_AREA = {
-  type: 'FeatureCollection',
-  features: [{
-    type: 'Feature',
-    id: 'nine_w_corridor',
-    properties: {},
-    geometry: {
-      type: 'Polygon',
-      // Rectangle: Hudson River (E) to well past Harriman (W), Alpine to Newburgh (N/S).
-      // Wide enough that any Harriman shortcut falls inside and gets penalized.
-      coordinates: [[
-        [-74.20, 40.94],
-        [-73.88, 40.94],
-        [-73.88, 41.52],
-        [-74.20, 41.52],
-        [-74.20, 40.94],
-      ]],
-    },
-  }],
-};
+let _corridorsCache: { data: Corridor[]; ts: number } | null = null;
+const CORRIDORS_TTL_MS = 30_000;
 
-// ── Build corridor-biased custom_model ─────────────────────────────────────────
-// v2.37: ARCHITECTURAL CHANGE — corridor routes no longer inherit the curviness-seeking
-// base.priority from the motorcycle profile.
-//
-// Root cause of neighborhood zigzag: GraphHopper motorcycle profile assigns RESIDENTIAL
-// roads the HIGHEST base priority (1.0) because they're curvy. PRIMARY roads are only 0.7.
-// So a curvy residential street in West Haverstraw beat 9W even inside the corridor.
-//
-// Fix: for named corridors, replace curviness-seeking with a clean road-hierarchy model:
-//   - MOTORWAY: 0.1 (avoid interstates)
-//   - TRUNK/PRIMARY: ~0.7 default (backbone roads — preferred)
-//   - SECONDARY/TERTIARY: globally 0.6 (minor roads OK outside corridor)
-//   - RESIDENTIAL: globally 0.15 (motorcycles are NOT neighborhood crawlers)
-//   - LIVING_STREET/SERVICE: globally 0.05 (essentially banned)
-//
-// The scenic quality of 9W comes from the road itself (Hudson River, Palisades cliffs,
-// Bear Mountain) — not from GraphHopper seeking curviness. Curviness-seeking is only
-// appropriate for open-ended "twisty ride" requests, not named corridor routes.
-function buildCorridorModel(corridor: string, curviness: 1 | 2 | 3): any {
+async function getCorridors(): Promise<Corridor[]> {
+  const now = Date.now();
+  if (_corridorsCache && (now - _corridorsCache.ts) < CORRIDORS_TTL_MS) {
+    return _corridorsCache.data;
+  }
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/corridors?select=key,name,kind,config,applies_to&active=eq.true`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    if (!res.ok) {
+      console.warn('[getCorridors] fetch failed:', res.status);
+      _corridorsCache = { data: _corridorsCache?.data ?? [], ts: now };
+      return _corridorsCache.data;
+    }
+    const rows = (await res.json()) as Corridor[];
+    _corridorsCache = { data: rows, ts: now };
+    if (rows.length) {
+      const summary = rows.map(r => `${r.name}[${r.kind}]`).join(',');
+      console.log('[getCorridors] loaded', rows.length, 'active:', summary);
+    }
+    return rows;
+  } catch (e: any) {
+    console.warn('[getCorridors] error:', e?.message);
+    _corridorsCache = { data: _corridorsCache?.data ?? [], ts: now };
+    return _corridorsCache.data;
+  }
+}
+
+// Build the corridor-biased custom_model from a polygon-kind config. Mirrors
+// the in-code logic that used to live in `if (corridor === '9W') { ... }`:
+// global hierarchy rules + per-corridor in-polygon overrides + optional
+// exclusion-area rules (e.g. 9W's Route-17 exclusion).
+function buildPolygonCorridorModel(base: any, corridor: Corridor & { kind: 'polygon' }): any {
+  const cfg = corridor.config;
+
+  const globalRules = Object.entries(cfg.global_road_classes || {}).map(([cls, v]) => ({
+    if: `road_class == ${cls}`,
+    multiply_by: String(v),
+  }));
+
+  const inCorridorRules = Object.entries(cfg.in_corridor_road_classes || {}).map(([cls, v]) => ({
+    if: `in_${corridor.key} && road_class == ${cls}`,
+    multiply_by: String(v),
+  }));
+
+  const exclusionAreas = cfg.exclusion_areas || [];
+  const exclusionRules = exclusionAreas.flatMap(ex =>
+    Object.entries(ex.road_class_multipliers || {}).map(([cls, v]) => ({
+      if: `in_${ex.key} && road_class == ${cls}`,
+      multiply_by: String(v),
+    })),
+  );
+
+  const corridorFeature = {
+    type: 'Feature',
+    id: corridor.key,
+    geometry: cfg.geometry,
+    properties: {},
+  };
+  const exclusionFeatures = exclusionAreas.map(ex => ({
+    type: 'Feature',
+    id: ex.key,
+    geometry: ex.geometry,
+    properties: {},
+  }));
+
+  return {
+    speed: base.speed,
+    priority: [...globalRules, ...inCorridorRules, ...exclusionRules],
+    areas: {
+      type: 'FeatureCollection',
+      features: [...(base.areas?.features || []), corridorFeature, ...exclusionFeatures],
+    },
+    distance_influence: 90,
+  };
+}
+
+// Build the corridor-biased custom_model from a way_ids-kind config. Requires
+// Molly's GH config to expose `osm_way_id` in graph.encoded_values — otherwise
+// GH rejects the model and we fall back silently to the base curviness model.
+function buildWayIdsCorridorModel(base: any, corridor: Corridor & { kind: 'way_ids' }): any {
+  const ids = corridor.config.osm_way_ids;
+  if (!ids?.length) return base;
+  const predicate = ids.length === 1
+    ? `osm_way_id == ${ids[0]}`
+    : `osm_way_id in [${ids.join(', ')}]`;
+  return {
+    speed: base.speed,
+    priority: [
+      ...(base.priority || []),
+      { if: predicate, multiply_by: String(corridor.config.multiply_by) },
+    ],
+    areas: base.areas || { type: 'FeatureCollection', features: [] },
+    distance_influence: 90,
+  };
+}
+
+// Look up the named corridor in the corridors table and synthesise a
+// custom_model. Falls back to the base curviness model if the corridor name
+// isn't registered (logs a warning so admins notice a typo or missing seed).
+async function buildCorridorModel(corridorName: string, curviness: 1 | 2 | 3): Promise<any> {
   const base = buildCurvinessModel(curviness);
-
-  if (corridor === '9W') {
-    return {
-      speed: base.speed, // keep motorcycle speed model
-      priority: [
-        // ── Global road hierarchy (replaces curviness-seeking base.priority) ──────
-        // Motorcycles want flow: highways and primary roads, NOT neighborhood streets.
-        // NOTE: No global MOTORWAY penalty here — allowing GH to use expressways for
-        // the city approach leg (e.g. Astoria → GWB). MOTORWAY is penalized only
-        // inside the specific zone polygons below, matching NY-97/NY-28 pattern.
-        { if: 'road_class == RESIDENTIAL',    multiply_by: '0.15' }, // no neighborhood crawling
-        { if: 'road_class == LIVING_STREET',  multiply_by: '0.05' }, // nearly banned
-        { if: 'road_class == SERVICE',        multiply_by: '0.05' }, // nearly banned
-        { if: 'road_class == SECONDARY',      multiply_by: '0.6'  }, // minor roads: lower but OK
-        { if: 'road_class == TERTIARY',       multiply_by: '0.5'  }, // discouraged globally
-        // TRUNK and PRIMARY get ~0.7 motorcycle base (no rule = no change) — preferred
-
-        // ── 9W corridor zone: enforce PRIMARY wins hard ───────────────────────────
-        // Inside the corridor (lat 40.94–41.52), secondary/tertiary/residential and
-        // MOTORWAY (Palisades Pkwy) all get crushed. Combined penalties:
-        //   SECONDARY in corridor:    0.6 × 0.15 = 0.09  << PRIMARY 0.7
-        //   TERTIARY in corridor:     0.5 × 0.15 = 0.075 << PRIMARY 0.7
-        //   RESIDENTIAL in corridor:  0.15 × 0.1 = 0.015 << PRIMARY 0.7
-        //   MOTORWAY in corridor:     0.05 alone          << PRIMARY 0.7 (Palisades Pkwy avoided)
-        { if: 'in_nine_w_corridor && road_class == MOTORWAY',     multiply_by: '0.05' },
-        { if: 'in_nine_w_corridor && road_class == SECONDARY',    multiply_by: '0.15' },
-        { if: 'in_nine_w_corridor && road_class == TERTIARY',     multiply_by: '0.15' },
-        { if: 'in_nine_w_corridor && road_class == UNCLASSIFIED', multiply_by: '0.15' },
-        { if: 'in_nine_w_corridor && road_class == RESIDENTIAL',  multiply_by: '0.1'  },
-        { if: 'in_nine_w_corridor && road_class == LIVING_STREET',multiply_by: '0.05' },
-        { if: 'in_nine_w_corridor && road_class == SERVICE',      multiply_by: '0.05' },
-
-        // ── Route 17 / Route 303 exclusion zone ───────────────────────────────────
-        // Stepped polygon (v2.36) prevents competing PRIMARY and MOTORWAY roads west of 9W.
-        { if: 'in_nine_w_route17_excl && road_class == MOTORWAY', multiply_by: '0.05' },
-        { if: 'in_nine_w_route17_excl && road_class == PRIMARY',  multiply_by: '0.1'  },
-        { if: 'in_nine_w_route17_excl && road_class == TRUNK',    multiply_by: '0.1'  },
-      ],
-      areas: {
-        type: 'FeatureCollection',
-        features: [
-          ...(base.areas?.features || []),
-          ...NINE_W_CORRIDOR_AREA.features,
-          ...NINE_W_ROUTE17_EXCL_AREA.features,
-        ],
-      },
-      distance_influence: 90,
-    };
+  const corridors = await getCorridors();
+  const corridor = corridors.find(c => c.name === corridorName);
+  if (!corridor) {
+    console.warn(`[buildCorridorModel] no row for corridor "${corridorName}" — falling back to base curviness model`);
+    return base;
   }
-
-  if (corridor === 'NY-97') {
-    return {
-      speed: base.speed, // keep motorcycle speed model
-      priority: [
-        // ── Global road hierarchy (same anti-residential penalties as 9W) ──────────
-        { if: 'road_class == MOTORWAY',       multiply_by: '0.1'  }, // avoid interstates
-        { if: 'road_class == RESIDENTIAL',    multiply_by: '0.15' }, // no neighborhood crawling
-        { if: 'road_class == LIVING_STREET',  multiply_by: '0.05' }, // nearly banned
-        { if: 'road_class == SERVICE',        multiply_by: '0.05' }, // nearly banned
-        { if: 'road_class == SECONDARY',      multiply_by: '0.6'  }, // minor roads: lower but OK
-        { if: 'road_class == TERTIARY',       multiply_by: '0.5'  }, // discouraged globally
-
-        // ── NY-97 corridor: INVERTED logic vs 9W ─────────────────────────────────
-        // NY-97 is a SECONDARY road. US-6 (PRIMARY) runs parallel north of the canyon
-        // and is shorter/faster — GraphHopper would prefer it without penalty.
-        // Fix: in the corridor, PRIMARY/TRUNK get crushed so SECONDARY (NY-97) wins.
-        //   PRIMARY in corridor:  no global rule, combined: 0.15 alone
-        //   SECONDARY in corridor: 0.6 global × 1.0 here = 0.6 >> PRIMARY 0.15 ✓
-        { if: 'in_ny97_corridor && road_class == PRIMARY',  multiply_by: '0.15' },
-        { if: 'in_ny97_corridor && road_class == TRUNK',    multiply_by: '0.15' },
-        { if: 'in_ny97_corridor && road_class == MOTORWAY', multiply_by: '0.05' },
-        // TERTIARY/RESIDENTIAL already penalized globally; corridor doesn't need extra push
-      ],
-      areas: {
-        type: 'FeatureCollection',
-        features: [
-          ...(base.areas?.features || []),
-          ...NY97_CORRIDOR_AREA.features,
-        ],
-      },
-      distance_influence: 90,
-    };
-  }
-
-  if (corridor === 'NY-28') {
-    return {
-      speed: base.speed, // keep motorcycle speed model
-      priority: [
-        // ── Global road hierarchy (same as other corridors) ───────────────────────
-        { if: 'road_class == MOTORWAY',       multiply_by: '0.1'  },
-        { if: 'road_class == RESIDENTIAL',    multiply_by: '0.15' },
-        { if: 'road_class == LIVING_STREET',  multiply_by: '0.05' },
-        { if: 'road_class == SERVICE',        multiply_by: '0.05' },
-        { if: 'road_class == SECONDARY',      multiply_by: '0.6'  },
-        { if: 'road_class == TERTIARY',       multiply_by: '0.5'  },
-
-        // ── NY-28 corridor: INVERTED logic — NY-28 is SECONDARY ──────────────────
-        // Competitors: I-87 (MOTORWAY, already penalized), US-209 (PRIMARY, east side),
-        // I-86/NY-17 (MOTORWAY/PRIMARY, south of corridor).
-        // Penalize PRIMARY/TRUNK so SECONDARY (NY-28) wins through the Catskill spine.
-        //   PRIMARY in corridor:   combined 0.15  (0.15 penalty only)
-        //   SECONDARY in corridor: combined 0.6   (0.6 global, no extra penalty) >> 0.15 ✓
-        { if: 'in_ny28_corridor && road_class == PRIMARY',  multiply_by: '0.15' },
-        { if: 'in_ny28_corridor && road_class == TRUNK',    multiply_by: '0.15' },
-        { if: 'in_ny28_corridor && road_class == MOTORWAY', multiply_by: '0.05' },
-      ],
-      areas: {
-        type: 'FeatureCollection',
-        features: [
-          ...(base.areas?.features || []),
-          ...NY28_CORRIDOR_AREA.features,
-        ],
-      },
-      distance_influence: 90,
-    };
-  }
-
-  return base; // unknown corridor — fall back to standard curviness model
+  if (corridor.kind === 'polygon') return buildPolygonCorridorModel(base, corridor);
+  if (corridor.kind === 'way_ids') return buildWayIdsCorridorModel(base, corridor);
+  return base;
 }
 
 // ── Routing area cache (fetched from score server at cold start) ───────────────
@@ -413,6 +314,222 @@ async function loadRoutingAreas(): Promise<void> {
 
 // Kick off at module load — warm by the time the first request arrives
 const _areasPromise = loadRoutingAreas();
+
+// ── Learned corrections (rule-kind discriminated) ────────────────────────────
+// Source: supabase table `learned_corrections` (migration 2026-05-28). Each
+// row carries a rule_kind and a rule_data jsonb whose shape varies per kind.
+// The migration file documents every shape; the types below mirror
+// what we actually parse here.
+
+type RoadClassFilter = 'all' | 'surface_only' | 'highways_only';
+type Bbox = [number, number, number, number]; // [lon_sw, lat_sw, lon_ne, lat_ne]
+
+type LearnedCorrectionBase = {
+  key: string;
+  name: string;
+  applies_to: string[];
+};
+
+type EscapeWaypointRule = LearnedCorrectionBase & {
+  rule_kind: 'escape_waypoint';
+  rule_data: {
+    origin_bbox: Bbox;
+    bearing_min: number;
+    bearing_max: number;
+    destination_bbox?: Bbox | null;
+    forced_waypoint: LatLng & { name?: string };
+  };
+};
+
+type EdgePenaltyRule = LearnedCorrectionBase & {
+  rule_kind: 'edge_penalty';
+  rule_data: {
+    osm_way_ids: number[];
+    multiply_by: number;
+  };
+};
+
+type BannedCrossingRule = LearnedCorrectionBase & {
+  rule_kind: 'banned_crossing';
+  rule_data: {
+    osm_way_id: number;
+    from_bbox?: Bbox | null;
+    to_bbox?: Bbox | null;
+  };
+};
+
+type AreaPenaltyRule = LearnedCorrectionBase & {
+  rule_kind: 'area_penalty';
+  rule_data: {
+    geometry: any;
+    multiply_by: number;
+    road_class_filter?: RoadClassFilter;
+  };
+};
+
+type LearnedCorrection =
+  | EscapeWaypointRule
+  | EdgePenaltyRule
+  | BannedCrossingRule
+  | AreaPenaltyRule;
+
+function pointInBbox(ll: LatLng, b: Bbox): boolean {
+  return ll.lng >= b[0] && ll.lat >= b[1] && ll.lng <= b[2] && ll.lat <= b[3];
+}
+
+// Bearing range with wraparound (e.g. min=350, max=20 covers 350→360→0→20).
+function bearingInRange(bearing: number, min: number, max: number): boolean {
+  if (min <= max) return bearing >= min && bearing <= max;
+  return bearing >= min || bearing <= max;
+}
+
+// Compound `if` predicate for an area_penalty rule, accounting for the
+// road-class filter. Without a filter, the polygon would also hit the
+// highways that ride the perimeter — almost never what the user meant.
+function areaPenaltyPredicate(key: string, filter: RoadClassFilter | undefined): string {
+  switch (filter || 'surface_only') {
+    case 'highways_only':
+      return `in_${key} && (road_class == MOTORWAY || road_class == TRUNK || road_class_link == true)`;
+    case 'all':
+      return `in_${key}`;
+    case 'surface_only':
+    default:
+      return `in_${key} && road_class != MOTORWAY && road_class != TRUNK && road_class_link == false`;
+  }
+}
+let _learnedCorrectionsCache: { data: LearnedCorrection[]; ts: number } | null = null;
+const LEARNED_CORRECTIONS_TTL_MS = 30_000;
+
+async function getLearnedCorrections(): Promise<LearnedCorrection[]> {
+  const now = Date.now();
+  if (_learnedCorrectionsCache && (now - _learnedCorrectionsCache.ts) < LEARNED_CORRECTIONS_TTL_MS) {
+    return _learnedCorrectionsCache.data;
+  }
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/learned_corrections?select=key,name,rule_kind,rule_data,applies_to&active=eq.true`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    if (!res.ok) {
+      console.warn('[getLearnedCorrections] fetch failed:', res.status);
+      _learnedCorrectionsCache = { data: _learnedCorrectionsCache?.data ?? [], ts: now };
+      return _learnedCorrectionsCache.data;
+    }
+    const rows = (await res.json()) as LearnedCorrection[];
+    _learnedCorrectionsCache = { data: rows, ts: now };
+    if (rows.length) {
+      const summary = rows.map(r => `${r.key}[${r.rule_kind}]`).join(',');
+      console.log('[getLearnedCorrections] loaded', rows.length, 'active:', summary);
+      const bannedNotImpl = rows.filter(r => r.rule_kind === 'banned_crossing');
+      if (bannedNotImpl.length) {
+        console.warn('[getLearnedCorrections] banned_crossing not yet enforced; ignoring',
+          bannedNotImpl.map(r => r.key).join(','));
+      }
+    }
+    return rows;
+  } catch (e: any) {
+    console.warn('[getLearnedCorrections] error:', e?.message);
+    _learnedCorrectionsCache = { data: _learnedCorrectionsCache?.data ?? [], ts: now };
+    return _learnedCorrectionsCache.data;
+  }
+}
+
+// Filter corrections to those whose applies_to matches the given GH profile.
+function relevantTo(profile: string, corrections: LearnedCorrection[]): LearnedCorrection[] {
+  return corrections.filter(c => !c.applies_to?.length || c.applies_to.includes(profile));
+}
+
+// area_penalty rule_kind → mutate the per-request custom_model. Adds each
+// polygon as a Feature in model.areas and a corresponding priority predicate.
+function applyAreaPenalties(model: any, profile: string, corrections: LearnedCorrection[]): any {
+  if (!model || !corrections.length) return model;
+  const relevant = relevantTo(profile, corrections).filter(
+    (c): c is AreaPenaltyRule => c.rule_kind === 'area_penalty',
+  );
+  if (!relevant.length) return model;
+
+  if (!model.areas) model.areas = { type: 'FeatureCollection', features: [] };
+  if (!model.areas.features) model.areas.features = [];
+  if (!model.priority) model.priority = [];
+
+  for (const c of relevant) {
+    if (model.areas.features.some((f: any) => f.id === c.key)) continue;
+    model.areas.features.push({
+      type: 'Feature',
+      id: c.key,
+      geometry: c.rule_data.geometry,
+      properties: {},
+    });
+    model.priority.push({
+      if: areaPenaltyPredicate(c.key, c.rule_data.road_class_filter),
+      multiply_by: String(c.rule_data.multiply_by),
+    });
+  }
+  return model;
+}
+
+// edge_penalty rule_kind → custom_model rule on osm_way_id encoded value.
+// REQUIRES Molly's GH config to expose `osm_way_id` in graph.encoded_values;
+// if it's not, GH rejects the model and the route falls back to the default.
+// Logs (does not throw) so an outdated GH config doesn't break routing.
+function applyEdgePenalties(model: any, profile: string, corrections: LearnedCorrection[]): any {
+  if (!model || !corrections.length) return model;
+  const relevant = relevantTo(profile, corrections).filter(
+    (c): c is EdgePenaltyRule => c.rule_kind === 'edge_penalty',
+  );
+  if (!relevant.length) return model;
+
+  if (!model.priority) model.priority = [];
+  // GH custom_model `if` expressions use Janino — supports ==, !=, &&, ||,
+  // but NOT Python-style `in [list]` (route 141 was rejected for that exact
+  // syntax). We emit an OR chain, chunked into 20-ID batches per priority
+  // rule so individual expressions stay short and Janino-compilable.
+  const CHUNK = 20;
+  for (const c of relevant) {
+    const ids = c.rule_data.osm_way_ids;
+    if (!ids?.length) continue;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const predicate = chunk.map(id => `osm_way_id == ${id}`).join(' || ');
+      model.priority.push({ if: predicate, multiply_by: String(c.rule_data.multiply_by) });
+    }
+  }
+  return model;
+}
+
+// escape_waypoint rule_kind → if any active rule matches (origin in bbox,
+// destination bearing in range, optional destination_bbox match), return the
+// forced waypoint. First match wins; admins should keep rules disjoint.
+function getEscapeOverride(
+  origin: LatLng,
+  destination: LatLng,
+  corrections: LearnedCorrection[],
+): LatLng | null {
+  const bearing = bearingDegrees(origin, destination);
+  for (const c of corrections) {
+    if (c.rule_kind !== 'escape_waypoint') continue;
+    const d = c.rule_data;
+    if (!pointInBbox(origin, d.origin_bbox)) continue;
+    if (!bearingInRange(bearing, d.bearing_min, d.bearing_max)) continue;
+    if (d.destination_bbox && !pointInBbox(destination, d.destination_bbox)) continue;
+    console.log(`[escape-override] matched rule "${c.key}" → forcing waypoint`,
+      JSON.stringify(d.forced_waypoint));
+    return { lat: d.forced_waypoint.lat, lng: d.forced_waypoint.lng };
+  }
+  return null;
+}
+
+// banned_crossing rule_kind is parsed but not yet enforced. Implementing it
+// requires per-edge osm_way_ids in the merged route — wire `path_details`
+// into the GH calls and add a post-route scan when the first such rule is
+// actually written. A warning fires from getLearnedCorrections() when one
+// is loaded so it doesn't fail silently.
 
 // ── Curviness tier model builder ───────────────────────────────────────────────
 // v2.5: replaced static class-based CURVINESS_MODELS array with a function that
@@ -583,7 +700,7 @@ const KNOWN_WAYPOINTS: Record<string, LatLng> = {
   'cornwall-on-hudson, ny':             { lat: 41.439746, lng: -73.999997 },
   'newburgh, ny':                       { lat: 41.499076, lng: -74.021556 }, // US 9W / S Robinson Ave — OSM way 20666000
   // ── Staten Island crossings ──
-  'goethals bridge, staten island, ny': { lat: 40.643592, lng: -74.209789 }, // I-278 SI approach — OSM way 38071038
+  'goethals bridge, staten island, ny': { lat: 40.636037, lng: -74.182515 }, // I-278 Goethals on-ramp, SI side (Howland Hook) — was previously 40.6436,-74.2098 which is actually Elizabeth NJ past the bridge, causing SW escape legs from Brooklyn/Queens to route through Manhattan→Holland Tunnel→NJ instead of via Verrazano
   'verrazano-narrows bridge, staten island, ny': { lat: 40.601958, lng: -74.058808 }, // I-278 SI Expressway — OSM way 5680111
   'perth amboy, nj':                    { lat: 40.514965, lng: -74.286347 }, // NJ-35 / Convery Blvd — OSM way 11663261
   // ── Long Island boundary ──
@@ -653,8 +770,14 @@ async function geocode(query: string): Promise<LatLng> {
 }
 
 // ── Resolve Location → LatLng ─────────────────────────────────────────────────
+// Check hardcoded KNOWN_WAYPOINTS first so destinations like "Bear Mountain"
+// snap to a known road-adjacent coord rather than Google Places' off-road
+// geocode (e.g. parking lot or trail head 250m from any routable road).
 async function resolveLocation(loc: Location): Promise<LatLng> {
-  return 'lat' in loc ? loc : await geocode(loc.query);
+  if ('lat' in loc) return loc;
+  const hardcoded = lookupWaypoint(loc.query);
+  if (hardcoded) return hardcoded;
+  return await geocode(loc.query);
 }
 
 // ── Find a POI near a location via Places API (New) ───────────────────────────
@@ -722,17 +845,45 @@ async function findPOI(type: string, near: LatLng, radius_km = 25): Promise<any 
 //   means GraphHopper must pass through Nyack traveling north — it cannot dip south
 //   to reach the town center and backtrack, because that would require a U-turn.
 async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings?: number[], modelOverride?: any): Promise<any> {
+  // Fetch human-reviewed routing corrections up front. Two reasons we need
+  // them this early: (1) the car-leg branch below has to know whether to
+  // switch from CH to LM mode (it does whenever any custom_model rule applies
+  // to the car profile), and (2) we inject the matching rules into the
+  // custom_model just before sending to GH. escape_waypoint rules are
+  // consumed upstream in pickExitPoint, not here.
+  const learnedCorrections = await getLearnedCorrections();
+  const profile = curviness === 0 ? 'car' : 'twotired';
+  const profileLearned = relevantTo(profile, learnedCorrections).filter(
+    c => c.rule_kind === 'area_penalty' || c.rule_kind === 'edge_penalty',
+  );
+
   let body: any;
   if (curviness === 0) {
-    // Car profile — CH routing (no ch.disable), no custom_model needed.
-    // Car profile prefers motorways and primary roads by default.
-    body = {
-      points: points.map(p => [p.lng, p.lat]),
-      profile: 'car',
-      points_encoded: false,
-      instructions: true,
-      locale: 'en',
-    };
+    // Car profile.
+    // - No learned areas → fast CH path (default behaviour, motorways preferred).
+    // - With learned areas → switch to flexible LM mode so we can carry a
+    //   custom_model whose `priority` rules + area polygons force the route
+    //   to steer around the avoidance shapes.
+    if (profileLearned.length === 0) {
+      body = {
+        points: points.map(p => [p.lng, p.lat]),
+        profile: 'car',
+        points_encoded: false,
+        instructions: true,
+        locale: 'en',
+      };
+    } else {
+      const carModel: any = { speed: [], priority: [], areas: { type: 'FeatureCollection', features: [] }, distance_influence: 90 };
+      body = {
+        points: points.map(p => [p.lng, p.lat]),
+        profile: 'car',
+        custom_model: carModel,
+        'ch.disable': true,
+        points_encoded: false,
+        instructions: true,
+        locale: 'en',
+      };
+    }
   } else {
     // Motorcycle profile — LM flexible mode with scenic custom_model
     // v2.25: snap_prevention stops waypoints from snapping to motorways/motorway_links.
@@ -762,11 +913,63 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
       body.heading_penalty = 300; // seconds: strong preference, not a hard block
     }
   }
-  const res = await fetch(`${GRAPHHOPPER_URL}/route`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  // Inject human-reviewed corrections (lessons from approved bug reports)
+  // into the custom_model right before sending. Bridges Claude's intent
+  // layer to GraphHopper's cost function — once an admin approves a
+  // correction, every subsequent route applies it automatically. Each
+  // rule_kind has its own dispatcher; escape_waypoint is handled upstream.
+  if (body.custom_model && profileLearned.length) {
+    applyAreaPenalties(body.custom_model, body.profile, profileLearned);
+    applyEdgePenalties(body.custom_model, body.profile, profileLearned);
+  }
+
+  const callGH = async (b: any) => {
+    return await fetch(`${GRAPHHOPPER_URL}/route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(b),
+    });
+  };
+
+  let res = await callGH(body);
+
+  // Resilience pass: when GraphHopper rejects a request because a point is too
+  // far from the routable graph (`PointNotFoundException` — happens routinely
+  // when Google Places geocodes to a parking lot, trail head, or building
+  // centroid that's 200m+ from any road), call /nearest to find the closest
+  // road and retry. Bounded re-snap distance (600m) so we don't silently
+  // teleport users to a road in the next county.
+  if (!res.ok && res.status === 400) {
+    const errBody = await res.clone().text();
+    const pointMatch = errBody.match(/Cannot find point (\d+):/);
+    if (pointMatch) {
+      const idx = Number(pointMatch[1]);
+      const orig = body.points[idx];
+      if (orig) {
+        try {
+          const nearestRes = await fetch(`${GRAPHHOPPER_URL}/nearest?point=${orig[1]},${orig[0]}`);
+          if (nearestRes.ok) {
+            const nearest = await nearestRes.json();
+            const snapDist = nearest?.distance ?? Infinity;
+            const snappedLng = nearest?.coordinates?.[0];
+            const snappedLat = nearest?.coordinates?.[1];
+            if (snappedLng != null && snappedLat != null && snapDist <= 600) {
+              console.log(`[getRoute] re-snapping point ${idx} from [${orig[0]},${orig[1]}] to [${snappedLng},${snappedLat}] (${snapDist.toFixed(0)}m off-road)`);
+              body.points[idx] = [snappedLng, snappedLat];
+              // Heading hints become invalid after re-snap; drop the one for the moved point.
+              if (body.heading && body.heading[idx] != null) body.heading[idx] = -1;
+              res = await callGH(body);
+            } else {
+              console.warn(`[getRoute] cannot re-snap point ${idx}: nearest road is ${snapDist.toFixed(0)}m away`);
+            }
+          }
+        } catch (e: any) {
+          console.warn('[getRoute] re-snap attempt failed:', e?.message);
+        }
+      }
+    }
+  }
+
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`GraphHopper error: ${res.status} ${err}`);
@@ -876,22 +1079,29 @@ If no GPS tag is present, assume the rider is starting from Astoria, Queens, NYC
 
 ━━ ROUTING PHILOSOPHY ━━
 GraphHopper routes between the points you give it using the motorcycle profile (curviness 1–3).
-Your job is simple: give it the right destination, the right stops, and — for corridor routes —
-one or two intermediate_waypoints that are real towns ON the named road.
-Do NOT try to control which bridge GH crosses or how it exits the city. GH knows the road network.
-Trust it. Overspecifying waypoints is what causes loops, spurs, and double-backs.
+Your job is simple: give it the right destination, the right stops, and — for scenic
+corridor routes — the right road_corridor name. The corridor system biases GH onto
+the named road via geographic + road-class rules; you do NOT need to add waypoints
+to "anchor" the route. Doing so causes the loops, spurs, and triangles around forced
+visit points (see route 124: Goshen waypoint caused an interchange triangle).
+Do NOT try to control which bridge GH crosses or how it exits the city either.
 
 ━━ INTERMEDIATE WAYPOINTS — WHEN AND HOW ━━
-intermediate_waypoints are named places GH must pass through, in order.
-Use them ONLY for corridor road anchoring — 1–2 real towns ON the named road.
-Do NOT add boundary/exit waypoints for NYC origins. GH with the twotired profile
-finds the best city exit (GWB, Turnpike, etc.) on its own. Adding boundary waypoints
-(Fort Lee, New Brunswick, etc.) causes zigzags and detours — never do this.
+intermediate_waypoints are FORCED visit points: GH must pass through each, in order.
+Use them ONLY when the rider explicitly named a place they want to ride to as part
+of the journey (e.g. "ride to Bear Mountain, then to Cold Spring" — Bear Mountain
+is an intermediate). Do NOT use them for:
+  • Corridor anchoring — set road_corridor instead.
+  • Boundary / city-exit waypoints (Fort Lee, New Brunswick, Goethals, GWB) — the
+    routing pipeline handles NYC escape automatically.
+  • "Real towns ON the named road" — the corridor zone already biases GH onto it.
 
-RULE: If the rider specified any stops (coffee, lunch, etc.), set intermediate_waypoints: []
+RULE: For corridor routes (road_corridor is set), intermediate_waypoints MUST be []
+unless the rider named a specific stop. Adding redundant corridor anchors creates
+interchange triangles where the snap point is on a side street.
+
+RULE: If the rider specified any stops (coffee, lunch, etc.), intermediate_waypoints: []
 — let the stops anchor the route naturally.
-
-NEVER use "Florida, NY" as an intermediate — causes west-then-east zigzag.
 
 ━━ CURVINESS ━━
 1 = direct/spirited: fastest non-highway, light motorway avoidance. Use when:
@@ -913,26 +1123,27 @@ makes sense for the motorcycle profile. Trying to force a specific bridge via wa
 ── SCENIC / RURAL ROADS — road_corridor field ──
 (9W, NY-97, NY-218, NY-28, NJ-94, NJ-23, Route 6, Route 44, Route 209, etc.)
 → "Via [road]" means FOLLOW that road. Set road_corridor to the road name.
-→ The routing engine applies a geographic area model that biases GH to stay on the named road.
-→ Use intermediate_waypoints (1–2 real towns ON the road) to anchor GH onto the corridor from the start.
-→ No escape_waypoint — GH handles city exit natively with the motorcycle profile.
+→ The routing engine applies a corridor model (geographic + road-class rules)
+  that biases GH onto the named road. NO waypoint anchoring needed.
+→ intermediate_waypoints MUST be [] for corridor routes (unless the rider named
+  an explicit stop). The corridor model is the anchor; redundant waypoints
+  cause interchange triangles.
+→ No escape_waypoint — the pipeline handles NYC city exit automatically.
 
-road_corridor values + intermediate_waypoints:
+Currently registered corridors (others fall back to default scenic routing):
   "9W"    — Hudson River west bank (Piermont, Nyack, Haverstraw, Bear Mountain, Cornwall, Newburgh)
-            NYC/Queens origin: intermediate_waypoints: ["Piermont, NY", "Nyack, NY"]
-            North-of-GWB origin (Westchester, Yonkers): intermediate_waypoints: ["Nyack, NY"]
   "NY-97" — Delaware River canyon (Hawks Nest, Sparrowbush, Port Jervis)
-            Any origin: intermediate_waypoints: ["Goshen, NY"]
   "NY-28" — Catskills spine (Woodstock, Phoenicia, Margaretville)
-            Any origin: intermediate_waypoints: ["Woodstock, NY"]
-  "NY-218" — Storm King Highway (Cornwall to West Point)
-            Any origin: intermediate_waypoints: ["Piermont, NY", "Nyack, NY"]
+  "NY-218" — Storm King Highway (Cornwall to West Point) — uses 9W corridor
 
-Examples (NYC/Queens origin):
-"take me to Hawks Nest via 9W"      → road_corridor: "9W", intermediate_waypoints: ["Piermont, NY", "Nyack, NY"], destination: "Sparrowbush, NY"
-"take me to Bear Mountain along 9W" → road_corridor: "9W", intermediate_waypoints: ["Piermont, NY", "Nyack, NY"], destination: "Bear Mountain State Park, NY"
-"go to Woodstock taking NY-28"      → road_corridor: "NY-28", intermediate_waypoints: ["Woodstock, NY"], destination: "Woodstock, NY"
-"ride 9W to Newburgh"               → road_corridor: "9W", intermediate_waypoints: ["Piermont, NY", "Nyack, NY"], destination: "Newburgh, NY"
+Examples:
+"take me to Hawks Nest via 9W"      → road_corridor: "9W",    intermediate_waypoints: [], destination: "Sparrowbush, NY"
+"take me to Bear Mountain along 9W" → road_corridor: "9W",    intermediate_waypoints: [], destination: "Bear Mountain State Park, NY"
+"go to Woodstock taking NY-28"      → road_corridor: "NY-28", intermediate_waypoints: [], destination: "Woodstock, NY"
+"ride 9W to Newburgh"               → road_corridor: "9W",    intermediate_waypoints: [], destination: "Newburgh, NY"
+"NY-97 to Hawks Nest, stop in Goshen for coffee"
+                                    → road_corridor: "NY-97", stops: [{type:"coffee", area:"Goshen, NY"}],
+                                      intermediate_waypoints: []   ← the stop is the anchor
 
 ━━ REFINEMENT INTERPRETATION ━━
 When the query starts with "[Refining existing route —...]" you are modifying an existing route.
@@ -942,16 +1153,17 @@ There are three and only three kinds of refinement. Identify which one applies:
 
 CORRIDOR REPLACEMENT — rider names a road, highway, or route they want to travel:
   Trigger phrases: "take the [road]", "go via [road]", "ride [road]", "use [road]", "along the [road]"
-  → DISCARD current road_corridor and current corridor intermediates entirely
-  → Replace with ONE entry waypoint that puts the route onto the named road — then stop.
-    GraphHopper's motorcycle profile will follow the road from there. Do NOT add every landmark
-    or town along the road as waypoints — they become forced detours.
+  → DISCARD current road_corridor and current intermediate_waypoints entirely
+  → Set the new road_corridor to the named road. Do NOT add waypoints to "anchor"
+    the route — the corridor model is the anchor.
   → Keep destination, stops, curviness unchanged unless explicitly mentioned
-  Example: current corridor [Harriman, Middletown], rider says "take the 9W to Newburgh"
-    → Remove Harriman, Middletown
-    → Add ONE entry waypoint: "Nyack, NY" (gets route onto 9W via Tappan Zee bridge)
-    → Keep Newburgh as destination — GraphHopper follows 9W there naturally
-    → Do NOT add Bear Mountain, Cornwall, etc. — rider passes through them, not to them
+  Example: current corridor "FAR_NORTH" with intermediates ["Harriman", "Middletown"],
+    rider says "take the 9W to Newburgh":
+    → road_corridor: "9W"
+    → intermediate_waypoints: []
+    → destination: "Newburgh, NY"
+    → Do NOT add Nyack/Piermont/Bear Mountain/Cornwall — the 9W corridor model
+      handles routing onto and along 9W.
 
 STOP ADDITION — rider adds a specific place or category along the way:
   Trigger phrases: "add a [stop]", "stop at [place]", "find [thing] along the way", "with a [stop]"
@@ -980,7 +1192,8 @@ Interpret these before geocoding anything. These override generic Places results
 
 "Storm King" or "Storm King Highway"
   → destination: "Cornwall-on-Hudson, NY" (south end of NY-218)
-  → intermediate: "Cornwall, NY" to anchor onto NY-218
+  → road_corridor: "NY-218" (falls back to 9W corridor model until NY-218 is registered)
+  → intermediate_waypoints: [] — corridor model is the anchor, no forced waypoints
   → NOT Storm King Art Center (a sculpture park — irrelevant to riders)
   WHY: NY-218 is a legendary cliff-side road. Narrow, technical, Hudson River 1000ft below. Every rider knows it.
 
@@ -988,10 +1201,8 @@ Interpret these before geocoding anything. These override generic Places results
   → destination: "Sparrowbush, NY" — the hamlet directly at the NY-97 scenic overlook and switchbacks.
     NOT Port Jervis (that's miles past the overlook, in a city center).
     NOT a wildlife area or generic viewpoint.
-  → intermediate: ONLY add "Middletown, NY" if there are NO user stops. If the rider requested
-    any stop (coffee, food, etc.), set intermediate_waypoints: [] — the stop anchors the route.
-    WHY: Middletown + a Newburgh coffee stop forces a north-then-south Z-shape that adds 45 minutes.
-    The FAR NORTH corridor rule already handles this correctly — do not override it here.
+  → road_corridor: "NY-97"
+  → intermediate_waypoints: [] — the NY-97 corridor model anchors GH; no Goshen/Middletown forcing.
 
 "The Gap" or "Water Gap"
   → destination: "Delaware Water Gap, PA"
@@ -1000,8 +1211,7 @@ Interpret these before geocoding anything. These override generic Places results
 "9W" or "Route 9W" or "riding 9W" or "via 9W" or "along 9W"
   → the road itself. User wants to FOLLOW 9W as a corridor.
   → destination: "Bear Mountain, NY" unless they say otherwise.
-  → road_corridor: "9W", intermediate_waypoints: ["Piermont, NY", "Nyack, NY"] for NYC/Queens origins.
-  → road_corridor: "9W", intermediate_waypoints: ["Nyack, NY"] for north-of-GWB origins.
+  → road_corridor: "9W", intermediate_waypoints: [] — the corridor model anchors GH onto 9W.
 
 "Bear Mountain" or "Bear"
   → destination: "Bear Mountain State Park, NY"
@@ -1018,7 +1228,7 @@ Interpret these before geocoding anything. These override generic Places results
 
 "The Highlands" or "Hudson Highlands"
   → destination: "Cold Spring, NY" — heart of the Hudson Highlands
-  → 9W approach: use "Nyack, NY" for north-of-GWB origins, "Piermont, NY" for NYC origins (same rule as 9W above)
+  → road_corridor: "9W", intermediate_waypoints: [] — corridor model handles 9W approach
 
 "Palisades" (as destination, not corridor)
   → destination: "Bear Mountain, NY" via Palisades Pkwy
@@ -1097,9 +1307,7 @@ names one of these roads, output road_corridor (NOT intermediate_waypoints — t
 US-9W — Hudson River west bank (Bear Mountain, Storm King, West Point, Cold Spring, Newburgh):
   When user says "via 9W", "take 9W", "along 9W", "ride 9W":
     → road_corridor: "9W"
-    → intermediate_waypoints: ["Piermont, NY", "Nyack, NY"] for NYC/Queens origins
-    → intermediate_waypoints: ["Nyack, NY"] for north-of-GWB origins (Westchester, Yonkers)
-    → The corridor model biases GraphHopper to stay on 9W throughout
+    → intermediate_waypoints: []   ← corridor model anchors GH onto 9W; no waypoints needed
   Character: primary road hugging the Hudson's west bank, dramatic river views, sweeping curves.
 
 PALISADES INTERSTATE PKWY — ridge road above Hudson (NJ side, Bear Mountain approach):
@@ -1109,29 +1317,30 @@ PALISADES INTERSTATE PKWY — ridge road above Hudson (NJ side, Bear Mountain ap
 NY-97 / HAWKS NEST — Delaware River canyon switchbacks:
   When user says "via NY-97", "take 97", "Hawks Nest", "Hawks Nest via 97", "the canyon road":
     → road_corridor: "NY-97"
-    → intermediate_waypoints: ["Goshen, NY"] for any origin
-    → If rider has a stop (e.g. Sloatsburg coffee): intermediate_waypoints: [] — stop anchors the route
+    → intermediate_waypoints: []   ← the corridor zone is the anchor (no Goshen forcing → no triangle)
   Character: switchbacks carved into cliff face above the Delaware River gorge. One of the best roads in the Northeast.
   Road class: SECONDARY (NY state route). Corridor logic penalizes PRIMARY/TRUNK so NY-97 wins over US-6.
 
 NY-218 — Storm King Highway (Cornwall, West Point approach):
   When user says "Storm King Highway", "Storm King", or "via 218":
     → road_corridor: "NY-218"
-    → intermediate_waypoints: ["Piermont, NY", "Nyack, NY"]
+    → intermediate_waypoints: []
     → destination: "Cornwall-on-Hudson, NY"
   Character: narrow cliff-side road above the Hudson. Technical riding, historically significant.
 
 NY-28 — Catskills spine (Woodstock, Phoenicia, Margaretville, Delhi):
   When user says "via NY-28", "take 28", "NY-28 to Woodstock", "Catskills", "Phoenicia":
     → road_corridor: "NY-28"
-    → intermediate_waypoints: ["Woodstock, NY"]
+    → intermediate_waypoints: []
   Character: wide mountain sweepers through Catskill peaks. Flowing rhythm, great scenery.
 
 NJ-94 / NJ-23 — NJ Highlands backroads (High Point, Delaware Water Gap from NJ):
-  No road_corridor needed. intermediate_waypoints: ["Mahwah, NJ"] to anchor onto NJ Highlands.
+  No road_corridor registered for these yet; let GH route naturally with curviness 2.
+  intermediate_waypoints: [] — do NOT force "Mahwah, NJ" or similar anchors.
 
 NJ Route 29 — Delaware River road (Milford NJ, Frenchtown, Lambertville):
-  intermediate_waypoints: ["Milford, NJ"] to anchor onto the river road.
+  No road_corridor registered yet; let GH route naturally with curviness 2.
+  intermediate_waypoints: [] — do NOT force a "Milford, NJ" anchor.
 
 ━━ STOPS ━━
 Only add stops the rider explicitly requests. Never invent them.
@@ -1179,16 +1388,17 @@ Route response — named road corridor:
 {
   "origin": "Rider GPS location or named place if no GPS provided",
   "road_corridor": "9W",
-  "intermediate_waypoints": ["Piermont, NY", "Nyack, NY"],
+  "intermediate_waypoints": [],
   "stops": [],
   "destination": "Bear Mountain State Park, NY",
   "curviness": 2,
   "round_trip": false,
-  "reasoning": "rider asked for 9W — intermediates anchor GH onto the corridor"
+  "reasoning": "rider asked for 9W — corridor model anchors GH onto 9W; no waypoints needed"
 }
 
 IMPORTANT: Never include escape_waypoint or escape_via_waypoints — those fields no longer exist.
-If rider has stops AND a corridor, set intermediate_waypoints: [] and let stops anchor the route.
+ALWAYS set intermediate_waypoints: [] when road_corridor is set (unless the rider named an
+explicit stop). The corridor model is the anchor; redundant waypoints cause interchange triangles.
 
 Clarification response (only when genuinely ambiguous per rules above):
 {
@@ -1526,6 +1736,11 @@ Deno.serve(async (req) => {
     let route: any;
     let allWaypoints: LatLng[];
 
+    // Fetch learned corrections once per request — getRoute() also calls
+    // getLearnedCorrections() but its 30s cache makes the second call free.
+    // We need them here so pickExitPoint can apply any escape_waypoint rules.
+    const reqCorrections = await getLearnedCorrections();
+
     // ── City-exit point selection ─────────────────────────────────────────────
     // v2.56: re-introduce two-phase routing for NYC origins with curviness 2/3.
     //
@@ -1539,17 +1754,33 @@ Deno.serve(async (req) => {
     // scenic profile for the rest. Curviness 1 (transit) has no motorway penalty → fine.
     //
     // Exit point priority:
-    //   1. First intermediate waypoint (already the "on-ramp" to the corridor)
-    //   2. Bearing-based fallback: Alpine NJ (GWB, north/NW/W) or Goethals (SW)
-    //   3. Destination is east (Long Island) → no exit needed, single-phase fine
+    //   1. Learned escape_waypoint rule matching origin + bearing + (optional) dest bbox
+    //   2. First intermediate waypoint (already the "on-ramp" to the corridor)
+    //   3. Bearing-based fallback: Alpine NJ (GWB, north/NW/W) or Goethals (SW)
+    //   4. Destination is east (Long Island) → no exit needed, single-phase fine
     function pickExitPoint(): LatLng | null {
+      // Two-phase exists to handle curviness 2/3's MOTORWAY penalty (which would
+      // otherwise prevent the route from using GWB/Goethals etc. on the city-exit
+      // leg). Curviness 1 has no motorway penalty, so a single-leg route from
+      // NYC naturally uses highways — provided GH's cost model accurately
+      // penalises Manhattan-grid transit. That penalisation comes from the
+      // edge_penalty rules in learned_corrections (Queensboro / Williamsburg /
+      // Manhattan / Brooklyn Bridge / Holland / Lincoln / Brooklyn-Battery).
+      // Without those rules active, expect SW routes from Queens/Brooklyn to
+      // cut through Manhattan — that's the Molly Phase 2 work, not a code bug.
       if (!isInNYC(originLL) || curviness < 2) return null;
+      const override = getEscapeOverride(originLL, destinationLL, reqCorrections);
+      if (override) return override;
       if (intermediateWPs.length > 0) return intermediateWPs[0];
       // No intermediates — pick based on destination direction
       const destLng = destinationLL.lng;
       if (destLng > -73.80) return null; // Long Island — no bridge exit needed
       const bearing = bearingDegrees(originLL, destinationLL);
-      // SW (Jersey Shore, Philly, South NJ): Goethals Bridge
+      // SW (Jersey Shore, Philly, South NJ): Goethals Bridge.
+      // For Queens/Brooklyn origins this only routes via Verrazano-SI when the
+      // edge_penalty rules on Manhattan crossings are active — otherwise GH
+      // finds Manhattan→Holland Tunnel→NJ Turnpike→Goethals (route 135). Verifying
+      // that penalisation is the "Phase 2 / Manhattan-crossing edge_penalty" work.
       if (bearing > 150 && bearing < 270) return KNOWN_WAYPOINTS['goethals bridge, staten island, ny'];
       // North / NW / W (Hudson Valley, Catskills, Bear Mountain): GWB via upper-Manhattan approach.
       // Using the Trans-Manhattan Expy on-ramp rather than Alpine NJ (NJ side) so that GH
@@ -1568,7 +1799,7 @@ Deno.serve(async (req) => {
       console.log('[generate-route] variant=scoring, single-phase score model');
       const scoringModel = buildScoringModel(curviness as 2 | 3);
       if (corridor) {
-        const corridorModel = buildCorridorModel(corridor, curviness);
+        const corridorModel = await buildCorridorModel(corridor, curviness);
         const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
         const headings = allWaypoints.map((_, i) =>
           (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
@@ -1589,11 +1820,15 @@ Deno.serve(async (req) => {
 
         console.log('[generate-route] two-phase: car escape to', JSON.stringify(exitPoint), '→ scenic from there');
 
-        const escapeLegPromise = getRoute([originLL, exitPoint], 0); // car profile — no motorway penalty
+        // headings=[-1,-1] disables GH's default U-turn-avoidance on the snap:
+        // without it, an origin that snaps to (say) an eastbound GCP service road forces
+        // the route to drive east to the next intersection before it can head back NW,
+        // producing the Astoria loop seen in route 123.
+        const escapeLegPromise = getRoute([originLL, exitPoint], 0, [-1, -1]); // car profile — no motorway penalty
 
         let scenicLegPromise: Promise<any>;
         if (corridor) {
-          const corridorModel = buildCorridorModel(corridor, curviness);
+          const corridorModel = await buildCorridorModel(corridor, curviness);
           const overallBearing = Math.round(bearingDegrees(exitPoint, destinationLL));
           const headings = scenicPoints.map((_, i) =>
             (i === 0 || i === scenicPoints.length - 1) ? -1 : overallBearing
@@ -1606,7 +1841,7 @@ Deno.serve(async (req) => {
         const [escapeLeg, scenicLeg] = await Promise.all([escapeLegPromise, scenicLegPromise]);
         route = mergeRoutes(escapeLeg, scenicLeg);
       } else if (corridor) {
-        const corridorModel = buildCorridorModel(corridor, curviness);
+        const corridorModel = await buildCorridorModel(corridor, curviness);
         const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
         const headings = allWaypoints.map((_, i) =>
           (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
