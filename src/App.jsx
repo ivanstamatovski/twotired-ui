@@ -2749,6 +2749,10 @@ export default function App() {
               <span className="user-email">{session.user.email}</span>
               <button className="signout-btn" onClick={() => supabase.auth.signOut()}>Sign out</button>
             </div>
+            <button className="menu-delete-account"
+              onClick={() => { setDeleteConfirmText(''); setDeleteError(null); setDeleteAccountOpen(true); }}>
+              Delete account
+            </button>
           </div>
 
           <div className="query-row">
