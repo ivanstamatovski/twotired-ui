@@ -2022,16 +2022,25 @@ export default function App() {
   }
 
   // Cancel an in-flight route generation and reset the UI to a blank slate.
-  // Wired into the X button when loading is true.
+  // Wired into the orange stop pill on the loading hero. Cleans up four things:
+  //   1. The fetch (abort + null the ref so guard checks in generateRoute fail)
+  //   2. React state (messages, query, routeData, etc.)
+  //   3. The map polyline — drawRouteOnMap(null) actually removes the layers,
+  //      because setRouteData(null) alone leaves the previous polyline visible
+  //   4. The pendingRoute queue, so an earlier-queued route can't draw later
+  //      when the map finishes loading
   function cancelGeneration() {
     routeAbortRef.current?.abort();
     routeAbortRef.current = null;
+    pendingRoute.current = null;
     setMessages([]);
     setError(null);
     setQuery('');
     setRouteData(null);
     setRouteApproved(false);
     setLoading(false);
+    drawRouteOnMap(null);
+    localStorage.removeItem(LAST_ROUTE_KEY);
   }
 
   async function submitQuery(q) {
@@ -2512,10 +2521,10 @@ export default function App() {
                     onClick={cancelGeneration}
                     aria-label="Stop planning"
                   >
-                    <span className="hero-btn-stop-ring"/>
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                       <rect x="6" y="6" width="12" height="12" rx="2"/>
                     </svg>
+                    <span className="hero-btn-stop-label">Stop</span>
                   </button>
                 ) : (
                   <button

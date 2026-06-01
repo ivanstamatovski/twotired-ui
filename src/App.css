@@ -611,33 +611,34 @@ body {
 }
 
 /* Stop button — replaces the mic/send hero while the app is "thinking". It's
- * an actual <button>, not a static spinner div: tapping it aborts the in-flight
- * route generation and resets to a blank slate. The white square icon is the
- * universal "stop" affordance; the ring around it animates so the rider can
- * tell something's still happening server-side until they actually tap. */
+ * a real <button>: tapping it aborts the in-flight route generation and resets
+ * to a blank slate. Square icon + "Stop" label is unambiguous. Subtle box-
+ * shadow pulse signals that something's still happening, without the busy
+ * rotating ring the first revision used (which read as "loading" instead of
+ * "tap me"). */
 .hero-btn--stop {
   background: var(--accent, #f97316);
   border: none;
   color: #fff;
   box-shadow: 0 2px 10px rgba(249,115,22,0.3);
-  position: relative;
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  animation: hero-stop-pulse 1.6s ease-in-out infinite;
 }
 .hero-btn--stop:hover  { background: var(--accent-hover, #ea580c); }
-.hero-btn--stop:active { transform: scale(0.96); }
+.hero-btn--stop:active { transform: scale(0.96); animation: none; }
 
-/* Rotating ring that conveys "still thinking, tap to stop". */
-.hero-btn-stop-ring {
-  position: absolute;
-  inset: 6px;
-  border-radius: 12px;
-  border: 2.5px solid rgba(255,255,255,0.35);
-  border-top-color: rgba(255,255,255,0.95);
-  animation: hero-stop-spin 0.9s linear infinite;
-  pointer-events: none;
+.hero-btn-stop-label {
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.2px;
 }
-@keyframes hero-stop-spin {
-  to { transform: rotate(360deg); }
+
+@keyframes hero-stop-pulse {
+  0%, 100% { box-shadow: 0 2px 10px rgba(249,115,22,0.30), 0 0 0 0 rgba(249,115,22,0.0); }
+  50%      { box-shadow: 0 2px 14px rgba(249,115,22,0.45), 0 0 0 8px rgba(249,115,22,0.10); }
 }
 
 /* Input row — full-width single-line pill */
