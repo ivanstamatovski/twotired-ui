@@ -2527,39 +2527,20 @@ export default function App() {
               {/* Hero row: mic + recents toggle, side-by-side, both glove-friendly */}
               <div className="idle-hero-row">
                 {loading ? (
-                  <button
-                    className="hero-btn hero-btn--stop"
-                    onClick={cancelGeneration}
-                    aria-label="Stop planning"
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                      <rect x="6" y="6" width="12" height="12" rx="2"/>
-                    </svg>
-                    <span className="hero-btn-stop-label">Stop</span>
-                  </button>
+                  <div className="hero-btn hero-btn--mic" style={{cursor:'default', pointerEvents:'none'}}>
+                    <span className="dot-spin" style={{width:22,height:22,borderWidth:2.5}}/>
+                  </div>
                 ) : (
                   <button
                     className={`hero-btn hero-btn--mic${voice.listening ? ' hero-btn--listening' : ''}`}
                     onClick={() => {
-                      // Tap-while-listening = full cancel (stop recording AND
-                      // clear the captured prompt) instead of stop+auto-submit.
-                      // Otherwise the rider had to wait for the planner to spin
-                      // up just to cancel it on the next tap — two-step bail.
-                      if (voice.listening) { voice.cancel(); setQuery(''); }
-                      else if (query.trim()) { submitQuery(); }
-                      else if (voice.supported) { voice.start(); }
+                      if (query.trim()) { submitQuery(); }
+                      else if (voice.supported) { voice.listening ? voice.stop() : voice.start(); }
                     }}
-                    aria-label={voice.listening ? 'Cancel recording' : query.trim() ? 'Submit' : 'Voice input'}
+                    aria-label={query.trim() ? 'Submit' : 'Voice input'}
                   >
                     {voice.listening && <span className="mic-pulse"/>}
-                    {voice.listening ? (
-                      // Solid stop square — instantly recognisable as "tap me to stop"
-                      // the moment recording begins, instead of a pulsing mic that
-                      // looks the same as the "tap to record" state.
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                        <rect x="6" y="6" width="12" height="12" rx="2"/>
-                      </svg>
-                    ) : query.trim() ? (
+                    {query.trim() ? (
                       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
                       </svg>
@@ -2608,16 +2589,25 @@ export default function App() {
                     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitQuery(); }
                   }}
                   disabled={loading}/>
-                {/* Text-pill clear button — only deals with the input contents:
-                    • voice.listening → discard the in-progress transcript
-                    • typed text present → clear the textarea
-                    Stopping a route in progress is the orange hero pill's job,
-                    NOT this — keeping them separate avoids "tap to clear typo"
-                    accidentally aborting a planning request. */}
-                {!loading && (voice.listening || query) && (
+                {/* Universal kill switch — clears whatever the rider currently
+                    has going. Single button that handles three states so the
+                    rider always knows where the "out" is:
+                      • loading → abort the in-flight planning request
+                      • voice.listening → cancel recording + drop transcript
+                      • typed text present → clear the textarea
+                    The hero stays a clean "mic / submit" button untouched. */}
+                {(loading || voice.listening || query) && (
                   <button className="query-input-clear"
-                    onClick={() => { if (voice.listening) voice.cancel(); else setQuery(''); }}
-                    aria-label={voice.listening ? 'Cancel dictation' : 'Clear input'}>
+                    onClick={() => {
+                      if (loading)             cancelGeneration();
+                      else if (voice.listening){ voice.cancel(); setQuery(''); }
+                      else                     setQuery('');
+                    }}
+                    aria-label={
+                      loading           ? 'Cancel planning'
+                      : voice.listening ? 'Cancel recording'
+                      :                   'Clear input'
+                    }>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                       <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
                     </svg>
