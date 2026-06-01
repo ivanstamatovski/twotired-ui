@@ -511,6 +511,12 @@ function useVoice(onResult) {
   }, [isNative]);
 
   const stop = useCallback(async () => {
+    // Update listening flag *before* awaiting the plugin so any late
+    // partialResults events that arrive during the plugin's shutdown window
+    // can be filtered by callers (the mirror effect in App() checks
+    // voice.listening before writing transcript → query).
+    setListening(false);
+    setTranscript('');
     if (isNative) {
       try { await pluginRef.current?.stop(); }
       catch (e) { console.warn('[voice] native stop failed:', e); }
@@ -523,10 +529,24 @@ function useVoice(onResult) {
     } else {
       try { recogRef.current?.stop(); } catch {}
     }
-    setListening(false);
   }, [isNative]);
 
-  return { listening, supported, error, transcript, start, stop };
+  // Cancel: stop recognition WITHOUT firing onResult. For when the rider sees
+  // the transcript captured something wrong and wants to start over.
+  const cancel = useCallback(async () => {
+    setListening(false);
+    setTranscript('');
+    latestRef.current = '';
+    firedRef.current  = true; // suppress the post-stop onResult fallback in stop()
+    if (isNative) {
+      try { await pluginRef.current?.stop(); } catch {}
+    } else {
+      // Web SpeechRecognition: abort() discards results; stop() finalises them.
+      try { recogRef.current?.abort?.(); } catch {}
+    }
+  }, [isNative]);
+
+  return { listening, supported, error, transcript, start, stop, cancel };
 }
 
 // ── Mobile detect ─────────────────────────────────────────────────────────────
@@ -842,10 +862,12 @@ export default function App() {
   const voice = useVoice(handleVoiceResult);
 
   // Live mirror of interim voice transcript into the input box, so the user
-  // sees their words appear as they speak.
+  // sees their words appear as they speak. Guarded against `loading` so that
+  // any late partialResults that arrive after submit (during the iOS plugin's
+  // shutdown window) can't overwrite the cleared input mid-request.
   useEffect(() => {
-    if (voice.listening && voice.transcript) setQuery(voice.transcript);
-  }, [voice.listening, voice.transcript]);
+    if (voice.listening && voice.transcript && !loading) setQuery(voice.transcript);
+  }, [voice.listening, voice.transcript, loading]);
 
   // When recents are open, the sheet covers the map (buttons + input stay at the
   // top, recents list fills the rest). Otherwise: compact base — two-button
@@ -1968,7 +1990,14 @@ export default function App() {
       localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
 
     } catch(err) { clearInterval(ticker); setError(err.message); }
-    finally { setLoading(false); }
+    finally {
+      setLoading(false);
+      // Clear the input now that planning is done (success, error, or clarify).
+      // The captured prompt was visible during loading so the rider could
+      // verify what was heard; once we have a route to show, the input goes
+      // back to "Where do you want to ride?" placeholder.
+      setQuery('');
+    }
   }
 
   async function submitQuery(q) {
@@ -1976,7 +2005,10 @@ export default function App() {
     if (!text || loading) return;
     // Stop voice recognition so it doesn't keep appending to the next query.
     if (voice.listening) voice.stop();
-    setQuery('');
+    // Keep the captured prompt visible in the input pill while we plan — the
+    // rider may not have been watching when the words appeared. We clear it
+    // in generateRoute's `finally` once planning is done.
+    setQuery(text);
     setMessages([{ role:'user', content:text }]);
     setRouteData(null); setRouteApproved(false);
     // Don't expand the sheet — stay in idle/compact view while loading.
@@ -2503,6 +2535,18 @@ export default function App() {
                     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitQuery(); }
                   }}
                   disabled={loading}/>
+                {/* Cancel button — visible while dictating OR while the input
+                    has manually-typed text. Tap → discard the in-progress
+                    transcript (or clear typed text) and restart fresh. */}
+                {(voice.listening || (query && !loading)) && (
+                  <button className="query-input-clear"
+                    onClick={() => { if (voice.listening) voice.cancel(); else setQuery(''); }}
+                    aria-label="Clear input">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
+                    </svg>
+                  </button>
+                )}
               </div>
               {voice.error && (
                 <div className="voice-error">{voice.error}</div>
