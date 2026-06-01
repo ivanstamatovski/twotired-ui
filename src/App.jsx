@@ -1938,6 +1938,15 @@ export default function App() {
         .catch(() => {});
       // Reset speech synthesis — iOS leaves it in a broken state after backgrounding
       if (window.speechSynthesis) window.speechSynthesis.cancel();
+      // Re-draw the route polyline: when iOS reclaims the WebGL surface during
+      // backgrounding the route-line and route-casing layers vanish, leaving
+      // navigation running over a map with no visible line. Calling
+      // drawRouteOnMap with the current route re-adds the source + layers.
+      const activeRoute = routeDataRef.current;
+      if (activeRoute?.geometry && mapRef.current) {
+        try { drawRouteOnMap(activeRoute); }
+        catch (e) { console.warn('[foreground] failed to redraw route:', e?.message || e); }
+      }
       // Trigger a fresh GPS fix and re-centre the map
       if (navigator.geolocation && mapRef.current) {
         navigator.geolocation.getCurrentPosition(
@@ -1957,7 +1966,20 @@ export default function App() {
       }
     };
     document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
+    // iOS WKWebView sometimes keeps document.visibilityState as 'visible' even
+    // when the app is backgrounded (no transition → no visibilitychange event
+    // on foreground). Capacitor's appStateChange fires reliably; pipe it into
+    // the same recovery handler.
+    let capSub = null;
+    if (Capacitor.isNativePlatform()) {
+      CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) onVisible();
+      }).then(s => { capSub = s; }).catch(() => {});
+    }
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      try { capSub?.remove?.(); } catch {}
+    };
   }, []);
 
   // ── Track keyboard height via visualViewport so sheet stays above keyboard ─
