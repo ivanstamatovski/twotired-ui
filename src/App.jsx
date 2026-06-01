@@ -881,6 +881,8 @@ export default function App() {
   // callback (which is called outside React render flow) can read/update
   // them without triggering re-renders on every GPS tick.
   const offRouteSinceRef  = useRef(null); // ms timestamp when rider first went off-route; null when on-route
+  const lastOffRoutePosRef= useRef(null); // last known {lat,lng} while off-route — used by the timer-based trigger
+  const offRouteTimerRef  = useRef(null); // setTimeout handle for the grace-window check
   const lastRerouteAtRef  = useRef(0);    // ms timestamp of last reroute attempt; cooldown gate
   const reroutingRef      = useRef(false);// guard against overlapping reroute calls
   const [rerouting, setRerouting] = useState(false); // UI banner during reroute
@@ -1738,6 +1740,19 @@ export default function App() {
   function onGeoPosition(pos) {
     let { latitude: lat, longitude: lng } = pos.coords;
 
+    // [debug] watch GPS fixes arriving from the simulator. Remove once we've
+    // confirmed Custom Location is reaching the app and off-route distance is
+    // being computed correctly.
+    if (navModeRef.current) {
+      const route = routeDataRef.current;
+      const d = route ? distanceToRouteM(lat, lng, route) : null;
+      console.log(
+        `[gps] lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}` +
+        (d !== null ? ` offRoute=${d.toFixed(1)}m` : '') +
+        (offRouteSinceRef.current ? ` offFor=${Date.now() - offRouteSinceRef.current}ms` : '')
+      );
+    }
+
     // Dev sim override: re-anchor known simulator default coordinates to a
     // real-world spot for whitelisted accounts. Bounded so real-device GPS
     // is never affected.
@@ -1825,17 +1840,37 @@ export default function App() {
       if (!reroutingRef.current) {
         const offDist = distanceToRouteM(lat, lng, route);
         if (offDist > OFF_ROUTE_THRESHOLD_M) {
-          if (offRouteSinceRef.current === null) offRouteSinceRef.current = Date.now();
-          const offFor = Date.now() - offRouteSinceRef.current;
-          const sinceLast = Date.now() - lastRerouteAtRef.current;
-          if (offFor > OFF_ROUTE_GRACE_MS && sinceLast > REROUTE_COOLDOWN_MS) {
-            lastRerouteAtRef.current = Date.now();
-            offRouteSinceRef.current = null;
-            rerouteFromCurrentPosition(lat, lng);
+          // Remember last known off-route position; the scheduled trigger uses
+          // it if no further GPS fixes arrive within the grace window (tunnel,
+          // urban canyon, sim Custom Location which only fires one event).
+          lastOffRoutePosRef.current = { lat, lng };
+          if (offRouteSinceRef.current === null) {
+            offRouteSinceRef.current = Date.now();
+            // Schedule a check at exactly grace-period later so the reroute
+            // fires even if no new GPS events arrive in the meantime.
+            if (offRouteTimerRef.current) clearTimeout(offRouteTimerRef.current);
+            offRouteTimerRef.current = setTimeout(() => {
+              offRouteTimerRef.current = null;
+              if (!navModeRef.current) return;
+              if (reroutingRef.current) return;
+              if (offRouteSinceRef.current === null) return; // got back on route
+              const sinceLast = Date.now() - lastRerouteAtRef.current;
+              if (sinceLast < REROUTE_COOLDOWN_MS) return;
+              const p = lastOffRoutePosRef.current;
+              if (!p) return;
+              lastRerouteAtRef.current = Date.now();
+              offRouteSinceRef.current = null;
+              rerouteFromCurrentPosition(p.lat, p.lng);
+            }, OFF_ROUTE_GRACE_MS);
           }
         } else {
-          // Back on route — reset the timer so the next drift starts fresh.
+          // Back on route — reset the timer + cancel any pending trigger so
+          // the next drift starts fresh.
           offRouteSinceRef.current = null;
+          if (offRouteTimerRef.current) {
+            clearTimeout(offRouteTimerRef.current);
+            offRouteTimerRef.current = null;
+          }
         }
       }
     }
@@ -2006,6 +2041,8 @@ export default function App() {
     // Clear any leftover off-route state from a previous nav session.
     offRouteSinceRef.current = null;
     lastRerouteAtRef.current = 0;
+    lastOffRoutePosRef.current = null;
+    if (offRouteTimerRef.current) { clearTimeout(offRouteTimerRef.current); offRouteTimerRef.current = null; }
 
     // Prime bearing to the route direction at the rider's position so the
     // very first frame already points up the road (no spin-into-place once
@@ -2043,6 +2080,10 @@ export default function App() {
     setNavProgress(null);
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
+    // Cancel any pending off-route trigger so it can't fire after nav stops.
+    offRouteSinceRef.current = null;
+    lastOffRoutePosRef.current = null;
+    if (offRouteTimerRef.current) { clearTimeout(offRouteTimerRef.current); offRouteTimerRef.current = null; }
     // Restore a normal flat north-up view.
     if (mapRef.current) {
       mapRef.current.easeTo({ bearing: 0, pitch: 0, zoom: 13, duration: 600 });
