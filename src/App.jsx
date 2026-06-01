@@ -826,6 +826,7 @@ export default function App() {
   const routeDataRef = useRef(null);
   const navModeRef = useRef(false); // mirror of navMode for geolocation callback
   const sessionEmailRef = useRef(null); // mirror of current account email for dev sim override
+  const routeAbortRef = useRef(null);   // AbortController for the in-flight generate-route fetch
 
   const isMobile = useIsMobile();
 
@@ -1950,6 +1951,12 @@ export default function App() {
     let ci = 0; setLoadingMsg(cycle[0]);
     const ticker = setInterval(() => { ci=(ci+1)%cycle.length; setLoadingMsg(cycle[ci]); }, 2500);
 
+    // Make the in-flight request cancellable so the rider can hit X while
+    // we're "thinking" and go back to a blank slate. cancelGeneration()
+    // calls .abort() on this controller, which makes fetch throw AbortError.
+    const controller = new AbortController();
+    routeAbortRef.current = controller;
+
     try {
       const token = session?.access_token || SUPABASE_ANON_KEY;
       const body = { ...payload, user_id: session?.user?.id || null, variant: routeVariant };
@@ -1959,6 +1966,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${token}` },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
       const data = await res.json();
       clearInterval(ticker);
@@ -1989,15 +1997,33 @@ export default function App() {
       // Persist last active route so it survives tab switches and reloads
       localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
 
-    } catch(err) { clearInterval(ticker); setError(err.message); }
+    } catch(err) {
+      clearInterval(ticker);
+      // Rider hit the X button to abort; not a real error — stay silent.
+      if (err.name !== 'AbortError') setError(err.message);
+    }
     finally {
       setLoading(false);
+      if (routeAbortRef.current === controller) routeAbortRef.current = null;
       // Clear the input now that planning is done (success, error, or clarify).
       // The captured prompt was visible during loading so the rider could
       // verify what was heard; once we have a route to show, the input goes
       // back to "Where do you want to ride?" placeholder.
       setQuery('');
     }
+  }
+
+  // Cancel an in-flight route generation and reset the UI to a blank slate.
+  // Wired into the X button when loading is true.
+  function cancelGeneration() {
+    routeAbortRef.current?.abort();
+    routeAbortRef.current = null;
+    setMessages([]);
+    setError(null);
+    setQuery('');
+    setRouteData(null);
+    setRouteApproved(false);
+    setLoading(false);
   }
 
   async function submitQuery(q) {
@@ -2535,13 +2561,18 @@ export default function App() {
                     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitQuery(); }
                   }}
                   disabled={loading}/>
-                {/* Cancel button — visible while dictating OR while the input
-                    has manually-typed text. Tap → discard the in-progress
-                    transcript (or clear typed text) and restart fresh. */}
-                {(voice.listening || (query && !loading)) && (
+                {/* Cancel button — three jobs depending on state:
+                    • voice.listening → discard the in-progress transcript
+                    • loading → abort the in-flight route generation
+                    • typed text present → clear the textarea */}
+                {(voice.listening || loading || query) && (
                   <button className="query-input-clear"
-                    onClick={() => { if (voice.listening) voice.cancel(); else setQuery(''); }}
-                    aria-label="Clear input">
+                    onClick={() => {
+                      if (voice.listening) voice.cancel();
+                      else if (loading)    cancelGeneration();
+                      else                 setQuery('');
+                    }}
+                    aria-label={loading ? 'Cancel planning' : voice.listening ? 'Cancel dictation' : 'Clear input'}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                       <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
                     </svg>
