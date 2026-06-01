@@ -833,6 +833,38 @@ export default function App() {
 
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
   useEffect(() => { navModeRef.current = navMode; }, [navMode]);
+
+  // Keep the screen on while navigating, release as soon as nav stops.
+  // Combined with the `audio` UIBackgroundMode (Info.plist), this lets voice
+  // direction announcements keep playing for a few minutes when the rider
+  // briefly checks another app or notifications. The native plugin is loaded
+  // dynamically so this file still runs on web (where there's no screen lock).
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let released = false;
+    (async () => {
+      try {
+        const { KeepAwake } = await import('@capacitor-community/keep-awake');
+        if (navMode) {
+          await KeepAwake.keepAwake();
+        } else {
+          await KeepAwake.allowSleep();
+          released = true;
+        }
+      } catch (e) {
+        console.warn('[keep-awake] plugin error:', e?.message || e);
+      }
+    })();
+    return () => {
+      if (released) return;
+      (async () => {
+        try {
+          const { KeepAwake } = await import('@capacitor-community/keep-awake');
+          await KeepAwake.allowSleep();
+        } catch {}
+      })();
+    };
+  }, [navMode]);
   useEffect(() => { voiceMutedRef.current = voiceMuted; }, [voiceMuted]);
   useEffect(() => { sessionEmailRef.current = session?.user?.email || null; }, [session?.user?.email]);
 
