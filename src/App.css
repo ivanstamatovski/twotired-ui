@@ -309,10 +309,17 @@ body {
 
 .nav-turn-text {
   font-size: 15px;
+  line-height: 1.25;
   color: var(--text-dim);
-  white-space: nowrap;
+  /* Allow the street name to wrap up to 2 lines instead of truncating
+   * mid-word. Long instructions (e.g. "Turn right onto Hudson Avenue
+   * West") were being cut off behind the voice + close buttons. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
 }
 
 .nav-stop-btn {

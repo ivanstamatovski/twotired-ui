@@ -174,9 +174,41 @@ function formatMateDistance(matePos, userPos) {
   return `${distStr} ${dirs[Math.round(b / 45) % 8]}`;
 }
 
-function turnArrow(sign) {
-  const map = { '-7':'↰','-3':'↰','-2':'←','-1':'↖','0':'↑','1':'↗','2':'→','3':'↱','4':'🏁','5':'⟳','6':'⟲' };
-  return map[String(sign)] ?? '↑';
+function turnArrow(sign, text) {
+  // GraphHopper Instruction sign codes. Negative = left, positive = right.
+  // Added missing values (7=keep right, -7=keep left, 8/-8=U-turn) that
+  // previously fell through to the default arrow and showed as straight-ahead
+  // when the actual turn was left/right.
+  const map = {
+    '-98': '⤴',   // U-turn unknown direction
+    '-8':  '⤴',   // U-turn left
+    '-7':  '↖',   // Keep left
+    '-6':  '↺',   // Leave roundabout
+    '-3':  '↰',   // Sharp left
+    '-2':  '←',   // Turn left
+    '-1':  '↖',   // Slight left
+    '0':   '↑',   // Continue
+    '1':   '↗',   // Slight right
+    '2':   '→',   // Turn right
+    '3':   '↱',   // Sharp right
+    '4':   '🏁',  // Finish
+    '5':   '⤴',   // Reached via point
+    '6':   '⟳',   // Use roundabout
+    '7':   '↗',   // Keep right
+    '8':   '⤴',   // U-turn right
+  };
+  if (map[String(sign)]) return map[String(sign)];
+
+  // Fallback for unknown signs: parse direction out of the instruction text
+  // so we never show a left arrow on a right turn (or vice-versa) just
+  // because GH emitted a sign we didn't recognise.
+  if (typeof text === 'string') {
+    if (/\bright\b/i.test(text))  return '→';
+    if (/\bleft\b/i.test(text))   return '←';
+    if (/u-?turn/i.test(text))    return '⤴';
+    if (/roundabout/i.test(text)) return '⟳';
+  }
+  return '↑';
 }
 
 // Find the index along route.geometry.coordinates closest to (lat,lng).
@@ -1688,12 +1720,33 @@ export default function App() {
     if (!route?.geometry) return;
 
     map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:route.geometry } });
+    // Zoom-aware width: thin at preview zoom (~10) where the whole route fits on
+    // screen, fat at nav zoom (~17+) so the rider can see the line clearly while
+    // riding. Casing scales in lockstep so it always reads as a single ribbon.
     map.addLayer({ id:'route-casing', type:'line', source:'route',
       layout:{ 'line-join':'round','line-cap':'round' },
-      paint:{ 'line-color':'#fff','line-width':6,'line-opacity':0.4 } });
+      paint:{
+        'line-color':'#fff',
+        'line-opacity':0.5,
+        'line-width': ['interpolate', ['linear'], ['zoom'],
+          10, 6,
+          14, 10,
+          17, 18,
+          20, 24,
+        ],
+      } });
     map.addLayer({ id:'route-line', type:'line', source:'route',
       layout:{ 'line-join':'round','line-cap':'round' },
-      paint:{ 'line-color':'#2563eb','line-width':4,'line-opacity':0.95 } });
+      paint:{
+        'line-color':'#2563eb',
+        'line-opacity':0.95,
+        'line-width': ['interpolate', ['linear'], ['zoom'],
+          10, 4,
+          14, 7,
+          17, 13,
+          20, 18,
+        ],
+      } });
 
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
@@ -1921,6 +1974,8 @@ export default function App() {
   async function submitQuery(q) {
     const text = (q || query).trim();
     if (!text || loading) return;
+    // Stop voice recognition so it doesn't keep appending to the next query.
+    if (voice.listening) voice.stop();
     setQuery('');
     setMessages([{ role:'user', content:text }]);
     setRouteData(null); setRouteApproved(false);
@@ -2284,7 +2339,7 @@ export default function App() {
         <div className="nav-overlay">
           <div className="nav-turn-banner">
             <span className="nav-turn-arrow">
-              {nextTurn ? turnArrow(nextTurn.instruction.sign) : '↑'}
+              {nextTurn ? turnArrow(nextTurn.instruction.sign, nextTurn.instruction.text) : '↑'}
             </span>
             <div className="nav-turn-info">
               {nextTurn ? (
