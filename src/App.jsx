@@ -827,6 +827,7 @@ export default function App() {
   const navModeRef = useRef(false); // mirror of navMode for geolocation callback
   const sessionEmailRef = useRef(null); // mirror of current account email for dev sim override
   const routeAbortRef = useRef(null);   // AbortController for the in-flight generate-route fetch
+  const routeGenRef   = useRef(0);      // monotonically-increasing id of the latest generation request
 
   const isMobile = useIsMobile();
 
@@ -1956,6 +1957,13 @@ export default function App() {
     // calls .abort() on this controller, which makes fetch throw AbortError.
     const controller = new AbortController();
     routeAbortRef.current = controller;
+    // Belt-and-suspenders defense against late responses: even if the
+    // AbortController fails (some webviews don't honor signal after the
+    // response has started buffering), this stamp lets us discard results
+    // from a generation that's no longer the current one. cancelGeneration
+    // bumps routeGenRef so myGen !== routeGenRef.current → discard.
+    const myGen = ++routeGenRef.current;
+    const stale = () => controller.signal.aborted || routeGenRef.current !== myGen;
 
     try {
       const token = session?.access_token || SUPABASE_ANON_KEY;
@@ -1972,14 +1980,14 @@ export default function App() {
       // server-side function still runs to completion and the body may already
       // be buffered locally), discard the result instead of dropping a stale
       // route onto the map while the rider is recording a new prompt.
-      if (controller.signal.aborted) { clearInterval(ticker); return; }
+      if (stale()) { clearInterval(ticker); return; }
       const data = await res.json();
-      if (controller.signal.aborted) { clearInterval(ticker); return; }
+      if (stale()) { clearInterval(ticker); return; }
       clearInterval(ticker);
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       if (data.clarify) {
-        if (controller.signal.aborted) return;
+        if (stale()) return;
         setMessages(prev => [...prev, {
           role:'clarify', question:data.question, options:data.options||[],
           onSelect:(opt) => handleFollowUp(opt),
@@ -1988,7 +1996,7 @@ export default function App() {
         return;
       }
 
-      if (controller.signal.aborted) return;
+      if (stale()) return;
       const r = data.route;
       setRouteData(r);
       setCurrentIntent(r.intent);
@@ -2032,6 +2040,9 @@ export default function App() {
   function cancelGeneration() {
     routeAbortRef.current?.abort();
     routeAbortRef.current = null;
+    // Bump the generation counter — any in-flight generateRoute whose `myGen`
+    // is now != routeGenRef.current will discard its result via stale().
+    routeGenRef.current++;
     pendingRoute.current = null;
     setMessages([]);
     setError(null);
@@ -2530,13 +2541,20 @@ export default function App() {
                   <button
                     className={`hero-btn hero-btn--mic${voice.listening ? ' hero-btn--listening' : ''}`}
                     onClick={() => {
-                      if (query.trim()) { submitQuery(); }
+                      if (query.trim() && !voice.listening) { submitQuery(); }
                       else if (voice.supported) { voice.listening ? voice.stop() : voice.start(); }
                     }}
-                    aria-label={query.trim() ? 'Submit' : 'Voice input'}
+                    aria-label={voice.listening ? 'Stop recording' : query.trim() ? 'Submit' : 'Voice input'}
                   >
                     {voice.listening && <span className="mic-pulse"/>}
-                    {query.trim() ? (
+                    {voice.listening ? (
+                      // Solid stop square — instantly recognisable as "tap me to stop"
+                      // the moment recording begins, instead of a pulsing mic that
+                      // looks the same as the "tap to record" state.
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="6" width="12" height="12" rx="2"/>
+                      </svg>
+                    ) : query.trim() ? (
                       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
                       </svg>
