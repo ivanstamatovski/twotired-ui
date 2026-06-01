@@ -1980,6 +1980,50 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  padding: 12px 14px;
+  transition: background 0.15s, border-color 0.15s, transform 0.08s;
+}
+.bubble-route:active { transform: scale(0.99); }
+
+/* The route currently drawn on the map. Accent border + "on map" badge so
+ * the rider can tell at a glance which entry in the thread is live. */
+.bubble-route--active {
+  border-color: var(--accent, #f97316);
+  background: rgba(249, 115, 22, 0.06);
+  cursor: default;
+}
+.bubble-route--active:active { transform: none; }
+
+/* Non-active route in the thread (after refining): looks tappable. */
+.bubble-route--tap:hover { background: rgba(249, 115, 22, 0.05); border-color: rgba(249, 115, 22, 0.4); }
+
+.route-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.route-badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+.route-badge--active {
+  background: var(--accent, #f97316);
+  color: #fff;
+}
+.route-badge--tap {
+  background: transparent;
+  color: var(--accent, #f97316);
+  border: 1px solid var(--accent, #f97316);
 }
 
 .bubble-clarify {

@@ -668,7 +668,7 @@ function LoginScreen() {
 }
 
 // ── ConversationThread ────────────────────────────────────────────────────────
-function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
+function ConversationThread({ messages, loading, loadingMsg, messagesEndRef, currentRoute, onSelectRoute }) {
   return (
     <div className="messages-scroll">
       {messages.map((msg, i) => {
@@ -687,9 +687,27 @@ function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
 
         if (msg.role === 'route') {
           const r = msg.route;
+          const isActive = r === currentRoute;
+          // Whole card is tappable so the rider can switch back to a previous
+          // route after refining ("more curvy" / "shorter"). Active route
+          // shows a check + accent border; non-active hint at "tap to use".
           return (
-            <div key={i} className="bubble bubble-route">
-              <div className="route-title">{r.title}</div>
+            <button
+              key={i}
+              type="button"
+              className={`bubble bubble-route${isActive ? ' bubble-route--active' : ' bubble-route--tap'}`}
+              onClick={() => { if (!isActive) onSelectRoute?.(r); }}
+              aria-pressed={isActive}
+              aria-label={isActive ? `Current route: ${r.title}` : `Switch back to: ${r.title}`}
+            >
+              <div className="route-title-row">
+                <span className="route-title">{r.title}</span>
+                {isActive ? (
+                  <span className="route-badge route-badge--active">on map</span>
+                ) : (
+                  <span className="route-badge route-badge--tap">tap to use</span>
+                )}
+              </div>
               <div className="route-meta">
                 <span>🕐 {r.duration_str}</span>
                 <span>🛣 {r.distance_mi?.toFixed(1)} mi</span>
@@ -701,11 +719,12 @@ function ConversationThread({ messages, loading, loadingMsg, messagesEndRef }) {
                 </div>
               ))}
               {r.waypoints && (
-                <a className="nav-link" href={buildNavUrl(r.waypoints)} target="_blank" rel="noreferrer">
+                <a className="nav-link" href={buildNavUrl(r.waypoints)} target="_blank" rel="noreferrer"
+                   onClick={e => e.stopPropagation()}>
                   Open in Google Maps →
                 </a>
               )}
-            </div>
+            </button>
           );
         }
         return null;
@@ -1869,6 +1888,20 @@ export default function App() {
     }
   }
 
+  // Switch the active map polyline + state to a route that's already in the
+  // conversation thread (e.g. when the rider refined to "more curvy" and now
+  // wants the original back). Unlike restoreRecentRoute, this preserves the
+  // existing `messages` array so the rider can keep toggling between options.
+  function selectThreadRoute(r) {
+    if (!r?.geometry) return;
+    setRouteData(r);
+    setCurrentIntent(r.intent || null);
+    setRouteApproved(false);
+    drawRouteOnMap(r);
+    localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
+    if (isMobile) setSheetMode('collapsed');
+  }
+
   function startNavigation() {
     setNavMode(true);
     navModeRef.current = true;
@@ -2916,7 +2949,8 @@ export default function App() {
             <div className="sheet-expanded-content">
               {error && <div className="error-banner">⚠️ {error}</div>}
               <ConversationThread messages={messages} loading={loading}
-                loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
+                loadingMsg={loadingMsg} messagesEndRef={messagesEnd}
+                currentRoute={routeData} onSelectRoute={selectThreadRoute}/>
               <div className="sheet-input-area">
                 {routeData && !routeApproved && refineOpen && (
                   <div className="chips-row">
