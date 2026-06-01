@@ -1968,11 +1968,18 @@ export default function App() {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      // Guard: if the rider hit Stop while the response was in flight (the
+      // server-side function still runs to completion and the body may already
+      // be buffered locally), discard the result instead of dropping a stale
+      // route onto the map while the rider is recording a new prompt.
+      if (controller.signal.aborted) { clearInterval(ticker); return; }
       const data = await res.json();
+      if (controller.signal.aborted) { clearInterval(ticker); return; }
       clearInterval(ticker);
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       if (data.clarify) {
+        if (controller.signal.aborted) return;
         setMessages(prev => [...prev, {
           role:'clarify', question:data.question, options:data.options||[],
           onSelect:(opt) => handleFollowUp(opt),
@@ -1981,6 +1988,7 @@ export default function App() {
         return;
       }
 
+      if (controller.signal.aborted) return;
       const r = data.route;
       setRouteData(r);
       setCurrentIntent(r.intent);
@@ -2499,9 +2507,16 @@ export default function App() {
               {/* Hero row: mic + recents toggle, side-by-side, both glove-friendly */}
               <div className="idle-hero-row">
                 {loading ? (
-                  <div className="hero-btn hero-btn--mic" style={{cursor:'default', pointerEvents:'none'}}>
-                    <span className="dot-spin" style={{width:22,height:22,borderWidth:2.5}}/>
-                  </div>
+                  <button
+                    className="hero-btn hero-btn--stop"
+                    onClick={cancelGeneration}
+                    aria-label="Stop planning"
+                  >
+                    <span className="hero-btn-stop-ring"/>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    </svg>
+                  </button>
                 ) : (
                   <button
                     className={`hero-btn hero-btn--mic${voice.listening ? ' hero-btn--listening' : ''}`}
@@ -2561,18 +2576,16 @@ export default function App() {
                     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitQuery(); }
                   }}
                   disabled={loading}/>
-                {/* Cancel button — three jobs depending on state:
+                {/* Text-pill clear button — only deals with the input contents:
                     • voice.listening → discard the in-progress transcript
-                    • loading → abort the in-flight route generation
-                    • typed text present → clear the textarea */}
-                {(voice.listening || loading || query) && (
+                    • typed text present → clear the textarea
+                    Stopping a route in progress is the orange hero pill's job,
+                    NOT this — keeping them separate avoids "tap to clear typo"
+                    accidentally aborting a planning request. */}
+                {!loading && (voice.listening || query) && (
                   <button className="query-input-clear"
-                    onClick={() => {
-                      if (voice.listening) voice.cancel();
-                      else if (loading)    cancelGeneration();
-                      else                 setQuery('');
-                    }}
-                    aria-label={loading ? 'Cancel planning' : voice.listening ? 'Cancel dictation' : 'Clear input'}>
+                    onClick={() => { if (voice.listening) voice.cancel(); else setQuery(''); }}
+                    aria-label={voice.listening ? 'Cancel dictation' : 'Clear input'}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                       <line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>
                     </svg>
