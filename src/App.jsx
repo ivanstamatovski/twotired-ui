@@ -2541,10 +2541,15 @@ export default function App() {
                   <button
                     className={`hero-btn hero-btn--mic${voice.listening ? ' hero-btn--listening' : ''}`}
                     onClick={() => {
-                      if (query.trim() && !voice.listening) { submitQuery(); }
-                      else if (voice.supported) { voice.listening ? voice.stop() : voice.start(); }
+                      // Tap-while-listening = full cancel (stop recording AND
+                      // clear the captured prompt) instead of stop+auto-submit.
+                      // Otherwise the rider had to wait for the planner to spin
+                      // up just to cancel it on the next tap — two-step bail.
+                      if (voice.listening) { voice.cancel(); setQuery(''); }
+                      else if (query.trim()) { submitQuery(); }
+                      else if (voice.supported) { voice.start(); }
                     }}
-                    aria-label={voice.listening ? 'Stop recording' : query.trim() ? 'Submit' : 'Voice input'}
+                    aria-label={voice.listening ? 'Cancel recording' : query.trim() ? 'Submit' : 'Voice input'}
                   >
                     {voice.listening && <span className="mic-pulse"/>}
                     {voice.listening ? (
