@@ -221,6 +221,41 @@ function nearestRouteIdx(coords, lat, lng) {
   return nearIdx;
 }
 
+// Great-circle distance from a point to a line segment, returned in metres.
+// Equirectangular projection at the local latitude — accurate enough for the
+// short segments in a turn-by-turn polyline (<200m typical).
+function distanceToSegmentM(lat, lng, lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const rad = Math.PI / 180;
+  const cosLat = Math.cos(((lat + lat1 + lat2) / 3) * rad);
+  const x  = (lng  - lng1) * cosLat * R * rad;
+  const y  = (lat  - lat1)           * R * rad;
+  const dx = (lng2 - lng1) * cosLat * R * rad;
+  const dy = (lat2 - lat1)           * R * rad;
+  const segLenSq = dx * dx + dy * dy;
+  if (segLenSq < 1e-6) return Math.hypot(x, y);
+  let t = (x * dx + y * dy) / segLenSq;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return Math.hypot(x - t * dx, y - t * dy);
+}
+
+// Minimum distance from a point to any segment of the route polyline, in metres.
+// Used for off-route detection: if this exceeds the threshold for a sustained
+// time, the rider has probably missed a turn and we trigger a reroute.
+function distanceToRouteM(lat, lng, route) {
+  const coords = route?.geometry?.coordinates;
+  if (!coords || coords.length < 2) return Infinity;
+  let best = Infinity;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [lng1, lat1] = coords[i];
+    const [lng2, lat2] = coords[i + 1];
+    const d = distanceToSegmentM(lat, lng, lat1, lng1, lat2, lng2);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 // Bearing of the route AT the user's nearest point, sampled ~30m ahead so the
 // map orients to the upcoming road segment rather than wobbling on tight
 // vertices. Used when GPS heading is unreliable (stopped, walking, indoors).
@@ -842,6 +877,13 @@ export default function App() {
   const locationWatchRef = useRef(null); // always-on position watch
   const wakeLockRef = useRef(null);
   const lastAnnouncedRef = useRef(null);
+  // Off-route + reroute bookkeeping. Tracked as refs so the geolocation
+  // callback (which is called outside React render flow) can read/update
+  // them without triggering re-renders on every GPS tick.
+  const offRouteSinceRef  = useRef(null); // ms timestamp when rider first went off-route; null when on-route
+  const lastRerouteAtRef  = useRef(0);    // ms timestamp of last reroute attempt; cooldown gate
+  const reroutingRef      = useRef(false);// guard against overlapping reroute calls
+  const [rerouting, setRerouting] = useState(false); // UI banner during reroute
   const routeDataRef = useRef(null);
   const navModeRef = useRef(false); // mirror of navMode for geolocation callback
   const sessionEmailRef = useRef(null); // mirror of current account email for dev sim override
@@ -1778,6 +1820,24 @@ export default function App() {
         }
       }
 
+      // Off-route detection. Skipped while a reroute is already in flight,
+      // and while we're within the post-reroute cooldown window.
+      if (!reroutingRef.current) {
+        const offDist = distanceToRouteM(lat, lng, route);
+        if (offDist > OFF_ROUTE_THRESHOLD_M) {
+          if (offRouteSinceRef.current === null) offRouteSinceRef.current = Date.now();
+          const offFor = Date.now() - offRouteSinceRef.current;
+          const sinceLast = Date.now() - lastRerouteAtRef.current;
+          if (offFor > OFF_ROUTE_GRACE_MS && sinceLast > REROUTE_COOLDOWN_MS) {
+            lastRerouteAtRef.current = Date.now();
+            offRouteSinceRef.current = null;
+            rerouteFromCurrentPosition(lat, lng);
+          }
+        } else {
+          // Back on route — reset the timer so the next drift starts fresh.
+          offRouteSinceRef.current = null;
+        }
+      }
     }
   }
 
@@ -1888,6 +1948,42 @@ export default function App() {
     }
   }
 
+  // Off-route detection thresholds. Calibrated for motorcycle speeds:
+  //   - 60 m is well outside GPS noise (~10 m typical) but inside a typical
+  //     two-lane road's reach, so a short bike-lane swerve won't trip it.
+  //   - 4 s of sustained off-route avoids one-off spikes from tunnels or
+  //     overhead structures that briefly throw the GPS fix.
+  //   - 30 s reroute cooldown prevents the API from being hammered when the
+  //     rider deliberately leaves the route (e.g. quick fuel stop).
+  const OFF_ROUTE_THRESHOLD_M = 60;
+  const OFF_ROUTE_GRACE_MS    = 4000;
+  const REROUTE_COOLDOWN_MS   = 30000;
+
+  // Recalculate from the rider's current position when they've drifted off
+  // the route. Preserves their original intent (destination, curviness,
+  // road_corridor) so a "Hawks Nest via NY-97" ride doesn't get rerouted to
+  // a non-scenic path just because they missed a turn.
+  async function rerouteFromCurrentPosition(lat, lng) {
+    if (reroutingRef.current) return;
+    if (!currentIntent) return;
+    reroutingRef.current = true;
+    setRerouting(true);
+    speak('Off route. Recalculating.');
+    try {
+      await generateRoute(
+        { refine: true, feedback: 'recalculate from current location', intent: currentIntent },
+        { lat, lng },
+      );
+    } catch (e) {
+      console.warn('[reroute] failed:', e?.message || e);
+    } finally {
+      reroutingRef.current = false;
+      setRerouting(false);
+      // Reset the off-route timer so the new route gets a fair shake.
+      offRouteSinceRef.current = null;
+    }
+  }
+
   // Switch the active map polyline + state to a route that's already in the
   // conversation thread (e.g. when the rider refined to "more curvy" and now
   // wants the original back). Unlike restoreRecentRoute, this preserves the
@@ -1907,6 +2003,9 @@ export default function App() {
     navModeRef.current = true;
     lastAnnouncedRef.current = null;
     lastNavPosRef.current = null;
+    // Clear any leftover off-route state from a previous nav session.
+    offRouteSinceRef.current = null;
+    lastRerouteAtRef.current = 0;
 
     // Prime bearing to the route direction at the rider's position so the
     // very first frame already points up the road (no spin-into-place once
@@ -2546,6 +2645,15 @@ export default function App() {
             </button>
             <button className="nav-stop-btn" onClick={stopNavigation} aria-label="Stop navigation">✕</button>
           </div>
+
+          {/* Reroute banner — sits between the top turn-banner and the bottom
+              progress bar so it's clearly visible without covering either. */}
+          {rerouting && (
+            <div className="nav-reroute-banner" role="status" aria-live="polite">
+              <span className="dot-spin nav-reroute-spinner"/>
+              <span>Off route — recalculating…</span>
+            </div>
+          )}
 
           <div className="nav-bottom-bar">
             <div className="nav-progress">
