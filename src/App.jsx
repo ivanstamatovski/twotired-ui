@@ -854,6 +854,8 @@ export default function App() {
   const [sharingRoute, setSharingRoute] = useState(false);        // in-flight write
   const [sharedWithOpen, setSharedWithOpen] = useState(false);    // "Shared with me" list section in menu
   const [matesPanelOpen, setMatesPanelOpen] = useState(false);    // desktop sidebar's Riding mates collapsible panel
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);  // dropdown anchored to the account chip in the desktop header
+  const accountMenuRef = useRef(null);
   const [bugDone, setBugDone] = useState(false);
 
   // Delete-account modal (Apple Guideline 5.1.1(v))
@@ -958,6 +960,18 @@ export default function App() {
     submitQuery(transcript);
   }, []);
   const voice = useVoice(handleVoiceResult);
+
+  // Close the desktop account dropdown when clicking anywhere outside it.
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const onDown = (e) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(e.target)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [accountMenuOpen]);
 
   // Live mirror of interim voice transcript into the input box, so the user
   // sees their words appear as they speak. Guarded against `loading` so that
@@ -3146,16 +3160,62 @@ export default function App() {
 
       ) : !navMode ? (
         <div className="sidebar">
-          <div className="brand">
-            <span className="brand-name">🏍 TwoTired</span>
-            <div className="user-row">
-              <span className="user-email">{session.user.email}</span>
-              <button className="signout-btn" onClick={() => supabase.auth.signOut()}>Sign out</button>
+          <div className="sidebar-header">
+            <div className="sidebar-brand">
+              <span className="sidebar-brand-mark" aria-hidden>🏍</span>
+              <span className="sidebar-brand-name">TwoTired</span>
             </div>
-            <button className="menu-delete-account"
-              onClick={() => { setDeleteConfirmText(''); setDeleteError(null); setDeleteAccountOpen(true); }}>
-              Delete account
-            </button>
+            <div className="sidebar-account" ref={accountMenuRef}>
+              <button
+                className={`sidebar-account-chip${accountMenuOpen ? ' sidebar-account-chip--open' : ''}`}
+                onClick={() => setAccountMenuOpen(x => !x)}
+                aria-expanded={accountMenuOpen}
+                aria-haspopup="menu"
+                aria-label="Account menu"
+              >
+                <Avatar name={profile?.display_name || session.user.email} size={26} />
+                <span className="sidebar-account-name">
+                  {profile?.display_name || session.user.email.split('@')[0]}
+                </span>
+                <svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={`sidebar-account-chevron${accountMenuOpen ? ' sidebar-account-chevron--open' : ''}`}>
+                  <polyline points="1 1 5 5 9 1"/>
+                </svg>
+              </button>
+
+              {accountMenuOpen && (
+                <div className="sidebar-account-menu" role="menu">
+                  <div className="sidebar-account-menu-id">
+                    <Avatar name={profile?.display_name || session.user.email} size={36} />
+                    <div className="sidebar-account-menu-id-block">
+                      <div className="sidebar-account-menu-name">{profile?.display_name || 'You'}</div>
+                      <div className="sidebar-account-menu-email">{session.user.email}</div>
+                    </div>
+                  </div>
+                  <button className="sidebar-account-menu-item"
+                    onClick={() => { setAccountMenuOpen(false); supabase.auth.signOut(); }}
+                    role="menuitem">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                      <polyline points="16 17 21 12 16 7"/>
+                      <line x1="21" y1="12" x2="9" y2="12"/>
+                    </svg>
+                    Sign out
+                  </button>
+                  <div className="sidebar-account-menu-divider"/>
+                  <button className="sidebar-account-menu-item sidebar-account-menu-item--danger"
+                    onClick={() => { setAccountMenuOpen(false); setDeleteConfirmText(''); setDeleteError(null); setDeleteAccountOpen(true); }}
+                    role="menuitem">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6"/>
+                      <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/>
+                      <path d="M10 11v6M14 11v6"/>
+                      <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>
+                    </svg>
+                    Delete account
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="query-row">

@@ -1352,6 +1352,9 @@ body {
 .profile-cancel-btn:hover { background: var(--surface-alt, #f3f4f6); }
 
 /* Primary CTA to bring a new mate onboard via the native share sheet. */
+/* Invite-friend CTA — secondary action in the Riding mates panel, so it
+ * shouldn't compete with the primary orange Send arrow at the top of the
+ * sidebar. Outlined accent button instead of filled. */
 .invite-share-btn {
   display: flex;
   align-items: center;
@@ -1359,18 +1362,17 @@ body {
   gap: 8px;
   width: calc(100% - 28px);
   margin: 4px 14px 10px;
-  padding: 11px 14px;
-  background: var(--accent, #f97316);
-  color: #fff;
-  border: none;
-  border-radius: 12px;
-  font-size: 14px;
+  padding: 9px 14px;
+  background: transparent;
+  color: var(--accent, #f97316);
+  border: 1.5px solid var(--accent, #f97316);
+  border-radius: 10px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, transform 0.08s;
-  box-shadow: 0 2px 8px rgba(249,115,22,0.25);
+  transition: background 0.15s, color 0.15s, transform 0.08s;
 }
-.invite-share-btn:hover  { background: var(--accent-hover, #ea580c); }
+.invite-share-btn:hover  { background: rgba(249, 115, 22, 0.08); }
 .invite-share-btn:active { transform: scale(0.98); }
 
 .friend-row {
@@ -2174,9 +2176,13 @@ body {
   overflow: hidden;
 }
 
-.brand {
+/* ── Sidebar header ─────────────────────────────────────────────────────────
+   Compact: wordmark on the left, account chip on the right. The chip opens a
+   dropdown that contains the email, sign-out, and the destructive "Delete
+   account" action — moving them out of the user's daily field of view. */
+.sidebar-header {
   flex-shrink: 0;
-  padding: 16px 18px 12px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -2184,33 +2190,122 @@ body {
   gap: 10px;
 }
 
-.brand-name { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.sidebar-brand-mark { font-size: 18px; }
+.sidebar-brand-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
 
-.user-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sidebar-account { position: relative; flex-shrink: 0; }
 
-.user-email {
-  font-size: 12px;
-  color: var(--text-muted);
+.sidebar-account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  max-width: 180px;
+}
+.sidebar-account-chip:hover { background: var(--surface2, #f9fafb); border-color: var(--text-dim, #9ca3af); }
+.sidebar-account-chip--open { background: var(--surface2, #f9fafb); border-color: var(--text-dim, #9ca3af); }
+.sidebar-account-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text, #1f2937);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 140px;
+  max-width: 110px;
+}
+.sidebar-account-chevron {
+  color: var(--text-dim, #6b7280);
+  transition: transform 0.15s;
+}
+.sidebar-account-chevron--open { transform: rotate(180deg); }
+
+.sidebar-account-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 240px;
+  background: #fff;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.05);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: account-menu-fade 0.12s ease-out;
+}
+@keyframes account-menu-fade {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.signout-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 9px;
-  font-size: 11px;
-  color: var(--text-dim);
-  cursor: pointer;
+.sidebar-account-menu-id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 10px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  margin-bottom: 4px;
+}
+.sidebar-account-menu-id-block { min-width: 0; flex: 1; }
+.sidebar-account-menu-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #1f2937);
   white-space: nowrap;
-  flex-shrink: 0;
-  transition: color 0.15s, border-color 0.15s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-account-menu-email {
+  font-size: 12px;
+  color: var(--text-dim, #6b7280);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.signout-btn:hover { color: var(--red); border-color: var(--red); }
+.sidebar-account-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text, #1f2937);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+.sidebar-account-menu-item:hover { background: var(--surface2, #f3f4f6); }
+.sidebar-account-menu-item--danger { color: var(--red, #dc2626); }
+.sidebar-account-menu-item--danger:hover { background: rgba(220, 38, 38, 0.07); }
+
+.sidebar-account-menu-divider {
+  height: 1px;
+  background: var(--border, #e5e7eb);
+  margin: 4px 0;
+}
 
 .query-row {
   flex-shrink: 0;
@@ -2358,12 +2453,22 @@ body {
 }
 
 .recent-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-muted);
-  padding: 0 2px;
+  letter-spacing: 0.02em;
+  color: var(--text, #1f2937);
+  padding: 4px 2px 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.recent-label::before {
+  content: '';
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><polyline points='12 6 12 12 16 14'/></svg>") center/contain no-repeat;
+  opacity: 0.8;
 }
 
 .recent-item {
