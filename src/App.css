@@ -2411,6 +2411,19 @@ body {
 
 .desktop-followup { display: flex; flex-direction: column; gap: 10px; }
 
+/* Pinned action bar — sits between the scrolling messages area and the
+ * Report-issue footer. Always visible when there's a route, so Start
+ * Navigation never gets pushed off-screen by long conversation history. */
+.sidebar-actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border, #e5e7eb);
+  background: #fff;
+}
+
 .start-nav-btn-desktop {
   background: var(--accent);
   color: #fff;

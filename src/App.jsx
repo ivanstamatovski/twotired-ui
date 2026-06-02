@@ -3401,30 +3401,8 @@ export default function App() {
             {messages.length > 0 ? (
               <>
                 <ConversationThread messages={messages} loading={loading}
-                  loadingMsg={loadingMsg} messagesEndRef={messagesEnd}/>
-                {routeData && !routeApproved && (
-                  <div className="desktop-followup">
-                    <button className="start-nav-btn-desktop" onClick={startNavigation}>▶ Start Navigation</button>
-                    <div className="chips-row">
-                      {REFINE_CHIPS.map(c=>(
-                        <button key={c} className="chip" onClick={()=>handleFollowUp(c)}>{c}</button>
-                      ))}
-                    </div>
-                    <div className="input-row">
-                      <input className="followup-input" placeholder="Refine or approve…"
-                        value={followUpInput} onChange={e=>setFollowUpInput(e.target.value)}
-                        onKeyDown={e=>e.key==='Enter'&&handleFollowUp()}/>
-                      <button className="send-btn" onClick={()=>handleFollowUp()}
-                        disabled={!followUpInput.trim()}>↑</button>
-                    </div>
-                  </div>
-                )}
-                {routeApproved && (
-                  <div className="desktop-followup">
-                    <button className="start-nav-btn-desktop" onClick={startNavigation}>▶ Start Navigation</button>
-                    <div className="approved-banner">✅ Route approved — ride safe!</div>
-                  </div>
-                )}
+                  loadingMsg={loadingMsg} messagesEndRef={messagesEnd}
+                  currentRoute={routeData} onSelectRoute={selectThreadRoute}/>
                 {recent.filter(r=>r.title !== routeData?.title).length > 0 && (
                   <div className="recent-sidebar">
                     <div className="recent-label">Recent rides</div>
@@ -3459,6 +3437,34 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Action bar — pinned just above the footer so the rider can always
+              see Start Navigation + the refine controls regardless of how far
+              they scrolled the conversation thread above. Only shown when
+              there's a current route to act on. */}
+          {routeData && (
+            <div className="sidebar-actions">
+              <button className="start-nav-btn-desktop" onClick={startNavigation}>▶ Start Navigation</button>
+              {routeApproved ? (
+                <div className="approved-banner">✅ Route approved — ride safe!</div>
+              ) : (
+                <>
+                  <div className="chips-row">
+                    {REFINE_CHIPS.map(c=>(
+                      <button key={c} className="chip" onClick={()=>handleFollowUp(c)}>{c}</button>
+                    ))}
+                  </div>
+                  <div className="input-row">
+                    <input className="followup-input" placeholder="Refine or approve…"
+                      value={followUpInput} onChange={e=>setFollowUpInput(e.target.value)}
+                      onKeyDown={e=>e.key==='Enter'&&handleFollowUp()}/>
+                    <button className="send-btn" onClick={()=>handleFollowUp()}
+                      disabled={!followUpInput.trim()}>↑</button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="sidebar-bug">
             {/* Routing model toggle hidden for release. Default is 'scoring'. */}
