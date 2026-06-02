@@ -3249,11 +3249,9 @@ export default function App() {
                 {(() => {
                   const accepted = friendships.filter(f => f.status === 'accepted' && f.friend).length;
                   const pending  = friendships.filter(f => f.status === 'pending' && f.initiated_by !== session.user.id && f.friend).length;
-                  const shared   = sharedRoutes.filter(r => !r.viewed_at).length;
                   const parts = [];
                   if (accepted) parts.push(`${accepted}`);
                   if (pending)  parts.push(`${pending} pending`);
-                  if (shared)   parts.push(`${shared} new route${shared === 1 ? '' : 's'}`);
                   return parts.length ? <span className="sidebar-mates-count"> ({parts.join(' · ')})</span> : null;
                 })()}
               </span>
@@ -3265,28 +3263,6 @@ export default function App() {
 
             {matesPanelOpen && (
               <div className="sidebar-mates-body">
-                {/* Shared routes inbox */}
-                {sharedRoutes.length > 0 && (
-                  <div className="sidebar-mates-section">
-                    <div className="sidebar-mates-section-label">Shared with me ({sharedRoutes.length})</div>
-                    {sharedRoutes.map(r => (
-                      <div key={r.id} className={`shared-route-row${r.viewed_at ? '' : ' shared-route-row--unread'}`}>
-                        <Avatar name={r.sharer_name} size={28} />
-                        <button className="shared-route-body" onClick={() => openSharedRoute(r)}>
-                          <div className="shared-route-title">{r.title}</div>
-                          <div className="shared-route-meta">
-                            from {r.sharer_name}
-                            {r.distance_mi != null ? ` · ${r.distance_mi.toFixed(0)} mi` : ''}
-                            {r.duration_str ? ` · ${r.duration_str}` : ''}
-                          </div>
-                        </button>
-                        <button className="shared-route-delete"
-                          onClick={() => deleteSharedRoute(r.id)} aria-label="Delete">✕</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
                 {/* Your profile + invite button */}
                 {profile && (
                   <div className="sidebar-mates-section">
@@ -3403,13 +3379,35 @@ export default function App() {
                 <ConversationThread messages={messages} loading={loading}
                   loadingMsg={loadingMsg} messagesEndRef={messagesEnd}
                   currentRoute={routeData} onSelectRoute={selectThreadRoute}/>
-                {recent.filter(r=>r.title !== routeData?.title).length > 0 && (
+                {(sharedRoutes.length > 0 || recent.filter(r=>r.title !== routeData?.title).length > 0) && (
                   <div className="recent-sidebar">
                     <div className="recent-label">Recent rides</div>
+                    {/* Incoming shared routes — appear at the top with sharer label */}
+                    {sharedRoutes.map(r => (
+                      <div key={`shared-${r.id}`}
+                        className={`recent-item recent-item--shared${r.viewed_at ? '' : ' recent-item--unread'}`}>
+                        <button className="recent-item-main" onClick={() => openSharedRoute(r)}>
+                          <span className="recent-title">{r.title}</span>
+                          <span className="recent-meta">
+                            ↪ from {r.sharer_name}
+                            {r.distance_mi != null ? ` · ${r.distance_mi.toFixed(0)} mi` : ''}
+                            {r.duration_str ? ` · ${r.duration_str}` : ''}
+                          </span>
+                        </button>
+                        <button className="recent-item-delete"
+                          onClick={(e) => { e.stopPropagation(); deleteSharedRoute(r.id); }}
+                          aria-label="Delete shared route">✕</button>
+                      </div>
+                    ))}
                     {recent.filter(r=>r.title !== routeData?.title).map(r=>(
-                      <button key={r.id} className="recent-item" onClick={()=>restoreRecentRoute(r)}>
+                      <button key={r.id}
+                        className={`recent-item${r.shared_from ? ' recent-item--from-friend' : ''}`}
+                        onClick={()=>restoreRecentRoute(r)}>
                         <span className="recent-title">{r.title}</span>
-                        <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
+                        <span className="recent-meta">
+                          {r.shared_from ? `↪ from ${r.shared_from} · ` : ''}
+                          {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -3417,14 +3415,34 @@ export default function App() {
               </>
             ) : (
               <div className="empty-state">
-                {recent.length > 0 ? (
+                {(sharedRoutes.length > 0 || recent.length > 0) ? (
                   <>
                     <div className="recent-label">Recent rides</div>
+                    {sharedRoutes.map(r => (
+                      <div key={`shared-${r.id}`}
+                        className={`recent-item recent-item--shared${r.viewed_at ? '' : ' recent-item--unread'}`}>
+                        <button className="recent-item-main" onClick={() => openSharedRoute(r)}>
+                          <span className="recent-title">{r.title}</span>
+                          <span className="recent-meta">
+                            ↪ from {r.sharer_name}
+                            {r.distance_mi != null ? ` · ${r.distance_mi.toFixed(0)} mi` : ''}
+                            {r.duration_str ? ` · ${r.duration_str}` : ''}
+                          </span>
+                        </button>
+                        <button className="recent-item-delete"
+                          onClick={(e) => { e.stopPropagation(); deleteSharedRoute(r.id); }}
+                          aria-label="Delete shared route">✕</button>
+                      </div>
+                    ))}
                     {recent.map(r=>(
-                      <button key={r.id} className="recent-item"
+                      <button key={r.id}
+                        className={`recent-item${r.shared_from ? ' recent-item--from-friend' : ''}`}
                         onClick={()=>restoreRecentRoute(r)}>
                         <span className="recent-title">{r.title}</span>
-                        <span className="recent-meta">{r.distance_mi?.toFixed(0)} mi · {r.duration_str}</span>
+                        <span className="recent-meta">
+                          {r.shared_from ? `↪ from ${r.shared_from} · ` : ''}
+                          {r.distance_mi?.toFixed(0)} mi · {r.duration_str}
+                        </span>
                       </button>
                     ))}
                   </>

@@ -2504,6 +2504,55 @@ body {
 
 .recent-item:hover, .recent-item:active { background: #ebebea; }
 
+/* Shared route row inside Recent rides — gets a soft accent tint and a
+ * separate delete button so the rider can dismiss it from the inbox. */
+.recent-item--shared {
+  background: rgba(249, 115, 22, 0.06);
+  border-color: rgba(249, 115, 22, 0.3);
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  gap: 0;
+}
+.recent-item--unread {
+  background: rgba(249, 115, 22, 0.10);
+  border-color: rgba(249, 115, 22, 0.55);
+}
+.recent-item--shared:hover { background: rgba(249, 115, 22, 0.12); }
+
+.recent-item-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: none;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font);
+  font-size: inherit;
+  color: inherit;
+}
+
+.recent-item-delete {
+  flex-shrink: 0;
+  width: 32px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid rgba(249, 115, 22, 0.25);
+  color: var(--text-dim, #6b7280);
+  cursor: pointer;
+  font-size: 14px;
+  transition: color 0.12s, background 0.12s;
+}
+.recent-item-delete:hover { color: var(--red, #dc2626); background: rgba(220, 38, 38, 0.06); }
+
+/* Already-opened-via-shared local recent — subtle marker only, no orange
+ * background (it's history, not an inbox item). The "↪ from X" prefix in
+ * the meta line communicates the origin. */
+.recent-item--from-friend { border-left: 2px solid rgba(249, 115, 22, 0.55); }
+
 .recent-title {
   font-size: 14px;
   color: var(--text);
