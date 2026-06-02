@@ -853,6 +853,7 @@ export default function App() {
   const [shareModalOpen, setShareModalOpen] = useState(false);    // mate-picker modal for "Share this route"
   const [sharingRoute, setSharingRoute] = useState(false);        // in-flight write
   const [sharedWithOpen, setSharedWithOpen] = useState(false);    // "Shared with me" list section in menu
+  const [matesPanelOpen, setMatesPanelOpen] = useState(false);    // desktop sidebar's Riding mates collapsible panel
   const [bugDone, setBugDone] = useState(false);
 
   // Delete-account modal (Apple Guideline 5.1.1(v))
@@ -3175,6 +3176,166 @@ export default function App() {
           </div>
 
           {error && <div className="error-banner">⚠️ {error}</div>}
+
+          {/* Riding mates + shared routes — same content as the mobile menu's
+              overflow sheet. Collapsible header so the desktop sidebar's
+              messages area still gets most of the height. */}
+          <div className="sidebar-mates">
+            <button className="sidebar-mates-header"
+              onClick={() => setMatesPanelOpen(x => !x)}
+              aria-expanded={matesPanelOpen}>
+              <span>
+                🏍 Riding mates
+                {(() => {
+                  const accepted = friendships.filter(f => f.status === 'accepted' && f.friend).length;
+                  const pending  = friendships.filter(f => f.status === 'pending' && f.initiated_by !== session.user.id && f.friend).length;
+                  const shared   = sharedRoutes.filter(r => !r.viewed_at).length;
+                  const parts = [];
+                  if (accepted) parts.push(`${accepted}`);
+                  if (pending)  parts.push(`${pending} pending`);
+                  if (shared)   parts.push(`${shared} new route${shared === 1 ? '' : 's'}`);
+                  return parts.length ? <span className="sidebar-mates-count"> ({parts.join(' · ')})</span> : null;
+                })()}
+              </span>
+              <svg className={`sidebar-mates-chevron${matesPanelOpen ? ' sidebar-mates-chevron--open' : ''}`}
+                width="12" height="8" viewBox="0 0 12 8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="2 2 6 6 10 2"/>
+              </svg>
+            </button>
+
+            {matesPanelOpen && (
+              <div className="sidebar-mates-body">
+                {/* Shared routes inbox */}
+                {sharedRoutes.length > 0 && (
+                  <div className="sidebar-mates-section">
+                    <div className="sidebar-mates-section-label">Shared with me ({sharedRoutes.length})</div>
+                    {sharedRoutes.map(r => (
+                      <div key={r.id} className={`shared-route-row${r.viewed_at ? '' : ' shared-route-row--unread'}`}>
+                        <Avatar name={r.sharer_name} size={28} />
+                        <button className="shared-route-body" onClick={() => openSharedRoute(r)}>
+                          <div className="shared-route-title">{r.title}</div>
+                          <div className="shared-route-meta">
+                            from {r.sharer_name}
+                            {r.distance_mi != null ? ` · ${r.distance_mi.toFixed(0)} mi` : ''}
+                            {r.duration_str ? ` · ${r.duration_str}` : ''}
+                          </div>
+                        </button>
+                        <button className="shared-route-delete"
+                          onClick={() => deleteSharedRoute(r.id)} aria-label="Delete">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Your profile + invite button */}
+                {profile && (
+                  <div className="sidebar-mates-section">
+                    <div className="profile-row">
+                      {editingDisplayName ? (
+                        <>
+                          <input className="profile-name-input"
+                            value={draftDisplayName}
+                            onChange={e=>setDraftDisplayName(e.target.value.slice(0, 40))}
+                            onKeyDown={e=>{ if (e.key === 'Enter') saveDisplayName(); }}
+                            autoFocus />
+                          <button className="profile-save-btn" onClick={saveDisplayName}>Save</button>
+                          <button className="profile-cancel-btn" onClick={()=>setEditingDisplayName(false)}>Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <Avatar name={profile.display_name} size={32} />
+                          <div className="profile-name-block">
+                            <div className="profile-name">{profile.display_name}</div>
+                            <div className="profile-code">Your code: <strong>{profile.share_code}</strong></div>
+                          </div>
+                          <button className="profile-edit-btn"
+                            onClick={()=>{ setDraftDisplayName(profile.display_name); setEditingDisplayName(true); }}
+                            aria-label="Edit display name">✎</button>
+                        </>
+                      )}
+                    </div>
+                    <button className="invite-share-btn" onClick={shareInvite}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+                        <polyline points="16 6 12 2 8 6"/>
+                        <line x1="12" y1="2" x2="12" y2="15"/>
+                      </svg>
+                      <span>Invite a friend to ride</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Friend rows: incoming pending, accepted, outgoing pending */}
+                {friendships.filter(f => f.status === 'pending' && f.initiated_by !== session.user.id && f.friend).map(f => (
+                  <div key={f.id} className="friend-row friend-row--pending">
+                    <Avatar name={f.friend.display_name} size={32} />
+                    <div className="friend-name-block">
+                      <div className="friend-name">{f.friend.display_name}</div>
+                      <div className="friend-sub">wants to ride with you</div>
+                    </div>
+                    <button className="friend-accept-btn" onClick={()=>acceptFriendship(f.id)}>Accept</button>
+                    <button className="friend-reject-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Decline">✕</button>
+                  </div>
+                ))}
+
+                {friendships.filter(f => f.status === 'accepted' && f.friend).map(f => {
+                  const sharing = sharingFriendIds.has(f.id);
+                  const mate = matePositions[f.id];
+                  let sub = 'Connected';
+                  if (mate) sub = `📍 ${formatMateDistance(mate, userLocation)}`;
+                  else if (sharing) sub = 'You’re sharing — waiting on them';
+                  return (
+                    <div key={f.id} className={`friend-row${mate ? ' friend-row--live' : ''}`}>
+                      <Avatar name={f.friend.display_name} size={32} />
+                      <div className="friend-name-block">
+                        <div className="friend-name">{f.friend.display_name}</div>
+                        <div className="friend-sub">{sub}</div>
+                      </div>
+                      <button
+                        className={`friend-share-btn${sharing ? ' friend-share-btn--active' : ''}`}
+                        onClick={() => toggleShareWith(f.id)}
+                        aria-pressed={sharing}
+                        title={sharing ? 'Stop sharing your location' : 'Share your location with this friend'}
+                      >
+                        {sharing ? 'Sharing' : 'Share'}
+                      </button>
+                      <button className="friend-remove-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Remove friend">✕</button>
+                    </div>
+                  );
+                })}
+
+                {friendships.filter(f => f.status === 'pending' && f.initiated_by === session.user.id && f.friend).map(f => (
+                  <div key={f.id} className="friend-row friend-row--outgoing">
+                    <Avatar name={f.friend.display_name} size={32} />
+                    <div className="friend-name-block">
+                      <div className="friend-name">{f.friend.display_name}</div>
+                      <div className="friend-sub">Request sent</div>
+                    </div>
+                    <button className="friend-remove-btn" onClick={()=>deleteFriendship(f.id)} aria-label="Cancel request">✕</button>
+                  </div>
+                ))}
+
+                {/* Add by code/email */}
+                <div className="add-friend-row">
+                  <input className="add-friend-input"
+                    placeholder="Email or 6-char code"
+                    value={addFriendInput}
+                    onChange={e=>{ setAddFriendInput(e.target.value); setAddFriendStatus(null); }}
+                    onKeyDown={e=>{ if (e.key === 'Enter') sendFriendRequest(); }} />
+                  <button className="add-friend-btn"
+                    onClick={sendFriendRequest}
+                    disabled={addingFriend || !addFriendInput.trim()}>
+                    {addingFriend ? '…' : 'Add'}
+                  </button>
+                </div>
+                {addFriendStatus && (
+                  <div className={`add-friend-status add-friend-status--${addFriendStatus.kind}`}>
+                    {addFriendStatus.msg}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="sidebar-scroll">
             {messages.length > 0 ? (
