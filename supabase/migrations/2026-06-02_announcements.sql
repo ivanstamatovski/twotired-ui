@@ -29,10 +29,12 @@ create table if not exists public.announcements (
   created_at    timestamptz not null default now()
 );
 
--- Index for the "active right now" query pattern.
-create index if not exists announcements_active_idx
-  on public.announcements (starts_at desc)
-  where ends_at is null or ends_at > now();
+-- Index on starts_at for the "newest first" query order. We can't include
+-- a `where ends_at > now()` predicate because Postgres requires index
+-- predicates to use only IMMUTABLE functions, and now() is STABLE. Not a
+-- meaningful issue — this table will have at most a few dozen rows ever.
+create index if not exists announcements_starts_at_idx
+  on public.announcements (starts_at desc);
 
 alter table public.announcements enable row level security;
 
