@@ -856,6 +856,14 @@ export default function App() {
   const [matesPanelOpen, setMatesPanelOpen] = useState(false);    // desktop sidebar's Riding mates collapsible panel
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);  // dropdown anchored to the account chip in the desktop header
   const accountMenuRef = useRef(null);
+
+  // In-app announcement banners (maintenance / service status / feature news).
+  // Source: public.announcements table. Dismissal is local (per-device).
+  const [announcements, setAnnouncements] = useState([]);
+  const [dismissedAnnouncements, setDismissedAnnouncements] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('tt_dismissed_anns') || '[]')); }
+    catch { return new Set(); }
+  });
   const [bugDone, setBugDone] = useState(false);
 
   // Delete-account modal (Apple Guideline 5.1.1(v))
@@ -1102,6 +1110,57 @@ export default function App() {
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [session?.user, loadProfile, loadFriendships]);
+
+  // Announcements: fetch active rows, subscribe to new inserts, refresh on
+  // foreground to catch anything we missed while the app was backgrounded.
+  useEffect(() => {
+    if (!session?.user) { setAnnouncements([]); return; }
+    const load = async () => {
+      const nowIso = new Date().toISOString();
+      const { data, error } = await supabase
+        .from('announcements')
+        .select('id,kind,title,body,url,url_label,starts_at,ends_at,dismissible')
+        .lte('starts_at', nowIso)
+        .or(`ends_at.is.null,ends_at.gt.${nowIso}`)
+        .order('starts_at', { ascending: false });
+      if (!error && data) setAnnouncements(data);
+    };
+    load();
+    const ch = supabase
+      .channel('announcements')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'announcements' },
+        () => load())
+      .subscribe();
+    // Refresh on tab-foreground + every 10 min as a safety-net poll.
+    const onVis = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVis);
+    const interval = setInterval(load, 10 * 60 * 1000);
+    return () => {
+      supabase.removeChannel(ch);
+      document.removeEventListener('visibilitychange', onVis);
+      clearInterval(interval);
+    };
+  }, [session?.user]);
+
+  // Pick the announcement to show right now. Sort priority: critical first,
+  // then maintenance, then warning, then info — within each tier, newest first.
+  const kindWeight = { critical: 0, maintenance: 1, warning: 2, info: 3 };
+  const visibleAnnouncement = announcements
+    .filter(a => !dismissedAnnouncements.has(a.id))
+    .sort((a, b) => {
+      const dw = (kindWeight[a.kind] ?? 9) - (kindWeight[b.kind] ?? 9);
+      if (dw !== 0) return dw;
+      return new Date(b.starts_at) - new Date(a.starts_at);
+    })[0];
+
+  function dismissAnnouncement(id) {
+    setDismissedAnnouncements(prev => {
+      const next = new Set(prev); next.add(id);
+      try { localStorage.setItem('tt_dismissed_anns', JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }
 
   // Watch friendships for transitions worth surfacing as toasts.
   useEffect(() => {
@@ -2640,6 +2699,39 @@ export default function App() {
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Announcement banner — pinned at the top of the screen, above the map
+          and nav UI. Critical announcements can't be dismissed; everything
+          else has an X. Single banner at a time (priority-sorted in
+          visibleAnnouncement). */}
+      {visibleAnnouncement && (
+        <div className={`announcement announcement--${visibleAnnouncement.kind}`} role={visibleAnnouncement.kind === 'critical' ? 'alert' : 'status'}>
+          <span className="announcement-icon" aria-hidden>
+            {visibleAnnouncement.kind === 'critical'    ? '⚠️'
+             : visibleAnnouncement.kind === 'maintenance' ? '🛠'
+             : visibleAnnouncement.kind === 'warning'     ? '⚠'
+             :                                              'ℹ︎'}
+          </span>
+          <div className="announcement-body">
+            <span className="announcement-title">{visibleAnnouncement.title}</span>
+            {visibleAnnouncement.body && (
+              <span className="announcement-text">{visibleAnnouncement.body}</span>
+            )}
+            {visibleAnnouncement.url && (
+              <a className="announcement-link"
+                 href={visibleAnnouncement.url}
+                 target="_blank" rel="noreferrer">
+                {visibleAnnouncement.url_label || 'Learn more'} →
+              </a>
+            )}
+          </div>
+          {visibleAnnouncement.dismissible !== false && visibleAnnouncement.kind !== 'critical' && (
+            <button className="announcement-dismiss"
+              onClick={() => dismissAnnouncement(visibleAnnouncement.id)}
+              aria-label="Dismiss">✕</button>
+          )}
         </div>
       )}
 
