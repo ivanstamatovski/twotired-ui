@@ -815,6 +815,15 @@ export default function App() {
   const lastNavPosRef = useRef(null);   // previous lat/lng during nav, for bearing delta
   const navBearingRef = useRef(0);      // smoothed bearing currently applied to the map
 
+  // Manual map interaction during navigation.
+  //   followingUserRef = true  → onGeoPosition is free to re-centre on every GPS fix
+  //   followingUserRef = false → the rider has panned/pinched, leave the map alone
+  // navMapPannedReturnRef holds the auto-return timer for pinch-to-look-ahead;
+  // a subsequent drag clears it so a "looking around" pan isn't snapped back.
+  const followingUserRef        = useRef(true);
+  const navMapPannedReturnRef   = useRef(null);
+  const [needsRecenter, setNeedsRecenter] = useState(false);
+
   // Routing variant A/B toggle (dev tool)
   const [routeVariant, setRouteVariant] = useState('scoring');
 
@@ -1834,6 +1843,37 @@ export default function App() {
           { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
         );
       }
+
+      // ── Manual map interaction during navigation ─────────────────────────
+      // Drag (pan) means the rider wants to look around → stop following them,
+      // show the recenter button, NO auto-return. Pinch zoom means "peek
+      // ahead" → also stop following, but schedule an auto-return after 5 s
+      // of no further interaction.
+      const onUserDrag = (e) => {
+        if (!navModeRef.current) return;
+        if (!e?.originalEvent) return;        // ignore programmatic moves
+        followingUserRef.current = false;
+        setNeedsRecenter(true);
+        // Cancel any pending auto-return — the rider is panning, not glancing.
+        if (navMapPannedReturnRef.current) {
+          clearTimeout(navMapPannedReturnRef.current);
+          navMapPannedReturnRef.current = null;
+        }
+      };
+      const onUserZoom = (e) => {
+        if (!navModeRef.current) return;
+        if (!e?.originalEvent) return;        // ignore our own easeTo zooms
+        followingUserRef.current = false;
+        setNeedsRecenter(true);
+        // (Re)schedule the auto-return.
+        if (navMapPannedReturnRef.current) clearTimeout(navMapPannedReturnRef.current);
+        navMapPannedReturnRef.current = setTimeout(() => {
+          navMapPannedReturnRef.current = null;
+          if (navModeRef.current) recenterMapOnRider();
+        }, 5000);
+      };
+      map.on('dragstart', onUserDrag);
+      map.on('zoomstart', onUserZoom);
     });
 
     mapRef.current = map;
@@ -1897,36 +1937,76 @@ export default function App() {
       //      even when stopped at a light, just-started, or indoors
       //   4. Last smoothed bearing — final fallback
       if (navModeRef.current) {
-        let target = navBearingRef.current;
-        if (pos.coords.heading != null && !isNaN(pos.coords.heading) &&
-            (pos.coords.speed == null || pos.coords.speed > 0.5)) {
-          target = pos.coords.heading;
-        } else if (lastNavPosRef.current) {
-          const { lat: pLat, lng: pLng } = lastNavPosRef.current;
-          if (Math.hypot(lat - pLat, lng - pLng) > 0.00005) { // ~5 m
-            target = bearingBetween(pLat, pLng, lat, lng);
+        // Bearing source priority, in order of trust:
+        //   1. GPS heading — only when actively moving (speed > 0.5 m/s).
+        //      iOS reports stale or compass-noisy heading values when the
+        //      rider is stationary, which used to spin the map randomly at
+        //      stoplights.
+        //   2. Bearing derived from the GPS delta — when the rider moved at
+        //      least 5 m since the last fix, even if speed is unreported.
+        //   3. Route bearing at the rider's nearest point — used only on the
+        //      first frame of navigation (no previous position), so the map
+        //      enters nav already pointing the right way.
+        //   4. Otherwise: keep the current bearing untouched. While stopped,
+        //      the map stays exactly where it is.
+        // Bearing during navigation: ALWAYS use the route bearing at the
+        // rider's nearest point on the polyline. This keeps the route line
+        // visually pointing "up" from the rider icon, regardless of which
+        // direction the rider is actually facing or moving. Earlier versions
+        // mixed GPS heading + delta bearing + route bearing depending on
+        // speed and position deltas, which caused the map to spin under GPS
+        // noise (typical iPhone ~5–15 m even when stopped) and follow the
+        // teleport direction in the sim. Always-route is simpler and matches
+        // the rider's stated mental model.
+        const rb = routeBearingAt(routeDataRef.current, lat, lng);
+
+        // If the rider is significantly off-route (or hasn't reached the
+        // start yet, as when nav begins 1+km south of the route's first
+        // coord), routeBearingAt returns the bearing at the *nearest* point
+        // of the polyline — which isn't necessarily the direction the rider
+        // needs to travel. In that case, override with the bearing FROM the
+        // rider's position TO that nearest point, so "up" is the direction
+        // they actually have to ride first.
+        let target;
+        const coords = routeDataRef.current?.geometry?.coordinates;
+        if (coords && coords.length) {
+          const nearIdx = nearestRouteIdx(coords, lat, lng);
+          const [nlng, nlat] = coords[nearIdx];
+          const distToRouteM = haversineM(lat, lng, nlat, nlng);
+          if (distToRouteM > 50 && distToRouteM < 30000) {
+            // Far from route — orient toward the nearest point so the rider
+            // sees the direction to ride to reach the route.
+            target = bearingBetween(lat, lng, nlat, nlng);
+          } else if (rb != null) {
+            target = rb;
           } else {
-            const rb = routeBearingAt(routeDataRef.current, lat, lng);
-            if (rb != null) target = rb;
+            target = navBearingRef.current;
           }
         } else {
-          const rb = routeBearingAt(routeDataRef.current, lat, lng);
-          if (rb != null) target = rb;
+          target = (rb != null) ? rb : navBearingRef.current;
         }
-        // Low-pass filter so the map doesn't jitter while stopped or on GPS noise.
+
+        // Low-pass filter so the map slides smoothly into a new heading
+        // when the route bends, rather than snapping.
         const prev = navBearingRef.current;
-        const delta = ((target - prev + 540) % 360) - 180;   // shortest signed arc
-        const smoothed = (prev + delta * 0.35 + 360) % 360;
+        const deltaArc = ((target - prev + 540) % 360) - 180;
+        const smoothed = (prev + deltaArc * 0.35 + 360) % 360;
+        console.log(`[bearing] routeBearingAt=${rb != null ? rb.toFixed(1) : 'null'} target=${target.toFixed(1)} smoothed=${smoothed.toFixed(1)}`);
         navBearingRef.current = smoothed;
         lastNavPosRef.current = { lat, lng };
 
-        map.easeTo({
-          center: [lng, lat],
-          zoom: 17,
-          bearing: smoothed,
-          pitch: 55,
-          duration: 800,
-        });
+        // Skip the auto-center if the rider has manually moved the map.
+        // followingUserRef goes back to true via recenterMapOnRider() — either
+        // by tapping the recenter button or via the pinch auto-return timer.
+        if (followingUserRef.current) {
+          map.easeTo({
+            center: [lng, lat],
+            zoom: 17,
+            bearing: smoothed,
+            pitch: 55,
+            duration: 800,
+          });
+        }
       }
     }
 
@@ -1960,22 +2040,58 @@ export default function App() {
           lastOffRoutePosRef.current = { lat, lng };
           if (offRouteSinceRef.current === null) {
             offRouteSinceRef.current = Date.now();
+            console.log(`[offroute] entered off-route at ${offDist.toFixed(1)}m, scheduling reroute in ${OFF_ROUTE_GRACE_MS}ms`);
             // Schedule a check at exactly grace-period later so the reroute
             // fires even if no new GPS events arrive in the meantime.
-            if (offRouteTimerRef.current) clearTimeout(offRouteTimerRef.current);
-            offRouteTimerRef.current = setTimeout(() => {
+            const offRouteCheck = () => {
               offRouteTimerRef.current = null;
-              if (!navModeRef.current) return;
-              if (reroutingRef.current) return;
-              if (offRouteSinceRef.current === null) return; // got back on route
+              if (!navModeRef.current) {
+                console.log('[offroute] timer fired but navMode is off — skipping');
+                return;
+              }
+              if (reroutingRef.current) {
+                console.log('[offroute] timer fired but reroute already in flight — skipping');
+                return;
+              }
+              if (offRouteSinceRef.current === null) {
+                console.log('[offroute] timer fired but rider got back on route — skipping');
+                return;
+              }
               const sinceLast = Date.now() - lastRerouteAtRef.current;
-              if (sinceLast < REROUTE_COOLDOWN_MS) return;
+              if (sinceLast < REROUTE_COOLDOWN_MS) {
+                // Re-schedule the trigger for when the cooldown actually
+                // expires, instead of giving up. Previously this just returned,
+                // and unless the rider got back on route then off again, no
+                // follow-up ever fired.
+                const wait = REROUTE_COOLDOWN_MS - sinceLast + 100;
+                console.log(`[offroute] timer fired but cooldown active (${sinceLast}ms < ${REROUTE_COOLDOWN_MS}ms) — rescheduling in ${wait}ms`);
+                offRouteTimerRef.current = setTimeout(offRouteCheck, wait);
+                return;
+              }
               const p = lastOffRoutePosRef.current;
-              if (!p) return;
-              lastRerouteAtRef.current = Date.now();
+              if (!p) {
+                console.log('[offroute] timer fired but no last position — skipping');
+                return;
+              }
+              console.log(`[offroute] firing reroute from lat=${p.lat.toFixed(6)} lng=${p.lng.toFixed(6)}`);
               offRouteSinceRef.current = null;
-              rerouteFromCurrentPosition(p.lat, p.lng);
-            }, OFF_ROUTE_GRACE_MS);
+              // Cooldown semantics:
+              //   ok === 'changed'   → new route, full cooldown
+              //   ok === 'unchanged' → server returned same route. ALSO full
+              //                        cooldown — using a short one here
+              //                        produced an infinite "Recalculating…"
+              //                        loop on real rides when the rider sat
+              //                        inside GraphHopper's snap zone.
+              //   ok === false       → reroute didn't even reach the server
+              //                        (no destination etc.). No cooldown so
+              //                        the next attempt can try again.
+              rerouteFromCurrentPosition(p.lat, p.lng).then(ok => {
+                if (ok === 'changed' || ok === 'unchanged') lastRerouteAtRef.current = Date.now();
+                // else (false): leave lastRerouteAtRef alone
+              });
+            };
+            if (offRouteTimerRef.current) clearTimeout(offRouteTimerRef.current);
+            offRouteTimerRef.current = setTimeout(offRouteCheck, OFF_ROUTE_GRACE_MS);
           }
         } else {
           // Back on route — reset the timer + cancel any pending trigger so
@@ -2064,10 +2180,16 @@ export default function App() {
       );
     });
 
-    const coords = route.geometry.coordinates;
-    const bounds = coords.reduce((b,c) => b.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
-    const padding = isMobile ? { top:60, right:20, bottom:320, left:20 } : { top:60, right:60, bottom:60, left:60 };
-    map.fitBounds(bounds, { padding, duration:900, maxZoom:14 });
+    // Fit the whole route in view — but ONLY when we're previewing a route
+    // (not during navigation). If we fitBounds during nav, the map zooms out
+    // and looks broken until the next GPS fix re-centers it (or never, in
+    // the sim where GPS is one-shot). Reroutes are the common trigger.
+    if (!navModeRef.current) {
+      const coords = route.geometry.coordinates;
+      const bounds = coords.reduce((b,c) => b.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+      const padding = isMobile ? { top:60, right:20, bottom:320, left:20 } : { top:60, right:60, bottom:60, left:60 };
+      map.fitBounds(bounds, { padding, duration:900, maxZoom:14 });
+    }
   }
 
   // ── Navigation ────────────────────────────────────────────────────────────
@@ -2098,15 +2220,21 @@ export default function App() {
   }
 
   // Off-route detection thresholds. Calibrated for motorcycle speeds:
-  //   - 60 m is well outside GPS noise (~10 m typical) but inside a typical
-  //     two-lane road's reach, so a short bike-lane swerve won't trip it.
-  //   - 4 s of sustained off-route avoids one-off spikes from tunnels or
-  //     overhead structures that briefly throw the GPS fix.
-  //   - 30 s reroute cooldown prevents the API from being hammered when the
-  //     rider deliberately leaves the route (e.g. quick fuel stop).
-  const OFF_ROUTE_THRESHOLD_M = 60;
-  const OFF_ROUTE_GRACE_MS    = 4000;
-  const REROUTE_COOLDOWN_MS   = 30000;
+  //   - 40 m balances responsiveness with real-world GPS noise. iPhone GPS
+  //     is ~5–15 m in open sky and can spike to 30+ m under tree cover, in
+  //     urban canyons, or near tall trucks. The map polyline is also drawn
+  //     down the road centreline, so a rider in the actual lane is already
+  //     ~3–5 m off. 20 m made the trigger fire constantly on real rides.
+  //   - 3 s of sustained off-route filters out one-shot GPS spikes.
+  //   - 10 s reroute cooldown applies to all attempts (changed OR unchanged).
+  //     Previously we used a 3 s cooldown for unchanged routes; combined
+  //     with the rider sometimes staying in GraphHopper's snap zone, this
+  //     produced an infinite "Recalculating…" loop on real rides.
+  // For reference: Apple Maps ~50–80 m / 10 s, Google ~30–50 m / 8 s,
+  // Waze ~20–30 m / 5 s.
+  const OFF_ROUTE_THRESHOLD_M = 40;
+  const OFF_ROUTE_GRACE_MS    = 3000;
+  const REROUTE_COOLDOWN_MS   = 10000;
 
   // Recalculate from the rider's current position when they've drifted off
   // the route. Sends a raw RouteRequest (NOT a refine) so Claude doesn't get
@@ -2117,36 +2245,83 @@ export default function App() {
   // fresh path from current GPS to the original destination, accept that
   // the new path may not rejoin the old one.
   async function rerouteFromCurrentPosition(lat, lng) {
-    if (reroutingRef.current) return;
-    if (!currentIntent?.destination) {
-      console.warn('[reroute] no currentIntent.destination, skipping');
-      return;
+    if (reroutingRef.current) return false;
+
+    // Build a destination from whichever source has one. Priority:
+    //   1. currentIntent.destination — the LLM's raw output (string or object)
+    //   2. routeData.destination — the resolved destination string the
+    //      edge function returned, present on every route
+    //   3. last waypoint coord — works even when the route was restored from
+    //      a shared route or recents (no intent at all)
+    // Returns null if NONE are available, in which case we can't reroute.
+    // Coord-string pattern: "41.320895,-73.991731" or "41.32,-73.99"
+    // The server saves a coord-string as destName whenever the original
+    // destination payload was a LatLng, so subsequent reroutes can see it.
+    // We need to recognise that and send it as a real LatLng — not as a
+    // `query`, because Google Places rejects coord-strings as text queries
+    // (HTTP 400 "Coordinates are not a valid input for the query search").
+    const parseCoordString = (s) => {
+      if (typeof s !== 'string') return null;
+      const m = s.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+      if (!m) return null;
+      const lat = parseFloat(m[1]);
+      const lng = parseFloat(m[2]);
+      if (isNaN(lat) || isNaN(lng)) return null;
+      return { lat, lng };
+    };
+
+    const buildDestination = () => {
+      const fromIntent = currentIntent?.destination;
+      if (fromIntent) {
+        if (typeof fromIntent === 'string') {
+          const asCoord = parseCoordString(fromIntent);
+          if (asCoord) return asCoord;
+          return { query: fromIntent };
+        }
+        if (typeof fromIntent === 'object' && 'lat' in fromIntent) return fromIntent;
+        if (typeof fromIntent === 'object' && 'query' in fromIntent) {
+          const asCoord = parseCoordString(fromIntent.query);
+          if (asCoord) return asCoord;
+          return fromIntent;
+        }
+      }
+      const r = routeDataRef.current;
+      if (r?.destination && typeof r.destination === 'string') {
+        const asCoord = parseCoordString(r.destination);
+        if (asCoord) return asCoord;
+        return { query: r.destination };
+      }
+      const wps = r?.waypoints;
+      if (Array.isArray(wps) && wps.length) {
+        const last = wps[wps.length - 1];
+        if (last?.lat != null && last?.lng != null) return { lat: last.lat, lng: last.lng };
+      }
+      const coords = r?.geometry?.coordinates;
+      if (Array.isArray(coords) && coords.length) {
+        const [lng, lat] = coords[coords.length - 1];
+        if (lat != null && lng != null) return { lat, lng };
+      }
+      return null;
+    };
+
+    const destination = buildDestination();
+    if (!destination) {
+      console.warn('[reroute] no destination available from intent, routeData, or waypoints — skipping');
+      return false;  // false = don't start the cooldown, let the next off-route try again
     }
+
     reroutingRef.current = true;
     setRerouting(true);
     speak('Recalculating.');
 
-    // Capture the old route's first coord so we can verify in logs that the
-    // new route actually starts somewhere else.
     const oldFirstCoord = routeDataRef.current?.geometry?.coordinates?.[0];
     console.log(`[reroute] start lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}`,
-                'destination=', JSON.stringify(currentIntent.destination),
+                'destination=', JSON.stringify(destination),
                 'oldFirst=', oldFirstCoord);
 
+    let success = false;
     try {
-      // currentIntent.destination is whatever Claude produced — usually a
-      // string ("Bear Mountain, NY"). The edge function's Location type is
-      // `LatLng | { query: string }`, so wrap if needed.
-      const dest = currentIntent.destination;
-      const destination =
-        typeof dest === 'string'                  ? { query: dest }
-        : (dest && typeof dest === 'object' && 'lat' in dest)   ? dest
-        : (dest && typeof dest === 'object' && 'query' in dest) ? dest
-        : { query: String(dest ?? '') };
-
       const reroutePayload = {
-        // Origin: rider's current GPS (overridden again inside generateRoute
-        // via body.userLat/userLng, belt-and-suspenders).
         origin: { lat, lng },
         destination,
         // Drop any old anchor waypoints — they were chosen for the original
@@ -2154,24 +2329,41 @@ export default function App() {
         intermediate_waypoints: [],
         // Preserve scenic intent so the rider doesn't get dumped onto a
         // highway just because they missed a turn.
-        road_corridor: currentIntent.road_corridor || undefined,
-        curviness: currentIntent.curviness ?? 2,
+        road_corridor: currentIntent?.road_corridor || undefined,
+        curviness: currentIntent?.curviness ?? 2,
         round_trip: false,
       };
-      console.log('[reroute] payload destination=', JSON.stringify(destination));
+      const oldGeomKey = JSON.stringify(routeDataRef.current?.geometry?.coordinates?.slice(0, 5));
+      const oldLength  = routeDataRef.current?.geometry?.coordinates?.length;
+      console.log('[reroute] calling generateRoute, oldRoute coords=', oldLength);
       await generateRoute(reroutePayload, { lat, lng });
-      // Verify the new route actually replaced the old one.
       const newFirstCoord = routeDataRef.current?.geometry?.coordinates?.[0];
-      console.log('[reroute] done. newFirst=', newFirstCoord,
-                  'changed=', JSON.stringify(oldFirstCoord) !== JSON.stringify(newFirstCoord));
+      const newGeomKey = JSON.stringify(routeDataRef.current?.geometry?.coordinates?.slice(0, 5));
+      const newLength  = routeDataRef.current?.geometry?.coordinates?.length;
+      const changed = oldGeomKey !== newGeomKey;
+      console.log('[reroute] done. newFirst=', newFirstCoord, 'newLength=', newLength,
+                  'changed=', changed,
+                  changed ? '' : '(server returned identical first 5 coords)');
+      if (changed) {
+        // Reset turn-announcement debouncer so the rider hears the first
+        // instruction on the new route instead of waiting for the next bucket.
+        lastAnnouncedRef.current = null;
+        success = 'changed';
+      } else {
+        // Server returned the same route — rider's position snapped to the
+        // same starting road point as the existing route. Caller uses a
+        // short cooldown so we re-attempt as soon as the rider moves out of
+        // that snap zone, without spamming the API.
+        success = 'unchanged';
+      }
     } catch (e) {
       console.warn('[reroute] failed:', e?.message || e);
     } finally {
       reroutingRef.current = false;
       setRerouting(false);
-      // Reset the off-route timer so the new route gets a fair shake.
       offRouteSinceRef.current = null;
     }
+    return success;
   }
 
   // Switch the active map polyline + state to a route that's already in the
@@ -2198,14 +2390,33 @@ export default function App() {
     lastRerouteAtRef.current = 0;
     lastOffRoutePosRef.current = null;
     if (offRouteTimerRef.current) { clearTimeout(offRouteTimerRef.current); offRouteTimerRef.current = null; }
+    // Fresh nav starts in follow-mode; rider hasn't touched the map yet.
+    followingUserRef.current = true;
+    setNeedsRecenter(false);
+    if (navMapPannedReturnRef.current) { clearTimeout(navMapPannedReturnRef.current); navMapPannedReturnRef.current = null; }
 
     // Prime bearing to the route direction at the rider's position so the
     // very first frame already points up the road (no spin-into-place once
     // the first GPS heading arrives).
+    // Prime the initial bearing using the same "far from route → orient
+    // toward nearest route point" logic as onGeoPosition. Otherwise nav
+    // starts pointed in the wrong direction and smoothly rotates over the
+    // first few GPS ticks instead of opening already aligned.
     const r = routeData;
-    const initialBearing = (r && userLocation)
-      ? (routeBearingAt(r, userLocation.lat, userLocation.lng) ?? 0)
-      : 0;
+    let initialBearing = 0;
+    if (r && userLocation) {
+      const coords = r.geometry?.coordinates;
+      if (coords && coords.length) {
+        const nearIdx = nearestRouteIdx(coords, userLocation.lat, userLocation.lng);
+        const [nlng, nlat] = coords[nearIdx];
+        const distM = haversineM(userLocation.lat, userLocation.lng, nlat, nlng);
+        if (distM > 50 && distM < 30000) {
+          initialBearing = bearingBetween(userLocation.lat, userLocation.lng, nlat, nlng);
+        } else {
+          initialBearing = routeBearingAt(r, userLocation.lat, userLocation.lng) ?? 0;
+        }
+      }
+    }
     navBearingRef.current = initialBearing;
 
     navigator.wakeLock?.request('screen')
@@ -2239,6 +2450,10 @@ export default function App() {
     offRouteSinceRef.current = null;
     lastOffRoutePosRef.current = null;
     if (offRouteTimerRef.current) { clearTimeout(offRouteTimerRef.current); offRouteTimerRef.current = null; }
+    // Clear the map-follow state too so the next nav session starts clean.
+    followingUserRef.current = true;
+    setNeedsRecenter(false);
+    if (navMapPannedReturnRef.current) { clearTimeout(navMapPannedReturnRef.current); navMapPannedReturnRef.current = null; }
     // Restore a normal flat north-up view.
     if (mapRef.current) {
       mapRef.current.easeTo({ bearing: 0, pitch: 0, zoom: 13, duration: 600 });
@@ -2248,6 +2463,30 @@ export default function App() {
   function centerOnUser() {
     if (userLocation && mapRef.current) {
       mapRef.current.flyTo({ center: [userLocation.lng, userLocation.lat], zoom: 14, duration: 600 });
+    }
+  }
+
+  // Recenter the map on the rider during navigation. Re-enables auto-follow,
+  // smooth-eases back to the nav camera (centered, zoomed in, tilted, bearing
+  // aligned to direction of travel). Called by the floating recenter button
+  // and by the 5-second auto-return timer after a pinch-zoom interaction.
+  function recenterMapOnRider() {
+    if (!navModeRef.current || !mapRef.current) return;
+    followingUserRef.current = true;
+    setNeedsRecenter(false);
+    if (navMapPannedReturnRef.current) {
+      clearTimeout(navMapPannedReturnRef.current);
+      navMapPannedReturnRef.current = null;
+    }
+    const u = userLocation;
+    if (u) {
+      mapRef.current.easeTo({
+        center: [u.lng, u.lat],
+        zoom: 17,
+        bearing: navBearingRef.current,
+        pitch: 55,
+        duration: 700,
+      });
     }
   }
 
@@ -2351,6 +2590,9 @@ export default function App() {
       const token = session?.access_token || SUPABASE_ANON_KEY;
       const body = { ...payload, user_id: session?.user?.id || null, variant: routeVariant };
       if (gps) { body.userLat = gps.lat; body.userLng = gps.lng; }
+      console.log('[generateRoute] sending body keys=', Object.keys(body).join(','),
+                  'userLat=', body.userLat, 'userLng=', body.userLng,
+                  'destination=', JSON.stringify(body.destination));
 
       const res = await fetch(EDGE_URL, {
         method: 'POST',
@@ -2389,7 +2631,7 @@ export default function App() {
       if (isMobile) setSheetMode('collapsed');
 
       // Store full geometry so recent rides can be redrawn without an API call
-      const entry = { id:Date.now(), title:r.title, distance_mi:r.distance_mi, duration_str:r.duration_str, geometry:r.geometry, intent:r.intent, stops:r.stops||[], instructions:r.instructions||[] };
+      const entry = { id:Date.now(), title:r.title, destination:r.destination, distance_mi:r.distance_mi, duration_str:r.duration_str, geometry:r.geometry, intent:r.intent, stops:r.stops||[], instructions:r.instructions||[] };
       const updated = [entry, ...recent.filter(x=>x.title!==entry.title)].slice(0,5);
       setRecent(updated); localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
       // Persist last active route so it survives tab switches and reloads
@@ -2882,6 +3124,17 @@ export default function App() {
               <span className="dot-spin nav-reroute-spinner"/>
               <span>Recalculating from your location…</span>
             </div>
+          )}
+
+          {needsRecenter && (
+            <button className="nav-recenter-btn"
+              onClick={recenterMapOnRider}
+              aria-label="Recenter on rider">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+              </svg>
+            </button>
           )}
 
           <div className="nav-bottom-bar">

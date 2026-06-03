@@ -32,6 +32,8 @@
 	<string>TwoTired uses your microphone so you can speak your ride request hands-free.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>TwoTired transcribes your spoken ride request so you don’t have to type while riding.</string>
+	<key>UIApplicationSupportsShakeToEdit</key>
+	<false/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
