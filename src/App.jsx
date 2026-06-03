@@ -2109,20 +2109,61 @@ export default function App() {
   const REROUTE_COOLDOWN_MS   = 30000;
 
   // Recalculate from the rider's current position when they've drifted off
-  // the route. Preserves their original intent (destination, curviness,
-  // road_corridor) so a "Hawks Nest via NY-97" ride doesn't get rerouted to
-  // a non-scenic path just because they missed a turn.
+  // the route. Sends a raw RouteRequest (NOT a refine) so Claude doesn't get
+  // re-invoked — `refine: true` made Claude interpret "recalculate" as "add
+  // waypoints to get back to the original route", producing routes that
+  // looked unchanged on the map even though the voice was saying new turns.
+  // Apple/Google Maps both do the same: throw the old route away, plan a
+  // fresh path from current GPS to the original destination, accept that
+  // the new path may not rejoin the old one.
   async function rerouteFromCurrentPosition(lat, lng) {
     if (reroutingRef.current) return;
-    if (!currentIntent) return;
+    if (!currentIntent?.destination) {
+      console.warn('[reroute] no currentIntent.destination, skipping');
+      return;
+    }
     reroutingRef.current = true;
     setRerouting(true);
-    speak('Off route. Recalculating.');
+    speak('Recalculating.');
+
+    // Capture the old route's first coord so we can verify in logs that the
+    // new route actually starts somewhere else.
+    const oldFirstCoord = routeDataRef.current?.geometry?.coordinates?.[0];
+    console.log(`[reroute] start lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}`,
+                'destination=', JSON.stringify(currentIntent.destination),
+                'oldFirst=', oldFirstCoord);
+
     try {
-      await generateRoute(
-        { refine: true, feedback: 'recalculate from current location', intent: currentIntent },
-        { lat, lng },
-      );
+      // currentIntent.destination is whatever Claude produced — usually a
+      // string ("Bear Mountain, NY"). The edge function's Location type is
+      // `LatLng | { query: string }`, so wrap if needed.
+      const dest = currentIntent.destination;
+      const destination =
+        typeof dest === 'string'                  ? { query: dest }
+        : (dest && typeof dest === 'object' && 'lat' in dest)   ? dest
+        : (dest && typeof dest === 'object' && 'query' in dest) ? dest
+        : { query: String(dest ?? '') };
+
+      const reroutePayload = {
+        // Origin: rider's current GPS (overridden again inside generateRoute
+        // via body.userLat/userLng, belt-and-suspenders).
+        origin: { lat, lng },
+        destination,
+        // Drop any old anchor waypoints — they were chosen for the original
+        // origin and would pull the new route back toward the old path.
+        intermediate_waypoints: [],
+        // Preserve scenic intent so the rider doesn't get dumped onto a
+        // highway just because they missed a turn.
+        road_corridor: currentIntent.road_corridor || undefined,
+        curviness: currentIntent.curviness ?? 2,
+        round_trip: false,
+      };
+      console.log('[reroute] payload destination=', JSON.stringify(destination));
+      await generateRoute(reroutePayload, { lat, lng });
+      // Verify the new route actually replaced the old one.
+      const newFirstCoord = routeDataRef.current?.geometry?.coordinates?.[0];
+      console.log('[reroute] done. newFirst=', newFirstCoord,
+                  'changed=', JSON.stringify(oldFirstCoord) !== JSON.stringify(newFirstCoord));
     } catch (e) {
       console.warn('[reroute] failed:', e?.message || e);
     } finally {
@@ -2839,7 +2880,7 @@ export default function App() {
           {rerouting && (
             <div className="nav-reroute-banner" role="status" aria-live="polite">
               <span className="dot-spin nav-reroute-spinner"/>
-              <span>Off route — recalculating…</span>
+              <span>Recalculating from your location…</span>
             </div>
           )}
 
