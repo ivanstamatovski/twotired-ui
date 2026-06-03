@@ -1111,11 +1111,17 @@ export default function App() {
     return () => { supabase.removeChannel(ch); };
   }, [session?.user, loadProfile, loadFriendships]);
 
-  // Announcements: fetch active rows, subscribe to new inserts, refresh on
-  // foreground to catch anything we missed while the app was backgrounded.
+  // Announcements: fetch active rows + the rider's dismissed-IDs from
+  // announcement_dismissals (so a dismiss on the web stays dismissed on
+  // the phone). Subscribe to changes on both tables. Foreground + 10-min
+  // poll as a safety-net. localStorage still mirrors dismissed-IDs as an
+  // offline cache so the banner doesn't flash back during the network
+  // round-trip on cold launch.
   useEffect(() => {
     if (!session?.user) { setAnnouncements([]); return; }
-    const load = async () => {
+    const userId = session.user.id;
+
+    const loadAnns = async () => {
       const nowIso = new Date().toISOString();
       const { data, error } = await supabase
         .from('announcements')
@@ -1125,19 +1131,44 @@ export default function App() {
         .order('starts_at', { ascending: false });
       if (!error && data) setAnnouncements(data);
     };
-    load();
-    const ch = supabase
+
+    const loadDismissed = async () => {
+      const { data, error } = await supabase
+        .from('announcement_dismissals')
+        .select('announcement_id')
+        .eq('user_id', userId);
+      if (!error && data) {
+        const ids = new Set(data.map(r => r.announcement_id));
+        setDismissedAnnouncements(ids);
+        try { localStorage.setItem('tt_dismissed_anns', JSON.stringify([...ids])); } catch {}
+      }
+    };
+
+    loadAnns();
+    loadDismissed();
+
+    const annsCh = supabase
       .channel('announcements')
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'announcements' },
-        () => load())
+        () => loadAnns())
       .subscribe();
-    // Refresh on tab-foreground + every 10 min as a safety-net poll.
-    const onVis = () => { if (document.visibilityState === 'visible') load(); };
+    const dismissCh = supabase
+      .channel('announcement_dismissals:' + userId)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'announcement_dismissals', filter: `user_id=eq.${userId}` },
+        () => loadDismissed())
+      .subscribe();
+
+    const onVis = () => {
+      if (document.visibilityState === 'visible') { loadAnns(); loadDismissed(); }
+    };
     document.addEventListener('visibilitychange', onVis);
-    const interval = setInterval(load, 10 * 60 * 1000);
+    const interval = setInterval(() => { loadAnns(); loadDismissed(); }, 10 * 60 * 1000);
+
     return () => {
-      supabase.removeChannel(ch);
+      supabase.removeChannel(annsCh);
+      supabase.removeChannel(dismissCh);
       document.removeEventListener('visibilitychange', onVis);
       clearInterval(interval);
     };
@@ -1155,11 +1186,20 @@ export default function App() {
     })[0];
 
   function dismissAnnouncement(id) {
+    // Optimistic local update so the banner disappears instantly.
     setDismissedAnnouncements(prev => {
       const next = new Set(prev); next.add(id);
       try { localStorage.setItem('tt_dismissed_anns', JSON.stringify([...next])); } catch {}
       return next;
     });
+    // Persist server-side so it stays dismissed on other devices the rider
+    // signs in with. Best-effort — failure just means the dismiss only
+    // sticks on this device (still better than no dismiss).
+    if (session?.user) {
+      supabase.from('announcement_dismissals')
+        .upsert({ user_id: session.user.id, announcement_id: id }, { onConflict: 'user_id,announcement_id' })
+        .then(({ error }) => { if (error) console.warn('[announce] dismiss persist failed:', error.message); });
+    }
   }
 
   // Watch friendships for transitions worth surfacing as toasts.

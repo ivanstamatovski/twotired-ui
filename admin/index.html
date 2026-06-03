@@ -199,6 +199,46 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .trace-modal-body{flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch}
 .trace-modal-map{height:45vh;min-height:280px;border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-bottom:14px}
 
+/* ── Announcements form ── */
+.ann-form{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;display:flex;flex-direction:column;gap:14px;margin-bottom:8px}
+.ann-row{display:flex;gap:12px}
+.ann-row .ann-field{flex:1;min-width:0}
+.ann-field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.ann-field--check{flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--text-dim)}
+.ann-field--check input{margin:0}
+.ann-label{font-size:12px;font-weight:600;color:var(--text);display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.ann-hint{font-weight:400;color:var(--text-dim);font-size:11px}
+.ann-form input[type=text], .ann-form input[type=url], .ann-form input[type=datetime-local], .ann-form select, .ann-form textarea, .ann-form input:not([type]){background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:13px;color:var(--text);font-family:var(--font);outline:none;width:100%}
+.ann-form input:focus, .ann-form select:focus, .ann-form textarea:focus{border-color:var(--accent)}
+.ann-form textarea{resize:vertical;line-height:1.4}
+.ann-actions{display:flex;align-items:center;gap:12px}
+.ann-submit{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;transition:background .12s}
+.ann-submit:hover{background:#ea580c}
+.ann-submit:disabled{opacity:.5;cursor:not-allowed}
+#ann-form-status{font-size:12px;color:var(--text-dim)}
+#ann-form-status.ok{color:#059669}
+#ann-form-status.err{color:#dc2626}
+
+.ann-item{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;gap:12px;align-items:flex-start;margin-bottom:10px}
+.ann-item--info        {border-left:4px solid #60a5fa}
+.ann-item--warning, .ann-item--maintenance {border-left:4px solid #f59e0b}
+.ann-item--critical    {border-left:4px solid #ef4444}
+.ann-item--expired     {opacity:.55}
+.ann-item-body{flex:1;min-width:0}
+.ann-item-title{font-weight:600;font-size:14px;color:var(--text);margin-bottom:3px}
+.ann-item-text{font-size:13px;color:var(--text-dim);line-height:1.4;margin-bottom:6px}
+.ann-item-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--text-dim)}
+.ann-item-meta strong{color:var(--text);font-weight:500}
+.ann-item-tag{padding:2px 7px;border-radius:10px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;font-size:10px}
+.ann-item-tag--info{background:#dbeafe;color:#1e3a8a}
+.ann-item-tag--warning, .ann-item-tag--maintenance{background:#fef3c7;color:#78350f}
+.ann-item-tag--critical{background:#fee2e2;color:#7f1d1d}
+.ann-item-actions{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
+.ann-item-action{background:transparent;border:1px solid var(--border);border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;color:var(--text-dim);transition:color .12s,border-color .12s}
+.ann-item-action:hover{color:var(--text);border-color:var(--text-dim)}
+.ann-item-action--end:hover{color:#f59e0b;border-color:#f59e0b}
+.ann-item-action--delete:hover{color:#dc2626;border-color:#dc2626}
+
 /* ── Mobile Layout ── */
 @media(max-width:768px){
   .main{flex-direction:column-reverse}
@@ -275,6 +315,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <button class="nav-item" onclick="showPanel('debug',this)">
         <span class="nav-icon">🔍</span> Route Debug
         <span class="nav-badge" id="badge-debug">—</span>
+      </button>
+      <button class="nav-item" onclick="showPanel('anns',this)">
+        <span class="nav-icon">📣</span> Announcements
+        <span class="nav-badge" id="badge-anns">—</span>
       </button>
     </div>
     <div class="content">
@@ -371,6 +415,74 @@ tr:hover td{background:rgba(255,255,255,.02)}
         </div>
       </div>
 
+      <!-- ── Announcements Panel ── -->
+      <div class="panel" id="panel-anns">
+        <div class="section-header">
+          <div class="section-title">Post an announcement</div>
+          <button class="refresh-btn" onclick="loadAnnouncements()">↻ Refresh</button>
+        </div>
+
+        <form class="ann-form" onsubmit="event.preventDefault(); postAnnouncement();">
+          <div class="ann-row">
+            <label class="ann-field">
+              <span class="ann-label">Kind</span>
+              <select id="ann-kind">
+                <option value="info">ℹ︎ Info — neutral news</option>
+                <option value="warning">⚠ Warning — service degraded</option>
+                <option value="maintenance">🛠 Maintenance — scheduled downtime</option>
+                <option value="critical">⚠️ Critical — service is down (not dismissible)</option>
+              </select>
+            </label>
+            <label class="ann-field ann-field--check">
+              <input type="checkbox" id="ann-dismissible" checked/>
+              <span>Dismissible (rider can X it out)</span>
+            </label>
+          </div>
+
+          <label class="ann-field">
+            <span class="ann-label">Title <span class="ann-hint">required</span></span>
+            <input id="ann-title" maxlength="120" placeholder="Scheduled maintenance Sunday 2am ET"/>
+          </label>
+
+          <label class="ann-field">
+            <span class="ann-label">Body <span class="ann-hint">optional, ~1 sentence</span></span>
+            <textarea id="ann-body" rows="2" maxlength="400" placeholder="Routing may be slow or unavailable for ~30 min while we upgrade our servers."></textarea>
+          </label>
+
+          <div class="ann-row">
+            <label class="ann-field">
+              <span class="ann-label">Link URL <span class="ann-hint">optional</span></span>
+              <input id="ann-url" type="url" placeholder="https://twotired.net/status.html"/>
+            </label>
+            <label class="ann-field">
+              <span class="ann-label">Link label</span>
+              <input id="ann-url-label" placeholder="Learn more"/>
+            </label>
+          </div>
+
+          <div class="ann-row">
+            <label class="ann-field">
+              <span class="ann-label">Starts <span class="ann-hint">leave blank = now</span></span>
+              <input id="ann-starts" type="datetime-local"/>
+            </label>
+            <label class="ann-field">
+              <span class="ann-label">Ends <span class="ann-hint">leave blank = no expiry</span></span>
+              <input id="ann-ends" type="datetime-local"/>
+            </label>
+          </div>
+
+          <div class="ann-actions">
+            <button type="submit" class="ann-submit">Post announcement</button>
+            <span id="ann-form-status"></span>
+          </div>
+        </form>
+
+        <div class="section-header" style="margin-top:24px;">
+          <div class="section-title">Active &amp; scheduled</div>
+        </div>
+        <div id="ann-list"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -446,7 +558,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadAnnouncements(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -1178,6 +1290,142 @@ async function loadRoutes() {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
   }
 }
+
+// ── Announcements ────────────────────────────────────────────────────────────
+function fmtAnnTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function annIsActive(a) {
+  const now = Date.now();
+  const startsOk = !a.starts_at || new Date(a.starts_at).getTime() <= now;
+  const endsOk   = !a.ends_at   || new Date(a.ends_at).getTime()   > now;
+  return startsOk && endsOk;
+}
+
+async function loadAnnouncements() {
+  const list = document.getElementById('ann-list');
+  if (!list) return;
+  try {
+    const rows = await sb('/rest/v1/announcements?select=*&order=created_at.desc&limit=100');
+    const activeCount = rows.filter(annIsActive).length;
+    const badge = document.getElementById('badge-anns');
+    if (badge) badge.textContent = activeCount;
+    if (!rows.length) {
+      list.innerHTML = '<div class="loading-row" style="opacity:.6;">No announcements yet. Use the form above to post one.</div>';
+      return;
+    }
+    list.innerHTML = rows.map(a => {
+      const active = annIsActive(a);
+      const kindLabel = a.kind === 'maintenance' ? 'Maint.' : a.kind;
+      return `
+        <div class="ann-item ann-item--${a.kind}${active ? '' : ' ann-item--expired'}">
+          <div class="ann-item-body">
+            <div class="ann-item-title">${escapeHtml(a.title)}</div>
+            ${a.body ? `<div class="ann-item-text">${escapeHtml(a.body)}</div>` : ''}
+            <div class="ann-item-meta">
+              <span class="ann-item-tag ann-item-tag--${a.kind}">${kindLabel}</span>
+              <span>Starts: <strong>${fmtAnnTime(a.starts_at)}</strong></span>
+              <span>Ends: <strong>${fmtAnnTime(a.ends_at)}</strong></span>
+              <span>${a.dismissible ? 'Dismissible' : 'Sticky'}</span>
+              ${a.url ? `<span><a href="${escapeAttr(a.url)}" target="_blank" rel="noreferrer">link</a></span>` : ''}
+              <span>${active ? '<strong style="color:#059669">● Live</strong>' : '<span style="opacity:.6">Expired</span>'}</span>
+            </div>
+          </div>
+          <div class="ann-item-actions">
+            ${active && (!a.ends_at || new Date(a.ends_at) > new Date()) ?
+              `<button class="ann-item-action ann-item-action--end" onclick="endAnnouncement('${a.id}')">End now</button>` : ''}
+            <button class="ann-item-action ann-item-action--delete" onclick="deleteAnnouncement('${a.id}')">Delete</button>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    list.innerHTML = `<div class="loading-row" style="color:#dc2626">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function postAnnouncement() {
+  const kindEl  = document.getElementById('ann-kind');
+  const titleEl = document.getElementById('ann-title');
+  const bodyEl  = document.getElementById('ann-body');
+  const urlEl   = document.getElementById('ann-url');
+  const labelEl = document.getElementById('ann-url-label');
+  const startsEl= document.getElementById('ann-starts');
+  const endsEl  = document.getElementById('ann-ends');
+  const dismissEl=document.getElementById('ann-dismissible');
+  const statusEl= document.getElementById('ann-form-status');
+  const btn = document.querySelector('.ann-submit');
+
+  const title = titleEl.value.trim();
+  if (!title) {
+    statusEl.textContent = 'Title is required.'; statusEl.className = 'err';
+    titleEl.focus(); return;
+  }
+  const kind = kindEl.value;
+  // Critical announcements override dismissible to false on the client too,
+  // but enforce it here so admins can't accidentally make one dismissible.
+  const dismissible = kind === 'critical' ? false : dismissEl.checked;
+
+  const body = {
+    kind,
+    title,
+    body: bodyEl.value.trim() || null,
+    url:  urlEl.value.trim()  || null,
+    url_label: labelEl.value.trim() || null,
+    dismissible,
+  };
+  if (startsEl.value) body.starts_at = new Date(startsEl.value).toISOString();
+  if (endsEl.value)   body.ends_at   = new Date(endsEl.value).toISOString();
+
+  btn.disabled = true;
+  statusEl.textContent = 'Posting…'; statusEl.className = '';
+  try {
+    await sb('/rest/v1/announcements', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=representation' },
+      body: JSON.stringify(body),
+    });
+    statusEl.textContent = '✓ Posted.'; statusEl.className = 'ok';
+    titleEl.value = ''; bodyEl.value = ''; urlEl.value = ''; labelEl.value = '';
+    startsEl.value = ''; endsEl.value = '';
+    dismissEl.checked = true;
+    kindEl.value = 'info';
+    loadAnnouncements();
+    setTimeout(() => { statusEl.textContent = ''; }, 4000);
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'err';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function endAnnouncement(id) {
+  if (!confirm('End this announcement now? Riders will stop seeing it within seconds.')) return;
+  try {
+    await sbPatch(`/rest/v1/announcements?id=eq.${id}`, { ends_at: new Date().toISOString() });
+    loadAnnouncements();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function deleteAnnouncement(id) {
+  if (!confirm('Delete this announcement entirely? Riders who already dismissed it will see the next one.')) return;
+  try {
+    await fetch(SUPABASE_URL + `/rest/v1/announcements?id=eq.${id}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SERVICE_KEY, 'Authorization': 'Bearer ' + SERVICE_KEY },
+    });
+    loadAnnouncements();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Minimal HTML / attribute escaping for content from the DB.
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
+}
+function escapeAttr(s) { return escapeHtml(s); }
 </script>
 </body>
 </html>
