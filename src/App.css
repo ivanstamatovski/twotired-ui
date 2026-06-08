@@ -1,6 +1,54 @@
 /* ─── Reset & base ──────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Out-of-service-area toast. Fixed at top, above all other UI so it can't
+   be hidden by sheet mode. Sticky until the rider dismisses it. */
+.oa-toast {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 24px);
+  background: #1f2937;
+  color: #fff;
+  padding: 10px 12px 10px 14px;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  font-size: 13px;
+  line-height: 1.4;
+  z-index: 10000;
+}
+.oa-toast-body { flex: 1; }
+.oa-toast-close {
+  background: transparent;
+  border: 0;
+  color: rgba(255,255,255,0.7);
+  font-size: 16px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.oa-toast-close:hover { color: #fff; }
+
+/* Small version label pinned to the very bottom-centre of the screen. Sits
+   inside the iOS home-indicator safe area so it doesn't overlap the recenter
+   button (bottom-right) or the nav bottom bar. Non-interactive. */
+.app-version {
+  position: fixed;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.35);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  z-index: 9999;
+  pointer-events: none;
+  user-select: none;
+}
+
 :root {
   --bg: #f8f8f6;
   --surface: #ffffff;
@@ -240,6 +288,10 @@ body {
   position: absolute;
   inset: 0;
 }
+/* (Disabled — CSS transform on the map container desyncs MapLibre markers
+   from canvas-drawn layers. Need a different mechanism if we want to shift
+   the map down during nav.) */
+/* .map-canvas--nav { transform: translateY(80px); } */
 
 .maplibregl-ctrl-attrib { display: none !important; }
 .maplibregl-ctrl-zoom-in,
@@ -310,6 +362,316 @@ body {
   margin-top: 2px;
 }
 
+/* Rich stop info banner — shown when the rider taps a coffee / lunch /
+   gas / etc. marker on the map. */
+.stop-popup .maplibregl-popup-content {
+  padding: 0;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  overflow: hidden;
+}
+.stop-popup .maplibregl-popup-close-button {
+  font-size: 20px;
+  color: #6b7280;
+  padding: 4px 8px;
+  right: 4px;
+  top: 2px;
+}
+.stop-card {
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.stop-card-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #111;
+  margin-bottom: 4px;
+  padding-right: 18px; /* keep clear of close button */
+}
+.stop-card-rating {
+  color: #f97316;
+  font-weight: 500;
+  font-size: 12.5px;
+  margin-bottom: 4px;
+}
+.stop-card-count {
+  color: #6b7280;
+  font-weight: 400;
+}
+.stop-card-addr {
+  color: #4b5563;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.stop-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+.stop-card-link {
+  font-size: 12.5px;
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 500;
+}
+.stop-card-link:hover { text-decoration: underline; }
+.stop-card-link--primary {
+  color: #f97316;
+  font-weight: 600;
+}
+.stop-card-details-btn {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* Full-screen place modal (Google Maps Embed) */
+.place-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 10001;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+}
+.place-modal {
+  background: #fff;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+}
+.place-modal-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.place-modal-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+  color: #111;
+  padding-right: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.place-modal-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 0;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 16px;
+  cursor: pointer;
+}
+.place-modal-close:hover { background: #e5e7eb; }
+.place-modal-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.place-modal-body--scroll {
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+}
+
+/* Horizontal photo carousel — touch-friendly scroll with snap. */
+.place-photo-carousel {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 14px;
+  margin: -4px -16px 10px;
+  padding-left: 16px;
+  padding-right: 16px;
+  scrollbar-width: none;       /* Firefox */
+}
+.place-photo-carousel::-webkit-scrollbar { display: none; }
+.place-photo-btn {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  scroll-snap-align: start;
+  border-radius: 10px;
+  overflow: hidden;
+  transition: transform 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.place-photo-btn:active { transform: scale(0.97); }
+.place-photo {
+  height: 180px;
+  width: auto;
+  max-width: 80vw;
+  background: #f3f4f6;
+  object-fit: cover;
+  display: block;
+}
+
+/* Fullscreen lightbox for an expanded place photo. Sits above .place-modal
+   (z-index 10001) — give it 10002. */
+.place-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.92);
+  z-index: 10002;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: env(safe-area-inset-top) 12px env(safe-area-inset-bottom);
+}
+.place-lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.place-lightbox-close,
+.place-lightbox-nav {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: 0;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.place-lightbox-close {
+  top: max(16px, env(safe-area-inset-top));
+  right: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 18px;
+}
+.place-lightbox-nav {
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 64px;
+  border-radius: 8px;
+  font-size: 32px;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.place-lightbox-nav--prev { left: 8px; }
+.place-lightbox-nav--next { right: 8px; }
+.place-lightbox-close:hover,
+.place-lightbox-nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.place-lightbox-counter {
+  position: absolute;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 4px 10px;
+  border-radius: 14px;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+}
+.place-modal-subtitle {
+  font-size: 12.5px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+.place-modal-footer {
+  padding: 12px 14px max(12px, env(safe-area-inset-bottom));
+  border-top: 1px solid #e5e7eb;
+  font-size: 13px;
+}
+
+.place-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding-bottom: 14px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 13.5px;
+}
+.place-meta-rating { color: #f97316; font-weight: 600; }
+.place-meta-count  { color: #6b7280; font-weight: 400; }
+.place-meta-price  { color: #374151; font-weight: 500; }
+.place-meta-open   { font-weight: 600; font-size: 12.5px; }
+.place-meta-open.open    { color: #059669; }
+.place-meta-open.closed  { color: #b91c1c; }
+
+.place-section {
+  padding: 10px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+.place-section:last-child { border-bottom: 0; }
+.place-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin-bottom: 2px;
+}
+.place-section-value {
+  font-size: 13.5px;
+  color: #111;
+  word-break: break-word;
+}
+.place-link {
+  color: #2563eb;
+  text-decoration: none;
+}
+.place-link:hover { text-decoration: underline; }
+
+.place-hours-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13.5px;
+  color: #111;
+  text-align: left;
+}
+.place-hours-chev {
+  color: #6b7280;
+  margin-left: 8px;
+  font-size: 11px;
+}
+.place-hours-week {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 12.5px;
+  color: #4b5563;
+  line-height: 1.7;
+}
+
 /* ─── Motorcycle user-location marker ───────────────────────────── */
 .user-moto-marker {
   cursor: default;
@@ -334,15 +696,17 @@ body {
   justify-content: space-between;
 }
 
+/* Two-line nav banner.
+   Row 1 = glance line: arrow, distance, optional Exit chip, voice + close.
+   Row 2 = destination: the large street or highway name the rider is being
+           led onto. Tall and bold so it reads at speed and in direct sun. */
 .nav-turn-banner {
   pointer-events: all;
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
   background: rgba(255,255,255,0.96);
   border-bottom: 1px solid var(--border);
-  /* Clear the iOS status bar / Dynamic Island. Without the env() inset the
-   * banner sits under the system clock and battery indicators. */
+  /* Clear the iOS status bar / Dynamic Island. */
   padding: max(14px, env(safe-area-inset-top)) 14px 14px 18px;
   padding-left:  max(18px, env(safe-area-inset-left));
   padding-right: max(14px, env(safe-area-inset-right));
@@ -351,43 +715,57 @@ body {
   -webkit-backdrop-filter: blur(12px);
 }
 
+.nav-turn-row1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.nav-turn-row1-spacer { flex: 1; }
+
 .nav-turn-arrow {
-  font-size: 36px;
+  font-size: 44px;
   line-height: 1;
   flex-shrink: 0;
-  width: 44px;
+  width: 48px;
   text-align: center;
+  color: #111;
 }
-
-.nav-turn-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
 .nav-turn-dist {
-  font-size: 28px;
-  font-weight: 700;
+  font-size: 30px;
+  font-weight: 800;
   color: var(--accent);
   line-height: 1;
   letter-spacing: -0.5px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* Exit chip — only shown when the upcoming maneuver is a highway exit. */
+.nav-turn-exit {
+  flex-shrink: 0;
+  font-size: 20px;
+  font-weight: 800;
+  color: #fff;
+  background: #111;
+  padding: 4px 12px;
+  border-radius: 8px;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
-.nav-turn-text {
-  font-size: 15px;
-  line-height: 1.25;
-  color: var(--text-dim);
-  /* Allow the street name to wrap up to 2 lines instead of truncating
-   * mid-word. Long instructions (e.g. "Turn right onto Hudson Avenue
-   * West") were being cut off behind the voice + close buttons. */
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+.nav-turn-row2 {
+  margin-top: 6px;
+  min-width: 0;
+}
+.nav-turn-street {
+  display: block;
+  font-size: 26px;
+  font-weight: 700;
+  color: #111;
+  line-height: 1.15;
+  white-space: nowrap;
   overflow: hidden;
-  word-break: break-word;
+  text-overflow: ellipsis;
 }
 
 .nav-stop-btn {
@@ -417,8 +795,13 @@ body {
  * obscures the map underneath. */
 .nav-reroute-banner {
   pointer-events: none;
-  align-self: center;
-  margin-top: 14px;
+  /* Anchor to a point BELOW the rider's icon (which sits near map centre).
+     Previously this used align-self + flex space-between, which planted it
+     right on top of the rider — confusing during a real reroute. */
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  transform: translateX(-50%);
   padding: 10px 18px;
   background: var(--accent, #f97316);
   color: #fff;
@@ -429,6 +812,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  white-space: nowrap;
   animation: nav-reroute-fade-in 0.2s ease-out;
 }
 .nav-reroute-spinner {
@@ -654,13 +1038,31 @@ body {
   color: var(--accent);
 }
 
-/* In idle: keep the row visible (so the ⋯ menu button is reachable) but hide
- * the drag bar — it would otherwise read as a swipe-up handle and conflict
- * with the iOS home gesture. The handle area also loses its click-to-expand
- * affordance since the conversation thread is empty in idle. */
-.sheet--idle .sheet-handle-row { padding: 6px 12px 0; }
-.sheet--idle .sheet-bar        { display: none; }
-.sheet--idle .sheet-handle     { pointer-events: none; min-height: 0; }
+/* In idle/collapsed: hide the in-sheet handle row entirely — the locate +
+ * menu buttons now live OUTSIDE the sheet as floating overlays above the map
+ * (see .map-fab-row). The handle row only renders inside the sheet when
+ * expanded, where the menu close button needs to stay reachable. */
+.sheet--idle .sheet-handle-row,
+.sheet--collapsed .sheet-handle-row { display: none; }
+.sheet--idle .sheet-bar    { display: none; }
+.sheet--idle .sheet-handle { pointer-events: none; min-height: 0; }
+
+/* Floating button row that sits 10px above the sheet, over the map. The JS
+ * sets --fab-bottom to the current sheet height in idle, or 240px (the
+ * collapsed sheet height) when previewing a route. Pointer events pass
+ * through everything except the buttons themselves so the rider can still
+ * pan/pinch the map between them. */
+.map-fab-row {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(var(--fab-bottom, 200px) + 10px);
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+  z-index: 40;
+}
+.map-fab-row > button { pointer-events: auto; }
 
 /* Idle sheet height is driven by --idle-height (set from JS as the textarea
  * grows or recents drawer opens). Falls back to 200px if the var isn't set. */
@@ -678,7 +1080,7 @@ body {
   flex-direction: column;
   justify-content: flex-start;
   align-items: stretch;
-  padding: 12px 16px 0;
+  padding: 10px 16px 0;
   padding-left:  max(16px, env(safe-area-inset-left));
   padding-right: max(16px, env(safe-area-inset-right));
   gap: 10px;

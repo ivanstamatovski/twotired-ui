@@ -789,7 +789,7 @@ async function findPOI(type: string, near: LatLng, radius_km = 25): Promise<any 
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_PLACES_KEY,
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.websiteUri',
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.websiteUri,places.internationalPhoneNumber,places.regularOpeningHours,places.currentOpeningHours,places.priceLevel,places.primaryTypeDisplayName,places.googleMapsUri,places.photos',
     },
     body: JSON.stringify({
       textQuery: type,
@@ -833,6 +833,18 @@ async function findPOI(type: string, near: LatLng, radius_km = 25): Promise<any 
     rating: best.rating || null,
     ratingCount: best.userRatingCount || 0,
     website: best.websiteUri || null,
+    placeId: best.id || null,
+    phone: best.internationalPhoneNumber || null,
+    priceLevel: best.priceLevel || null,
+    primaryType: best.primaryTypeDisplayName?.text || null,
+    googleMapsUri: best.googleMapsUri || null,
+    openNow: best.currentOpeningHours?.openNow ?? null,
+    hours: best.regularOpeningHours?.weekdayDescriptions || null,
+    // First 5 photo resource names (e.g. "places/ChIJ.../photos/AeJbb3y...").
+    // Client constructs the actual media URL via Place Photos API on demand.
+    photos: Array.isArray(best.photos)
+      ? best.photos.slice(0, 5).map((p: any) => p?.name).filter(Boolean)
+      : [],
   };
 }
 

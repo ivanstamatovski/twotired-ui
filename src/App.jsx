@@ -38,6 +38,228 @@ const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const DEFAULT_CENTER = [-74.3, 41.4];
 const DEFAULT_ZOOM = 9;
 
+// Google API key used client-side ONLY for Place Photos media fetches. The
+// existing VITE_GOOGLE_MAPS_EMBED_KEY env var is reused — restrict it in
+// Google Cloud Console to (Maps Embed API + Places API) and HTTP referrers
+// for twotired.net and capacitor://localhost.
+const PLACES_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_EMBED_KEY || '';
+function placePhotoUrl(photoName, maxPx = 600) {
+  if (!photoName || !PLACES_API_KEY) return null;
+  return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxPx}&maxWidthPx=${maxPx}&key=${PLACES_API_KEY}`;
+}
+
+// Convert Places API price level enum to a clean $-string. Free, no API
+// involvement — pure rendering of the value already returned by the Pro-tier
+// findPOI call.
+function formatPriceLevel(level) {
+  switch (level) {
+    case 'PRICE_LEVEL_FREE':           return 'Free';
+    case 'PRICE_LEVEL_INEXPENSIVE':    return '$';
+    case 'PRICE_LEVEL_MODERATE':       return '$$';
+    case 'PRICE_LEVEL_EXPENSIVE':      return '$$$';
+    case 'PRICE_LEVEL_VERY_EXPENSIVE': return '$$$$';
+    default: return null;
+  }
+}
+
+function PlaceModal({ place, onClose }) {
+  const [hoursOpen, setHoursOpen] = useState(false);
+  // null = no photo expanded; number = the index of the photo shown full-screen
+  const [expandedIdx, setExpandedIdx] = useState(null);
+  const photos = place.photos || [];
+
+  // Keyboard navigation when a photo is expanded: ←/→ to navigate, Esc closes
+  // the photo (not the whole modal).
+  useEffect(() => {
+    if (expandedIdx === null) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape')       { e.stopPropagation(); setExpandedIdx(null); }
+      else if (e.key === 'ArrowRight') setExpandedIdx(i => (i + 1) % photos.length);
+      else if (e.key === 'ArrowLeft')  setExpandedIdx(i => (i - 1 + photos.length) % photos.length);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [expandedIdx, photos.length]);
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // Today's hours line — pick the right weekdayDescriptions entry. Google's
+  // array is Monday-indexed; JS Date.getDay() returns Sunday=0, so we shift.
+  const todaysHours = (() => {
+    if (!place.hours || !place.hours.length) return null;
+    const jsDay = new Date().getDay();           // 0=Sun, 1=Mon, …
+    const idx = (jsDay + 6) % 7;                  // 0=Mon, …, 6=Sun
+    return place.hours[idx] || null;
+  })();
+
+  const priceStr = formatPriceLevel(place.priceLevel);
+  // Phone link for tel: scheme. Strip everything but +digits.
+  const telHref = place.phone ? `tel:${place.phone.replace(/[^+\d]/g, '')}` : null;
+  const gmapsUrl = place.googleMapsUri || place.fallbackGmapsUrl;
+
+  return (
+    <div className="place-modal-overlay" onClick={onClose}>
+      <div className="place-modal" onClick={e => e.stopPropagation()}>
+        <div className="place-modal-header">
+          <div>
+            <div className="place-modal-title">{place.name}</div>
+            {place.primaryType && (
+              <div className="place-modal-subtitle">{place.primaryType}</div>
+            )}
+          </div>
+          <button className="place-modal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="place-modal-body place-modal-body--scroll">
+          {/* Photo carousel — horizontal scroll with snap. Tap any photo to
+              expand it into a lightbox with prev/next navigation. */}
+          {photos.length > 0 && PLACES_API_KEY && (
+            <div className="place-photo-carousel">
+              {photos.map((photoName, i) => (
+                <button key={i}
+                  type="button"
+                  className="place-photo-btn"
+                  onClick={() => setExpandedIdx(i)}
+                  aria-label={`Open photo ${i + 1} of ${photos.length}`}
+                >
+                  <img
+                    className="place-photo"
+                    src={placePhotoUrl(photoName, 600)}
+                    alt={`${place.name} ${i + 1}`}
+                    loading="lazy"
+                    onError={e => { e.currentTarget.parentElement.style.display = 'none'; }}
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Rating + price + open-now bar */}
+          {(place.rating || priceStr || place.openNow != null) && (
+            <div className="place-meta-row">
+              {place.rating != null && (
+                <span className="place-meta-rating">
+                  ⭐ {place.rating.toFixed(1)}
+                  {place.ratingCount ? <span className="place-meta-count"> ({place.ratingCount.toLocaleString()})</span> : null}
+                </span>
+              )}
+              {priceStr && <span className="place-meta-price">{priceStr}</span>}
+              {place.openNow != null && (
+                <span className={`place-meta-open ${place.openNow ? 'open' : 'closed'}`}>
+                  {place.openNow ? 'Open now' : 'Closed'}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Address */}
+          {place.address && (
+            <div className="place-section">
+              <div className="place-section-label">Address</div>
+              <div className="place-section-value">{place.address}</div>
+            </div>
+          )}
+
+          {/* Phone */}
+          {place.phone && (
+            <div className="place-section">
+              <div className="place-section-label">Phone</div>
+              <a className="place-section-value place-link" href={telHref}>{place.phone}</a>
+            </div>
+          )}
+
+          {/* Hours — today's line by default, tap to expand the week */}
+          {todaysHours && (
+            <div className="place-section">
+              <div className="place-section-label">Hours</div>
+              <button className="place-hours-toggle" onClick={() => setHoursOpen(o => !o)}>
+                <span>{todaysHours}</span>
+                {place.hours?.length > 1 && <span className="place-hours-chev">{hoursOpen ? '▾' : '▸'}</span>}
+              </button>
+              {hoursOpen && place.hours.length > 1 && (
+                <ul className="place-hours-week">
+                  {place.hours.map((line, i) => <li key={i}>{line}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Website */}
+          {place.website && (
+            <div className="place-section">
+              <div className="place-section-label">Website</div>
+              <a className="place-section-value place-link"
+                 href={place.website}
+                 target="_blank" rel="noreferrer">
+                {place.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}
+              </a>
+            </div>
+          )}
+        </div>
+        <div className="place-modal-footer">
+          <a className="stop-card-link stop-card-link--primary"
+             href={gmapsUrl}
+             target="_blank" rel="noreferrer">
+            Open in Google Maps ↗
+          </a>
+        </div>
+      </div>
+
+      {/* Lightbox overlay — fullscreen single photo with prev/next + close.
+          Renders OVER the modal so the rider can swipe through stop photos
+          full-bleed. Tap-anywhere-outside-photo closes; ←/→ navigate. */}
+      {expandedIdx !== null && (
+        <div className="place-lightbox" onClick={() => setExpandedIdx(null)}>
+          <img
+            className="place-lightbox-img"
+            src={placePhotoUrl(photos[expandedIdx], 1600)}
+            alt={`${place.name} ${expandedIdx + 1}`}
+            onClick={e => e.stopPropagation()}
+          />
+          <button
+            className="place-lightbox-close"
+            onClick={(e) => { e.stopPropagation(); setExpandedIdx(null); }}
+            aria-label="Close photo">✕</button>
+          {photos.length > 1 && (
+            <>
+              <button
+                className="place-lightbox-nav place-lightbox-nav--prev"
+                onClick={(e) => { e.stopPropagation(); setExpandedIdx((expandedIdx - 1 + photos.length) % photos.length); }}
+                aria-label="Previous photo">‹</button>
+              <button
+                className="place-lightbox-nav place-lightbox-nav--next"
+                onClick={(e) => { e.stopPropagation(); setExpandedIdx((expandedIdx + 1) % photos.length); }}
+                aria-label="Next photo">›</button>
+              <div className="place-lightbox-counter" onClick={e => e.stopPropagation()}>
+                {expandedIdx + 1} / {photos.length}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Bounding box of states the GraphHopper instance on Molly has road data for:
+// NY, NJ, CT, MA, PA. Slightly generous on the edges so border riders don't
+// get cut off by GPS noise. Riders outside this box get a "not supported in
+// your area yet" message instead of a failed route request.
+const SERVICE_AREA_BBOX = { south: 38.8, north: 45.1, west: -80.6, east: -69.8 };
+function isInServiceArea(lat, lng) {
+  return lat >= SERVICE_AREA_BBOX.south && lat <= SERVICE_AREA_BBOX.north
+      && lng >= SERVICE_AREA_BBOX.west  && lng <= SERVICE_AREA_BBOX.east;
+}
+const OUT_OF_AREA_MSG = 'TwoTired currently supports rides in NY, NJ, CT, MA, and PA. More regions coming soon.';
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const APPROVAL_WORDS = ['looks good','perfect','great','love it','approve',
@@ -74,8 +296,12 @@ function distSq(lat1, lng1, lat2, lng2) {
 
 function formatDist(m) {
   if (m === null || m === undefined) return '';
-  if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
-  return `${Math.round(m)} m`;
+  const ft = m * 3.28084;
+  // Under ~1000 ft (≈ 300 m) report in feet, rounded to the nearest 50 ft so
+  // the banner reads cleanly (e.g. "350 ft" not "347 ft"). 1000 ft and above
+  // switch to miles with one decimal — same scheme Google Maps uses in the US.
+  if (ft < 1000) return `${Math.max(50, Math.round(ft / 50) * 50)} ft`;
+  return `${(m / 1609.34).toFixed(1)} mi`;
 }
 
 function formatMilesShort(m) {
@@ -161,13 +387,13 @@ function makeMateMarkerEl(name) {
   return el;
 }
 
-// "1.2 mi NE" or "230 m SW" — compact compass + distance for the mate badge.
+// "1.2 mi NE" or "650 ft SW" — compact compass + distance for the mate badge.
 function formatMateDistance(matePos, userPos) {
   if (!userPos) return 'sharing';
   const distM = haversineM(userPos.lat, userPos.lng, matePos.lat, matePos.lng);
   const mi = distM / 1609.34;
   const distStr = mi < 0.1
-    ? `${Math.round(distM)} m`
+    ? `${Math.max(50, Math.round((distM * 3.28084) / 50) * 50)} ft`
     : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`;
   const b = bearingBetween(userPos.lat, userPos.lng, matePos.lat, matePos.lng);
   const dirs = ['N','NE','E','SE','S','SW','W','NW'];
@@ -221,6 +447,43 @@ function nearestRouteIdx(coords, lat, lng) {
   return nearIdx;
 }
 
+// Pull two pieces out of a GraphHopper instruction so the nav banner can
+// surface them on separate lines:
+//   exit   — the exit identifier ("Exit 17B") when the upcoming maneuver is
+//            a highway exit; null for regular street turns. Short by design
+//            so it fits on the top row next to the arrow + distance.
+//   street — the larger, more readable name of the road the rider is being
+//            led ONTO (the highway they're exiting onto, or the street the
+//            turn drops them on). Goes on the second, larger row.
+//
+// The exit pattern matches "exit 17", "Exit 17B", "Take exit 220A onto I-95
+// N toward Foo Bar", etc. `toward …` tail is trimmed because it's noisy.
+function shortDestinationLabel(instruction) {
+  if (!instruction) return { exit: null, street: '' };
+  const text = String(instruction.text || '');
+  const streetName = String(instruction.street_name || '').trim();
+
+  const ontoMatch = text.match(/onto\s+(.+?)(?:\s*toward.*)?$/i);
+  const parsedOnto = ontoMatch ? ontoMatch[1].trim() : '';
+
+  // Highway exit
+  const exitMatch = text.match(/exit\s+([\w-]+)/i);
+  if (exitMatch) {
+    return {
+      exit: `Exit ${exitMatch[1]}`,
+      street: streetName || parsedOnto,
+    };
+  }
+
+  // Regular turn / continue
+  if (streetName) return { exit: null, street: streetName };
+  if (parsedOnto)  return { exit: null, street: parsedOnto };
+
+  // No street info at all — fall back to the verb (e.g., "Continue",
+  // "Keep right", "Arrive at destination").
+  return { exit: null, street: text.replace(/^(Take exit|onto.*)/i, '').trim() || text };
+}
+
 // Great-circle distance from a point to a line segment, returned in metres.
 // Equirectangular projection at the local latitude — accurate enough for the
 // short segments in a turn-by-turn polyline (<200m typical).
@@ -254,6 +517,94 @@ function distanceToRouteM(lat, lng, route) {
     if (d < best) best = d;
   }
   return best;
+}
+
+// Map-matching: project a raw GPS fix onto the route polyline.
+// Returns the closest point on the route polyline AND the segment that
+// owns that closest point AND the bearing of that segment AND the
+// perpendicular distance from the raw GPS to the snapped point. Used to
+// stabilise the marker position, the map bearing, and the "off-route"
+// distance during navigation — the standard pattern in production nav apps
+// (Google, Apple). Raw GPS jitters bounce the rider's position between
+// adjacent polyline vertices and wreck everything downstream; the snapped
+// position moves smoothly along the road.
+//
+// Returns null when the route is empty / too short to project onto.
+function projectOntoRoute(lat, lng, route) {
+  const coords = route?.geometry?.coordinates;
+  if (!coords || coords.length < 2) return null;
+
+  const R = 6371000;
+  const rad = Math.PI / 180;
+
+  let bestDist  = Infinity;
+  let bestIdx   = 0;
+  let bestT     = 0;
+  let bestLat   = lat;
+  let bestLng   = lng;
+
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [lng1, lat1] = coords[i];
+    const [lng2, lat2] = coords[i + 1];
+    const cosLat = Math.cos(((lat + lat1 + lat2) / 3) * rad);
+    const x  = (lng  - lng1) * cosLat * R * rad;
+    const y  = (lat  - lat1)           * R * rad;
+    const dx = (lng2 - lng1) * cosLat * R * rad;
+    const dy = (lat2 - lat1)           * R * rad;
+    const segLenSq = dx * dx + dy * dy;
+
+    let t = 0;
+    let d;
+    if (segLenSq < 1e-6) {
+      d = Math.hypot(x, y);
+    } else {
+      t = (x * dx + y * dy) / segLenSq;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      d = Math.hypot(x - t * dx, y - t * dy);
+    }
+
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx  = i;
+      bestT    = t;
+      bestLat  = lat1 + (lat2 - lat1) * t;
+      bestLng  = lng1 + (lng2 - lng1) * t;
+    }
+  }
+
+  // Tangent of the segment under the rider's projection. This IS the direction
+  // of the road they're on (or, if off-route, the closest road in the polyline).
+  // Used as the bearing target — the map rotates so this segment points up.
+  const [slng, slat] = coords[bestIdx];
+  const [elng, elat] = coords[bestIdx + 1];
+  const segmentBearing = bearingBetween(slat, slng, elat, elng);
+
+  return {
+    snappedLat:     bestLat,
+    snappedLng:     bestLng,
+    segmentIdx:     bestIdx,
+    segmentT:       bestT,
+    segmentBearing,
+    distFromRoute:  bestDist,
+  };
+}
+
+// Build the geometry of the route from a given point onward — used during
+// navigation so the blue polyline only shows the road AHEAD of the rider.
+// The completed portion behind them gets dropped; they don't need to see
+// where they've already been. Returns a LineString geometry that starts at
+// the snapped point on segment[segmentIdx] and continues to the destination.
+function sliceRouteAhead(route, segmentIdx, snappedLat, snappedLng) {
+  const coords = route?.geometry?.coordinates;
+  if (!coords || segmentIdx < 0 || segmentIdx >= coords.length - 1) {
+    return route?.geometry || null;
+  }
+  const ahead = [[snappedLng, snappedLat]];
+  for (let i = segmentIdx + 1; i < coords.length; i++) {
+    ahead.push(coords[i]);
+  }
+  return { type: 'LineString', coordinates: ahead };
 }
 
 // Bearing of the route AT the user's nearest point, sampled ~30m ahead so the
@@ -318,10 +669,89 @@ function findNextTurn(route, lat, lng) {
   for (let i = 0; i < instructions.length; i++) {
     const [start, end] = instructions[i].interval;
     if (nearIdx >= start && nearIdx <= end) {
-      const turnCoord = coords[Math.min(end, coords.length - 1)];
+      // ── Pick the announcement target ─────────────────────────────────
+      // TEXT: look ahead to instructions[i+1] (the maneuver about to happen
+      // at the boundary). instructions[i] is what the rider already DID to
+      // get on this segment — announcing it is late.
+      //
+      // Skip past Continue-only instructions (sign=0). GraphHopper emits these
+      // for mid-route name changes ("Continue onto Main Avenue" while you're
+      // already on Main Street, same physical road). They're not maneuvers,
+      // they're noise, and they confuse the rider with a phantom callout
+      // right before the real turn. Keep walking until we find a real sign
+      // or hit the end of the route.
+      let targetIdx = i + 1;
+      while (targetIdx < instructions.length - 1 && instructions[targetIdx].sign === 0) {
+        targetIdx++;
+      }
+      if (targetIdx >= instructions.length) targetIdx = instructions.length - 1;
+      const target = instructions[targetIdx];
+
+      // DIST: distance to the maneuver point of `target`. The maneuver happens
+      // at the START of `target.interval` (= end of the previous interval).
+      // This is the actual point on the polyline where the rider needs to act,
+      // whether `target` is i+1 or further along (after skipping Continues).
+      const turnVertex = Math.min(target.interval[0], coords.length - 1);
+      const turnCoord = coords[turnVertex];
       const dist = haversineM(lat, lng, turnCoord[1], turnCoord[0]);
-      return { instruction: instructions[i], dist };
+      return {
+        instruction: target,
+        dist,
+        turnLat: turnCoord[1],
+        turnLng: turnCoord[0],
+      };
     }
+  }
+  return null;
+}
+
+// Find the polyline vertex closest to the rider where the route makes a
+// significant bend (heading change > minHeadingChangeDeg).
+function findNearestPolylineCorner(coords, riderLat, riderLng, minHeadingChangeDeg = 25) {
+  if (!coords || coords.length < 3) return null;
+  let bestDist = Infinity;
+  let bestCorner = null;
+  let prevBearing = null;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [aLng, aLat] = coords[i];
+    const [bLng, bLat] = coords[i + 1];
+    const segBearing = bearingBetween(aLat, aLng, bLat, bLng);
+    if (prevBearing != null) {
+      let diff = Math.abs(segBearing - prevBearing);
+      if (diff > 180) diff = 360 - diff;
+      if (diff > minHeadingChangeDeg) {
+        const d = haversineM(riderLat, riderLng, aLat, aLng);
+        if (d < bestDist) {
+          bestDist = d;
+          bestCorner = { lat: aLat, lng: aLng, idx: i, distM: d };
+        }
+      }
+    }
+    prevBearing = segBearing;
+  }
+  return bestCorner;
+}
+
+// Walk the polyline forward from fromSegmentIdx and return the first vertex
+// where the heading changes by more than minHeadingChangeDeg — the NEXT
+// corner ahead of the rider in route order. This is the correct heuristic
+// when the rider is actually on the route.
+function findNextPolylineCornerAhead(coords, fromSegmentIdx, minHeadingChangeDeg = 25) {
+  if (!coords || coords.length < 3) return null;
+  if (fromSegmentIdx >= coords.length - 1) return null;
+  const [s1lng, s1lat] = coords[fromSegmentIdx];
+  const [s2lng, s2lat] = coords[fromSegmentIdx + 1];
+  let prevBearing = bearingBetween(s1lat, s1lng, s2lat, s2lng);
+  for (let i = fromSegmentIdx + 1; i < coords.length - 1; i++) {
+    const [aLng, aLat] = coords[i];
+    const [bLng, bLat] = coords[i + 1];
+    const segBearing = bearingBetween(aLat, aLng, bLat, bLng);
+    let diff = Math.abs(segBearing - prevBearing);
+    if (diff > 180) diff = 360 - diff;
+    if (diff > minHeadingChangeDeg) {
+      return { lat: aLat, lng: aLng, idx: i };
+    }
+    prevBearing = segBearing;
   }
   return null;
 }
@@ -788,15 +1218,36 @@ export default function App() {
   const [loadingMsg, setLoadingMsg] = useState('Planning your ride…');
   const [error, setError] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [outOfAreaToast, setOutOfAreaToast] = useState(false);
+  const [selectedPlace, setSelectedPlace] = useState(null);   // { name, placeId, address, website, lat, lng }
+  const selectedPlaceRef = useRef(null);
+  useEffect(() => { selectedPlaceRef.current = setSelectedPlace; }, []);
+  const prevSelectedPlaceRef = useRef(null);
   const [currentIntent, setCurrentIntent] = useState(null);
   const [followUpInput, setFollowUpInput] = useState('');
   const [routeData, setRouteData] = useState(null);
   const [routeApproved, setRouteApproved] = useState(false);
+  // When the place-details modal closes, MapLibre occasionally drops the route
+  // source/layers (suspect: body-overflow swap during modal mount/unmount
+  // triggers a WebGL invalidation). Defensively re-draw so the rider's planned
+  // route stays on the map after they close the place card. NOTE: this effect
+  // must come AFTER routeData is declared above — referencing it in deps before
+  // its useState line would throw "Cannot access 'routeData' before init".
+  useEffect(() => {
+    if (prevSelectedPlaceRef.current !== null && selectedPlace === null) {
+      const map = mapRef.current;
+      if (map && mapLoadedRef.current && routeData?.geometry && !map.getSource('route')) {
+        try { drawRouteOnMap(routeData); }
+        catch (e) { console.warn('[place-modal] route redraw failed:', e?.message || e); }
+      }
+    }
+    prevSelectedPlaceRef.current = selectedPlace;
+  }, [selectedPlace, routeData]);
 
   // Mobile sheet
   const [sheetMode, setSheetMode] = useState('idle');
   const [refineOpen, setRefineOpen] = useState(false);
-  const [idleSheetHeight, setIdleSheetHeight] = useState(220); // grows with multi-line input and the recents drawer
+  const [idleSheetHeight, setIdleSheetHeight] = useState(170); // grows with multi-line input and the recents drawer
   const [menuSheetHeight, setMenuSheetHeight] = useState(460); // grows with the menu content while open
   const menuContentRef = useRef(null);
   const [recentsOpen, setRecentsOpen] = useState(false);
@@ -807,6 +1258,7 @@ export default function App() {
   const [navMode, setNavMode] = useState(false);
   const [nextTurn, setNextTurn] = useState(null);
   const [navProgress, setNavProgress] = useState(null);   // { distM, timeMs }
+  const [appVersion, setAppVersion] = useState(null);     // { version, build } for footer
   const [userLocation, setUserLocation] = useState(null);
   const [voiceMuted, setVoiceMuted] = useState(() => {
     try { return localStorage.getItem('voice_muted') === '1'; } catch { return false; }
@@ -852,6 +1304,10 @@ export default function App() {
   // (channelsRef removed — old Realtime Presence approach. Live tracking is
   //  now DB-backed via the mate_positions table.)
   const mateMarkersRef   = useRef({});                          // { [friendshipId]: maplibregl.Marker }
+  // Synced ref so the WebGL-recovery reconciler can read fresh positions
+  // without React closure staleness.
+  const matePositionsRef = useRef({});
+  useEffect(() => { matePositionsRef.current = matePositions; }, [matePositions]);
   // Toast for friendship state changes (e.g. someone accepted my request)
   const [friendToast, setFriendToast] = useState(null);          // { msg, kind }
   const prevFriendshipsRef = useRef([]);                         // snapshot for diffing
@@ -896,6 +1352,9 @@ export default function App() {
   const userMarkerRef = useRef(null);
   const locationWatchRef = useRef(null); // always-on position watch
   const wakeLockRef = useRef(null);
+  // Stored brightness before nav started so we can restore it on stop. Null
+  // means we haven't pinned brightness this session.
+  const prevBrightnessRef = useRef(null);
   const lastAnnouncedRef = useRef(null);
   // Off-route + reroute bookkeeping. Tracked as refs so the geolocation
   // callback (which is called outside React render flow) can read/update
@@ -916,6 +1375,17 @@ export default function App() {
 
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
   useEffect(() => { navModeRef.current = navMode; }, [navMode]);
+
+  // Fetch the native app version + build number once on mount. On web we
+  // skip the call (Capacitor.App.getInfo throws on non-native) and just
+  // render the package.json version with no build number.
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) {
+      CapacitorApp.getInfo()
+        .then(info => setAppVersion({ version: info.version, build: info.build }))
+        .catch(() => {});
+    }
+  }, []);
 
   // Keep the screen on while navigating, release as soon as nav stops.
   // Combined with the `audio` UIBackgroundMode (Info.plist), this lets voice
@@ -1008,8 +1478,10 @@ export default function App() {
       return Math.min(900, vh - 40);
     }
     const errH = voice.error ? 40 : 0;
-    // Base: 38px handle/⋯ row + 14px top + 56px buttons + 10px gap + textarea + 22px safe-area pad ≈ 140 + textH
-    return Math.max(200, Math.min(140 + textH + errH, 460));
+    // Handle row no longer lives inside the sheet (it's floating above), so the
+    // base shrinks by ~38px. Base now: 10px top + 56px buttons + 10px gap +
+    // textarea + 22px safe-area ≈ 100 + textH.
+    return Math.max(160, Math.min(100 + textH + errH, 460));
   }, [voice.error, recentsOpen]);
 
   // Auto-resize the idle textarea; grow the sheet so the whole prompt stays
@@ -1876,6 +2348,53 @@ export default function App() {
       map.on('zoomstart', onUserZoom);
     });
 
+    // ── WebGL-context-loss reconciliation ─────────────────────────────────
+    // iOS WKWebView occasionally purges the WebGL context under memory
+    // pressure or after long backgrounding. When it comes back, MapLibre
+    // reloads the style and EVERY dynamic source / layer / marker silently
+    // vanishes — the rider sees the route line disappear mid-navigation, or
+    // their mate's location pin drop off the map, even though both are still
+    // in React state. Restarting the app rebuilds from state, which is why
+    // it "comes back" after a relaunch. We instead listen for the style
+    // reload and re-add everything ourselves.
+    let initialStyleLoad = false;
+    map.on('style.load', () => {
+      if (!initialStyleLoad) { initialStyleLoad = true; return; }
+      console.log('[map] style reloaded — reconciling layers and markers');
+      // 1. Route polyline + stop markers
+      const r = routeDataRef.current;
+      if (r?.geometry) {
+        try { drawRouteOnMap(r); }
+        catch (e) { console.warn('[reconcile] route:', e?.message || e); }
+      }
+      // 2. Mate markers — DOM is gone, refs are stale. Drop refs, recreate
+      // from the synced positions ref.
+      for (const id of Object.keys(mateMarkersRef.current)) {
+        try { mateMarkersRef.current[id].remove(); } catch {}
+      }
+      mateMarkersRef.current = {};
+      const positions = matePositionsRef.current || {};
+      for (const [id, pos] of Object.entries(positions)) {
+        try {
+          const el = makeMateMarkerEl(pos.name);
+          mateMarkersRef.current[id] = new maplibregl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([pos.lng, pos.lat])
+            .addTo(map);
+        } catch (e) { console.warn('[reconcile] mate', id, e?.message || e); }
+      }
+      // 3. User nav marker — clear the ref so onGeoPosition recreates it on
+      // the next GPS tick (instead of trying to setLngLat on a detached DOM).
+      userMarkerRef.current = null;
+    });
+    // Diagnostic — confirm the context-loss path is what's firing in the wild.
+    const mapCanvas = map.getCanvas();
+    mapCanvas.addEventListener('webglcontextlost', () => {
+      console.log('[map] WebGL context lost');
+    }, { passive: true });
+    mapCanvas.addEventListener('webglcontextrestored', () => {
+      console.log('[map] WebGL context restored');
+    }, { passive: true });
+
     mapRef.current = map;
     return () => {
       if (locationWatchRef.current !== null) {
@@ -1894,19 +2413,6 @@ export default function App() {
   function onGeoPosition(pos) {
     let { latitude: lat, longitude: lng } = pos.coords;
 
-    // [debug] watch GPS fixes arriving from the simulator. Remove once we've
-    // confirmed Custom Location is reaching the app and off-route distance is
-    // being computed correctly.
-    if (navModeRef.current) {
-      const route = routeDataRef.current;
-      const d = route ? distanceToRouteM(lat, lng, route) : null;
-      console.log(
-        `[gps] lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}` +
-        (d !== null ? ` offRoute=${d.toFixed(1)}m` : '') +
-        (offRouteSinceRef.current ? ` offFor=${Date.now() - offRouteSinceRef.current}ms` : '')
-      );
-    }
-
     // Dev sim override: re-anchor known simulator default coordinates to a
     // real-world spot for whitelisted accounts. Bounded so real-device GPS
     // is never affected.
@@ -1917,105 +2423,124 @@ export default function App() {
 
     setUserLocation({ lat, lng });
 
+    // ── Map matching ────────────────────────────────────────────────────
+    // During navigation, project the raw GPS onto the route polyline. If
+    // we're within MAP_MATCH_MAX_M of the route, treat the snapped point as
+    // the rider's "true" position — the marker, the map centre, the bearing,
+    // and the off-route distance all derive from it. This is the standard
+    // pattern in production nav apps (Google, Apple) and is what eliminates
+    // the bearing/marker jitter that raw GPS noise introduces.
+    const MAP_MATCH_MAX_M = 30;
+    const route = routeDataRef.current;
+    let mapMatch = null;
+    let onRoute  = false;
+    let displayLat = lat;
+    let displayLng = lng;
+    if (navModeRef.current && route) {
+      mapMatch = projectOntoRoute(lat, lng, route);
+      onRoute  = mapMatch != null && mapMatch.distFromRoute < MAP_MATCH_MAX_M;
+      if (onRoute) {
+        displayLat = mapMatch.snappedLat;
+        displayLng = mapMatch.snappedLng;
+      }
+      // Trim the visible polyline so only the road AHEAD of the rider is
+      // drawn. The rider doesn't care where they've been — only where they
+      // need to go. Uses setData on the existing source so we don't churn
+      // layers every GPS tick. Restored to full geometry by stopNavigation.
+      if (mapMatch && mapRef.current?.getSource('route')) {
+        const ahead = sliceRouteAhead(route, mapMatch.segmentIdx, mapMatch.snappedLat, mapMatch.snappedLng);
+        if (ahead) {
+          try { mapRef.current.getSource('route').setData({ type: 'Feature', geometry: ahead }); }
+          catch {}
+        }
+      }
+    }
+
+    // Debug log (kept while we shake the nav UX out — can drop later).
+    if (navModeRef.current) {
+      const off = mapMatch ? mapMatch.distFromRoute : null;
+      console.log(
+        `[gps] lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}` +
+        (off !== null ? ` distFromRoute=${off.toFixed(1)}m onRoute=${onRoute}` : '') +
+        (offRouteSinceRef.current ? ` offFor=${Date.now() - offRouteSinceRef.current}ms` : '')
+      );
+    }
+
     const map = mapRef.current;
     if (map) {
       if (!userMarkerRef.current) {
         userMarkerRef.current = new maplibregl.Marker({
           element: makeMotoMarkerEl(),
           anchor: 'center',
-        }).setLngLat([lng, lat]).addTo(map);
+        }).setLngLat([displayLng, displayLat]).addTo(map);
       } else {
-        userMarkerRef.current.setLngLat([lng, lat]);
+        userMarkerRef.current.setLngLat([displayLng, displayLat]);
       }
-      // During active navigation: centre on rider, tilt for perspective, and
-      // rotate the map so the road ahead points up the screen.
-      //
-      // Bearing source priority:
-      //   1. GPS heading — most accurate when actually moving
-      //   2. Delta from last GPS fix — when GPS heading is null but user moved ≥5 m
-      //   3. Route geometry at user's nearest point — keeps the road ahead "up"
-      //      even when stopped at a light, just-started, or indoors
-      //   4. Last smoothed bearing — final fallback
-      if (navModeRef.current) {
-        // Bearing source priority, in order of trust:
-        //   1. GPS heading — only when actively moving (speed > 0.5 m/s).
-        //      iOS reports stale or compass-noisy heading values when the
-        //      rider is stationary, which used to spin the map randomly at
-        //      stoplights.
-        //   2. Bearing derived from the GPS delta — when the rider moved at
-        //      least 5 m since the last fix, even if speed is unreported.
-        //   3. Route bearing at the rider's nearest point — used only on the
-        //      first frame of navigation (no previous position), so the map
-        //      enters nav already pointing the right way.
-        //   4. Otherwise: keep the current bearing untouched. While stopped,
-        //      the map stays exactly where it is.
-        // Bearing during navigation: ALWAYS use the route bearing at the
-        // rider's nearest point on the polyline. This keeps the route line
-        // visually pointing "up" from the rider icon, regardless of which
-        // direction the rider is actually facing or moving. Earlier versions
-        // mixed GPS heading + delta bearing + route bearing depending on
-        // speed and position deltas, which caused the map to spin under GPS
-        // noise (typical iPhone ~5–15 m even when stopped) and follow the
-        // teleport direction in the sim. Always-route is simpler and matches
-        // the rider's stated mental model.
-        const rb = routeBearingAt(routeDataRef.current, lat, lng);
 
-        // If the rider is significantly off-route (or hasn't reached the
-        // start yet, as when nav begins 1+km south of the route's first
-        // coord), routeBearingAt returns the bearing at the *nearest* point
-        // of the polyline — which isn't necessarily the direction the rider
-        // needs to travel. In that case, override with the bearing FROM the
-        // rider's position TO that nearest point, so "up" is the direction
-        // they actually have to ride first.
-        let target;
-        const coords = routeDataRef.current?.geometry?.coordinates;
-        if (coords && coords.length) {
-          const nearIdx = nearestRouteIdx(coords, lat, lng);
-          const [nlng, nlat] = coords[nearIdx];
-          const distToRouteM = haversineM(lat, lng, nlat, nlng);
-          if (distToRouteM > 50 && distToRouteM < 30000) {
-            // Far from route — orient toward the nearest point so the rider
-            // sees the direction to ride to reach the route.
-            target = bearingBetween(lat, lng, nlat, nlng);
-          } else if (rb != null) {
-            target = rb;
-          } else {
-            target = navBearingRef.current;
-          }
-        } else {
-          target = (rb != null) ? rb : navBearingRef.current;
+      if (navModeRef.current) {
+        // ── Bearing source priority ─────────────────────────────────────
+        // The map's bearing follows the ROUTE direction, not the rider's
+        // direction. This matches Google/Apple Maps: the road ahead always
+        // points up the screen, regardless of whether the rider is stopped,
+        // moving, on the polyline, or briefly off it. We decouple "where the
+        // marker is drawn" (rider position) from "which way is up" (route).
+        //
+        //   1. Snapped segment tangent — preferred whenever we have a route
+        //      projection (which is every tick during nav). Stable across an
+        //      entire road segment; rotates smoothly at curves.
+        //   2. GPS heading — only when there is no route projection AND the
+        //      rider is moving. Effectively a safety fallback; rarely hit.
+        //   3. Hold steady — no projection, not moving. Map doesn't spin.
+        //   4. First fix — seed with routeBearingAt before the first match.
+        const heading = pos.coords.heading;
+        const speed   = pos.coords.speed;
+        const hasValidHeading = (typeof heading === 'number' && !isNaN(heading));
+        const isMoving        = (typeof speed   === 'number' && !isNaN(speed)   && speed > 1.0);
+
+        let target = navBearingRef.current;
+        let source = 'hold';
+        // Bearing = tangent of the polyline segment closest to the rider —
+        // the local direction of travel. This is what Google/Apple do.
+        if (mapMatch) {
+          target = mapMatch.segmentBearing;
+          source = onRoute ? 'route' : 'route-offline';
+        } else if (isMoving && hasValidHeading) {
+          target = heading;
+          source = 'gps';
         }
 
-        // Low-pass filter so the map slides smoothly into a new heading
-        // when the route bends, rather than snapping.
-        const prev = navBearingRef.current;
-        const deltaArc = ((target - prev + 540) % 360) - 180;
-        const smoothed = (prev + deltaArc * 0.35 + 360) % 360;
-        console.log(`[bearing] routeBearingAt=${rb != null ? rb.toFixed(1) : 'null'} target=${target.toFixed(1)} smoothed=${smoothed.toFixed(1)}`);
-        navBearingRef.current = smoothed;
+        // NO smoothing on bearing. Look-ahead bearing from projectOntoRoute is
+        // already stable (it only changes when the rider crosses to a new
+        // polyline segment), so smoothing adds lag without buying anything.
+        // We snap the map bearing directly to the target — fast and crisp,
+        // the way Google/Apple do it.
+        console.log(`[bearing] source=${source} speed=${speed?.toFixed?.(1) ?? 'null'} heading=${hasValidHeading ? heading.toFixed(1) : 'null'} target=${target.toFixed(1)}`);
+        navBearingRef.current = target;
         lastNavPosRef.current = { lat, lng };
 
-        // Skip the auto-center if the rider has manually moved the map.
-        // followingUserRef goes back to true via recenterMapOnRider() — either
-        // by tapping the recenter button or via the pinch auto-return timer.
+        // Bearing applied INSTANTLY via setBearing. Animated easeTo doesn't
+        // work for bearing during nav — each new GPS tick cancels the prior
+        // animation before it can finish, so the map crawls toward the target.
+        // Position is still eased smoothly (separately) when following.
+        map.setBearing(target);
         if (followingUserRef.current) {
           map.easeTo({
-            center: [lng, lat],
+            center: [displayLng, displayLat],
             zoom: 17,
-            bearing: smoothed,
             pitch: 55,
-            duration: 800,
+            duration: 600,
           });
         }
       }
     }
 
-    // Turn-by-turn announcements + remaining-progress stats (nav mode only)
-    const route = routeDataRef.current;
+    // Turn-by-turn announcements + remaining-progress stats (nav mode only).
+    // Use displayLat/Lng — the snapped position when on route, raw GPS when
+    // off — so turn distance is measured along the polyline (more accurate).
     if (route && navModeRef.current) {
-      const result = findNextTurn(route, lat, lng);
+      const result = findNextTurn(route, displayLat, displayLng);
       setNextTurn(result);
-      const prog = routeProgress(route, lat, lng);
+      const prog = routeProgress(route, displayLat, displayLng);
       if (prog) setNavProgress(prog);
 
       if (result) {
@@ -2029,10 +2554,11 @@ export default function App() {
         }
       }
 
-      // Off-route detection. Skipped while a reroute is already in flight,
-      // and while we're within the post-reroute cooldown window.
+      // Off-route detection. Use the map-matched perpendicular distance —
+      // it's the true measure of "how far am I from the polyline?" instead
+      // of the older nearest-vertex approximation.
       if (!reroutingRef.current) {
-        const offDist = distanceToRouteM(lat, lng, route);
+        const offDist = mapMatch ? mapMatch.distFromRoute : distanceToRouteM(lat, lng, route);
         if (offDist > OFF_ROUTE_THRESHOLD_M) {
           // Remember last known off-route position; the scheduled trigger uses
           // it if no further GPS fixes arrive within the grace window (tunnel,
@@ -2173,8 +2699,55 @@ export default function App() {
         cursor: 'pointer',
         userSelect: 'none',
       });
-      const popup = new maplibregl.Popup({ offset: 16, closeButton: false, maxWidth: '220px' })
-        .setHTML(`<div class="map-popup"><strong>${stop.name}</strong>${stop.rating ? `<div class="popup-rating">⭐ ${stop.rating}${stop.ratingCount ? ` (${stop.ratingCount.toLocaleString()})` : ''}</div>` : ''}</div>`);
+      // Build a full info banner: name, rating, address, optional website, and
+      // an "Open in Google Maps" link. Place_id link is preferred (it opens the
+      // exact place card in Google Maps); falls back to a query+coords URL when
+      // we don't have the place_id from the Places API.
+      const escHtml = (s) => String(s).replace(/[&<>"']/g, c => (
+        c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;'
+        : c === '"' ? '&quot;' : '&#39;'
+      ));
+      const escUri = (s) => encodeURIComponent(s);
+      const gmapsUrl = stop.placeId
+        ? `https://www.google.com/maps/search/?api=1&query=${escUri(stop.name)}&query_place_id=${escUri(stop.placeId)}`
+        : `https://www.google.com/maps/search/?api=1&query=${escUri(stop.name + ' ' + (stop.address || ''))}`;
+      const ratingLine = stop.rating
+        ? `<div class="stop-card-rating">⭐ ${stop.rating.toFixed(1)}${stop.ratingCount ? ` <span class="stop-card-count">(${stop.ratingCount.toLocaleString()})</span>` : ''}</div>`
+        : '';
+      const addressLine = stop.address
+        ? `<div class="stop-card-addr">${escHtml(stop.address)}</div>`
+        : '';
+      const websiteLink = stop.website
+        ? `<a class="stop-card-link" href="${escHtml(stop.website)}" target="_blank" rel="noreferrer">Website ↗</a>`
+        : '';
+      const popup = new maplibregl.Popup({ offset: 16, closeButton: true, maxWidth: '300px', className: 'stop-popup' })
+        .setHTML(`
+          <div class="stop-card">
+            <div class="stop-card-title">${emoji} ${escHtml(stop.name)}</div>
+            ${ratingLine}
+            ${addressLine}
+            <div class="stop-card-actions">
+              <button type="button" class="stop-card-link stop-card-link--primary stop-card-details-btn">View details ↗</button>
+              ${websiteLink}
+            </div>
+          </div>
+        `);
+      // Wire the "View details" button to open the rich modal. Forward the
+      // whole stop object plus a fallback Google Maps URL the modal uses if
+      // googleMapsUri isn't on the stop (e.g. routes generated before this
+      // edge-function deploy).
+      popup.on('open', () => {
+        const popEl = popup.getElement();
+        const btn = popEl?.querySelector('.stop-card-details-btn');
+        if (btn) {
+          btn.addEventListener('click', () => {
+            selectedPlaceRef.current?.({
+              ...stop,
+              fallbackGmapsUrl: gmapsUrl,
+            });
+          });
+        }
+      });
       markersRef.current.push(
         new maplibregl.Marker({ element: el }).setLngLat([stop.lng, stop.lat]).setPopup(popup).addTo(map)
       );
@@ -2363,6 +2936,15 @@ export default function App() {
       setRerouting(false);
       offRouteSinceRef.current = null;
     }
+    // After a successful reroute, immediately trigger a fresh GPS tick so the
+    // bearing/match recomputes against the new polyline. On a real bike, the
+    // next watchPosition fix arrives within a second, but in the simulator
+    // (Custom Location is one-shot) nothing else fires until the rider moves,
+    // so the overlay would otherwise show stale OFF and stale next-turn until
+    // the next manual interaction.
+    if (success === 'changed' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
+    }
     return success;
   }
 
@@ -2395,27 +2977,12 @@ export default function App() {
     setNeedsRecenter(false);
     if (navMapPannedReturnRef.current) { clearTimeout(navMapPannedReturnRef.current); navMapPannedReturnRef.current = null; }
 
-    // Prime bearing to the route direction at the rider's position so the
-    // very first frame already points up the road (no spin-into-place once
-    // the first GPS heading arrives).
-    // Prime the initial bearing using the same "far from route → orient
-    // toward nearest route point" logic as onGeoPosition. Otherwise nav
-    // starts pointed in the wrong direction and smoothly rotates over the
-    // first few GPS ticks instead of opening already aligned.
+    // Initial bearing = tangent of the polyline segment nearest the rider.
     const r = routeData;
     let initialBearing = 0;
-    if (r && userLocation) {
-      const coords = r.geometry?.coordinates;
-      if (coords && coords.length) {
-        const nearIdx = nearestRouteIdx(coords, userLocation.lat, userLocation.lng);
-        const [nlng, nlat] = coords[nearIdx];
-        const distM = haversineM(userLocation.lat, userLocation.lng, nlat, nlng);
-        if (distM > 50 && distM < 30000) {
-          initialBearing = bearingBetween(userLocation.lat, userLocation.lng, nlat, nlng);
-        } else {
-          initialBearing = routeBearingAt(r, userLocation.lat, userLocation.lng) ?? 0;
-        }
-      }
+    if (r?.geometry?.coordinates && userLocation) {
+      const mm = projectOntoRoute(userLocation.lat, userLocation.lng, r);
+      if (mm) initialBearing = mm.segmentBearing;
     }
     navBearingRef.current = initialBearing;
 
@@ -2436,6 +3003,21 @@ export default function App() {
       navigator.geolocation.getCurrentPosition(onGeoPosition, () => {}, { enableHighAccuracy: true });
     }
 
+    // Pin screen brightness to 100% during navigation so the rider can read
+    // the map in direct sunlight. iOS auto-brightness sometimes mis-reads
+    // glare and dims the screen — overriding here keeps it bright until nav
+    // stops. iOS reverts to the user's chosen brightness automatically when
+    // the app backgrounds; we restore manually on stopNavigation. Dynamically
+    // imported so the web build still runs (plugin is iOS/Android only).
+    if (Capacitor.isNativePlatform()) {
+      import('@capacitor-community/screen-brightness').then(({ ScreenBrightness }) => {
+        ScreenBrightness.getBrightness()
+          .then(({ brightness }) => { prevBrightnessRef.current = brightness; })
+          .catch(() => {});
+        ScreenBrightness.setBrightness({ brightness: 1.0 }).catch(() => {});
+      }).catch(e => console.warn('[brightness] plugin unavailable:', e?.message || e));
+    }
+
     if (isMobile) setSheetMode('collapsed');
   }
 
@@ -2446,6 +3028,15 @@ export default function App() {
     setNavProgress(null);
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
+    // Restore the user's pre-nav brightness. If we never captured one (plugin
+    // failed, web build, etc.) just leave the system alone.
+    if (Capacitor.isNativePlatform() && prevBrightnessRef.current != null) {
+      const target = prevBrightnessRef.current;
+      prevBrightnessRef.current = null;
+      import('@capacitor-community/screen-brightness').then(({ ScreenBrightness }) => {
+        ScreenBrightness.setBrightness({ brightness: target }).catch(() => {});
+      }).catch(() => {});
+    }
     // Cancel any pending off-route trigger so it can't fire after nav stops.
     offRouteSinceRef.current = null;
     lastOffRoutePosRef.current = null;
@@ -2457,6 +3048,14 @@ export default function App() {
     // Restore a normal flat north-up view.
     if (mapRef.current) {
       mapRef.current.easeTo({ bearing: 0, pitch: 0, zoom: 13, duration: 600 });
+    }
+    // Restore the FULL polyline now that the rider has finished or cancelled
+    // — during nav we trimmed it to "ahead only" each GPS tick. Without this,
+    // the route preview after nav would still be the last sliced version.
+    const r = routeDataRef.current;
+    if (r?.geometry && mapRef.current?.getSource('route')) {
+      try { mapRef.current.getSource('route').setData({ type: 'Feature', geometry: r.geometry }); }
+      catch {}
     }
   }
 
@@ -2703,6 +3302,11 @@ export default function App() {
       setLoading(false);
     }
 
+    if (gps && !isInServiceArea(gps.lat, gps.lng)) {
+      setOutOfAreaToast(true);
+      return;
+    }
+
     generateRoute({ query: text }, gps);
   }
 
@@ -2715,6 +3319,10 @@ export default function App() {
     if (isMobile) setSheetMode('expanded');
 
     const gps = userLocation || await getCurrentGPS({ timeout: 1500, maximumAge: 30000 });
+    if (gps && !isInServiceArea(gps.lat, gps.lng)) {
+      setOutOfAreaToast(true);
+      return;
+    }
     await generateRoute(currentIntent ? { refine:true, feedback:t, intent:currentIntent } : { query:t }, gps);
   }
 
@@ -3058,9 +3666,31 @@ export default function App() {
         </div>
       )}
 
+      {/* Out-of-service-area toast — fixed at the top of the screen, visible
+          regardless of sheet mode. User must tap × to dismiss. */}
+      {outOfAreaToast && (
+        <div className="oa-toast" role="alert" aria-live="assertive">
+          <div className="oa-toast-body">{OUT_OF_AREA_MSG}</div>
+          <button className="oa-toast-close"
+            onClick={() => setOutOfAreaToast(false)}
+            aria-label="Dismiss">✕</button>
+        </div>
+      )}
+
+      {/* Full-screen Google Maps Embed for a tapped stop. Uses Maps Embed API
+          (Place mode) which renders Google's native place card — photos,
+          reviews, hours, ratings, phone — inside an iframe. Falls back to a
+          plain external link if no API key is configured or no placeId. */}
+      {selectedPlace && (
+        <PlaceModal
+          place={selectedPlace}
+          onClose={() => setSelectedPlace(null)}
+        />
+      )}
+
       {/* Map panel — locate button moved into the sheet handle row */}
       <div className="map-panel">
-        <div ref={mapContainerRef} className="map-canvas"/>
+        <div ref={mapContainerRef} className={`map-canvas${navMode ? ' map-canvas--nav' : ''}`}/>
         {/* Floating Report-issue button. Always visible above the map so users
             can flag whatever they're looking at (weird route, missing road,
             etc.) without losing their place. Tapping snapshots the current
@@ -3080,42 +3710,54 @@ export default function App() {
       {/* ── Navigation overlay ── */}
       {navMode && (
         <div className="nav-overlay">
-          <div className="nav-turn-banner">
-            <span className="nav-turn-arrow">
-              {nextTurn ? turnArrow(nextTurn.instruction.sign, nextTurn.instruction.text) : '↑'}
-            </span>
-            <div className="nav-turn-info">
-              {nextTurn ? (
-                <>
-                  <span className="nav-turn-dist">{formatDist(nextTurn.dist)}</span>
-                  <span className="nav-turn-text">{nextTurn.instruction.text}</span>
-                </>
-              ) : (
-                <span className="nav-turn-text">Follow the route</span>
-              )}
-            </div>
-            <button
-              className={`nav-voice-btn${voiceMuted ? ' nav-voice-btn--muted' : ''}`}
-              onClick={toggleVoiceMute}
-              aria-pressed={voiceMuted}
-              aria-label={voiceMuted ? 'Unmute voice directions' : 'Mute voice directions'}
-            >
-              {voiceMuted ? (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                  <line x1="22" y1="9"  x2="16" y2="15"/>
-                  <line x1="16" y1="9"  x2="22" y2="15"/>
-                </svg>
-              ) : (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-                </svg>
-              )}
-            </button>
-            <button className="nav-stop-btn" onClick={stopNavigation} aria-label="Stop navigation">✕</button>
-          </div>
+          {(() => {
+            const labelInfo = nextTurn ? shortDestinationLabel(nextTurn.instruction) : { exit: null, street: 'Follow the route' };
+            return (
+              <div className="nav-turn-banner">
+                {/* Row 1 — glance line: arrow, distance, optional exit chip */}
+                <div className="nav-turn-row1">
+                  <span className="nav-turn-arrow">
+                    {nextTurn ? turnArrow(nextTurn.instruction.sign, nextTurn.instruction.text) : '↑'}
+                  </span>
+                  {nextTurn && (
+                    <span className="nav-turn-dist">{formatDist(nextTurn.dist)}</span>
+                  )}
+                  {labelInfo.exit && (
+                    <span className="nav-turn-exit">{labelInfo.exit}</span>
+                  )}
+                  <div className="nav-turn-row1-spacer"/>
+                  <button
+                    className={`nav-voice-btn${voiceMuted ? ' nav-voice-btn--muted' : ''}`}
+                    onClick={toggleVoiceMute}
+                    aria-pressed={voiceMuted}
+                    aria-label={voiceMuted ? 'Unmute voice directions' : 'Mute voice directions'}
+                  >
+                    {voiceMuted ? (
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <line x1="22" y1="9"  x2="16" y2="15"/>
+                        <line x1="16" y1="9"  x2="22" y2="15"/>
+                      </svg>
+                    ) : (
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                      </svg>
+                    )}
+                  </button>
+                  <button className="nav-stop-btn" onClick={stopNavigation} aria-label="Stop navigation">✕</button>
+                </div>
+                {/* Row 2 — destination: the big road name the rider is being
+                    led onto (or the exit destination). One line, ellipsised. */}
+                {labelInfo.street && (
+                  <div className="nav-turn-row2">
+                    <span className="nav-turn-street">{labelInfo.street}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Reroute banner — sits between the top turn-banner and the bottom
               progress bar so it's clearly visible without covering either. */}
@@ -3153,6 +3795,38 @@ export default function App() {
             </div>
             <span className="nav-route-title">{routeData?.title}</span>
           </div>
+        </div>
+      )}
+
+      {/* Floating map FABs (locate + menu) — sit OVER the map, just above the
+          sheet. Hidden when sheet is fully expanded or the menu drawer is open,
+          since those modes need the buttons inside the sheet itself. */}
+      {isMobile && !navMode && !menuOpen && sheetMode !== 'expanded' && (
+        <div className="map-fab-row"
+             style={{
+               '--fab-bottom': (sheetMode === 'idle' ? idleSheetHeight : 240) + 'px',
+             }}>
+          <button
+            className={`sheet-locate-btn${userLocation ? '' : ' sheet-locate-btn--dim'}`}
+            onClick={centerOnUser}
+            aria-label="Centre on my location"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+            </svg>
+          </button>
+          <button
+            className="sheet-menu-btn"
+            onClick={() => { setSheetMode('expanded'); setMenuOpen(true); }}
+            aria-label="Menu"
+          >
+            <svg width="18" height="14" viewBox="0 0 24 18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="3" y1="3"  x2="21" y2="3"/>
+              <line x1="3" y1="9"  x2="21" y2="9"/>
+              <line x1="3" y1="15" x2="21" y2="15"/>
+            </svg>
+          </button>
         </div>
       )}
 
@@ -3928,6 +4602,12 @@ export default function App() {
           </div>
         </div>
       ) : null}
+
+      {appVersion && (
+        <div className="app-version">
+          ver.{appVersion.version}.{appVersion.build}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,20 @@
 import UIKit
 import Capacitor
 import WebKit
+import AVFoundation
+import ObjectiveC.runtime
+
+/// UIWindow subclass that swallows motion events. Used to defeat the system
+/// "Undo Typing" shake-to-undo dialog, which WKWebView text inputs trigger
+/// even when `UIApplicationSupportsShakeToEdit=false` is set in Info.plist
+/// (the flag is honored by native UITextField but bypassed when the active
+/// responder is inside a WKWebView). Killing the motion event at the window
+/// level prevents it from reaching UIApplication's undo handler.
+class IgnoreShakeWindow: UIWindow {
+    override func motionBegan(_ motion: UIEvent.EventSubtype, with event: UIEvent?) { /* swallow */ }
+    override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) { /* swallow */ }
+    override func motionCancelled(_ motion: UIEvent.EventSubtype, with event: UIEvent?) { /* swallow */ }
+}
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -25,6 +39,34 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             modifiedSince: Date(timeIntervalSince1970: 0)
         ) { }
         #endif
+
+        // Swap the storyboard-created window's class to IgnoreShakeWindow so
+        // motion events stop at the window and never reach UIApplication's
+        // shake-to-undo machinery. Done after the storyboard has already
+        // assigned self.window (it has by the time didFinishLaunching fires).
+        if let win = self.window {
+            object_setClass(win, IgnoreShakeWindow.self)
+        }
+
+        // Configure the shared audio session so that:
+        //   • Music keeps playing through the rider's Bluetooth helmet
+        //     (Cardo etc.) via A2DP, AND
+        //   • Voice prompts captured via SFSpeechRecognizer use the HFP mic on
+        //     that same headset — not the phone's built-in mic, which is
+        //     muffled inside the helmet.
+        // Without `.allowBluetooth` iOS keeps input on the built-in mic even
+        // when a HFP-capable headset is connected.
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
+            )
+            try session.setActive(true)
+        } catch {
+            print("[AppDelegate] AVAudioSession setup failed: \(error)")
+        }
         return true
     }
 
