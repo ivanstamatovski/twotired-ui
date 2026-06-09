@@ -631,7 +631,9 @@ function routeBearingAt(route, lat, lng) {
 // Remaining time + distance from (lat,lng) to the end of the route.
 //   distM:   sum of haversine segment lengths from user → next vertex → end
 //   timeMs:  sum of GraphHopper instruction times whose interval lies ahead,
-//            with the in-progress instruction prorated by how far along it the user is
+//            with the in-progress instruction prorated by how far along it the user is,
+//            then scaled by the route's calibration ratio so nav ETA matches the
+//            pre-nav calibrated drive time (instruction times are GH-raw — uncalibrated)
 function routeProgress(route, lat, lng) {
   const coords = route?.geometry?.coordinates;
   const instructions = route?.instructions;
@@ -656,6 +658,15 @@ function routeProgress(route, lat, lng) {
     } else {
       timeMs += inst.time || 0;
     }
+  }
+
+  // Scale up to match the calibrated drive time. Instruction times are GH-raw —
+  // without this, nav ETA shows the un-calibrated (optimistic) total even
+  // though the pre-nav display already used the calibrated value.
+  const driveMin = route?.drive_minutes ?? route?.time_minutes;
+  const rawMin = route?.raw_time_minutes;
+  if (driveMin && rawMin && rawMin > 0) {
+    timeMs *= driveMin / rawMin;
   }
 
   return { distM, timeMs };
