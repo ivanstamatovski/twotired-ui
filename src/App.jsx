@@ -4023,7 +4023,7 @@ export default function App() {
                 <span className="collapsed-title">{routeData.title}</span>
                 <span className="collapsed-meta">
                   {routeData.stop_duration_str
-                    ? `Drive ${routeData.drive_duration_str} · Stops ${routeData.stop_duration_str} · ${routeData.distance_mi?.toFixed(0)} mi`
+                    ? `Ride ${routeData.drive_duration_str} · Stops ${routeData.stop_duration_str} · ${routeData.distance_mi?.toFixed(0)} mi`
                     : `${routeData.duration_str} · ${routeData.distance_mi?.toFixed(0)} mi`}
                 </span>
               </div>
