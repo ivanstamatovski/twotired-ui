@@ -4010,7 +4010,11 @@ export default function App() {
             <div className="sheet-collapsed-content">
               <div className="collapsed-info">
                 <span className="collapsed-title">{routeData.title}</span>
-                <span className="collapsed-meta">{routeData.duration_str} · {routeData.distance_mi?.toFixed(0)} mi</span>
+                <span className="collapsed-meta">
+                  {routeData.stop_duration_str
+                    ? `Drive ${routeData.drive_duration_str} · Stops ${routeData.stop_duration_str} · ${routeData.distance_mi?.toFixed(0)} mi`
+                    : `${routeData.duration_str} · ${routeData.distance_mi?.toFixed(0)} mi`}
+                </span>
               </div>
               <button className="start-nav-btn" onClick={startNavigation}>▶ Navigate</button>
               <div className="route-secondary-actions">

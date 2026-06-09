@@ -1,4 +1,10 @@
-// generate-route edge function — v2.56
+// generate-route edge function — v2.57
+// v2.57: ETA calibration. Replaces GH's raw time (built on a generic speed model)
+//        with a motorcycle-pace estimate computed per-segment from road_class
+//        details. Also adds dwell time per stop (coffee 20min, lunch 45min, etc.)
+//        and returns drive_minutes / stop_minutes / total_minutes on the response
+//        for the frontend breakdown. duration_str now reflects total (drive + stops).
+// v2.56: re-introduces two-phase routing for NYC origins with curviness 2/3.
 // v2.55: fixes 9W corridor MOTORWAY penalty scope. Global MOTORWAY:0.1 was hurting
 //        city approach legs (Astoria/Queens → GWB) by preventing expressway use.
 //        Now scoped to in_nine_w_corridor and in_nine_w_route17_excl zones only,
@@ -649,6 +655,107 @@ function haversineKm(a: LatLng, b: LatLng): number {
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
+// ── ETA calibration (v2.57) ────────────────────────────────────────────────────
+// GH's raw time field uses a generic motorcycle speed model — accurate enough for
+// route choice but consistently optimistic for actual ride time. Real riders go
+// SLOWER than GH expects on twisty backroads (savoring the ride) and roughly
+// the same on motorways. We re-compute drive time per-segment from a sustained-
+// pace model keyed on OSM road_class. Speeds are average sustained motorcycle
+// pace in m/s — not posted speed limits. Tune from rider logs over time.
+const PACE_MS: Record<string, number> = {
+  motorway:        30.0,  // ~108 km/h, ~67 mph — slab cruising
+  motorway_link:   18.0,
+  trunk:           27.0,  // ~97 km/h
+  trunk_link:      15.0,
+  primary:         22.0,  // ~80 km/h — 9W open sections
+  primary_link:    13.0,
+  secondary:       18.0,  // ~65 km/h — typical scenic curvy
+  secondary_link:  11.0,
+  tertiary:        15.0,  // ~54 km/h — backroads
+  tertiary_link:    9.0,
+  unclassified:    12.0,  // ~43 km/h — small country roads
+  residential:     10.0,  // ~36 km/h — through town
+  living_street:    6.0,
+  service:          7.0,
+  track:            8.0,
+  path:             6.0,
+  road:            18.0,  // fallback
+};
+const DEFAULT_PACE_MS = 18.0;
+
+// Walk path.details.road_class with the geometry to produce a calibrated total
+// drive time. Each detail tuple is [from_idx, to_idx, road_class_str] indexing
+// into the coordinate array. Returns ms. Falls back to a 1.15× scalar on GH's
+// raw time if the road_class detail is missing (e.g. GH config doesn't expose it).
+function calibrateDriveTimeMs(path: any): number {
+  const coords: number[][] = path?.points?.coordinates;
+  const detailRows: any[] = path?.details?.road_class;
+  if (!coords?.length || !Array.isArray(detailRows) || !detailRows.length) {
+    return Math.round((path?.time ?? 0) * 1.15);
+  }
+  let totalMs = 0;
+  for (const row of detailRows) {
+    const from = row[0], to = row[1];
+    const cls = String(row[2] || '').toLowerCase();
+    const pace = PACE_MS[cls] ?? DEFAULT_PACE_MS;
+    let segMeters = 0;
+    for (let i = from; i < to && i + 1 < coords.length; i++) {
+      const a = { lat: coords[i][1],     lng: coords[i][0] };
+      const b = { lat: coords[i + 1][1], lng: coords[i + 1][0] };
+      segMeters += haversineKm(a, b) * 1000;
+    }
+    totalMs += (segMeters / pace) * 1000;
+  }
+  return Math.round(totalMs);
+}
+
+// ── Stop dwell time (v2.57) ────────────────────────────────────────────────────
+// Riders don't just drive — they stop. Adding actual dwell time per stop is the
+// single biggest improvement to perceived ETA accuracy. Defaults are conservative
+// (riders pace themselves on the bike) and can be tuned from real ride logs.
+const STOP_DWELL_MIN: Record<string, number> = {
+  coffee:           20,
+  'coffee shop':    20,
+  cafe:             20,
+  breakfast:        30,
+  lunch:            45,
+  dinner:           60,
+  restaurant:       45,
+  food:             45,
+  diner:            45,
+  bar:              45,
+  pub:              45,
+  brewery:          60,
+  gas:               8,
+  fuel:              8,
+  'gas station':     8,
+  rest:             10,
+  'rest stop':      10,
+  'rest area':      10,
+  scenic:           10,
+  viewpoint:        10,
+  overlook:         10,
+  lookout:          10,
+  park:             20,
+  museum:           60,
+  attraction:       45,
+  shopping:         30,
+  shop:             20,
+  bathroom:          5,
+  restroom:          5,
+};
+const DEFAULT_DWELL_MIN = 15;
+
+function dwellMinutesForStop(type: string): number {
+  const key = (type || '').toLowerCase().trim();
+  if (STOP_DWELL_MIN[key] != null) return STOP_DWELL_MIN[key];
+  // Substring match — e.g. "lunch spot", "coffee shop downtown", "gas station near 9W"
+  for (const [k, v] of Object.entries(STOP_DWELL_MIN)) {
+    if (key.includes(k)) return v;
+  }
+  return DEFAULT_DWELL_MIN;
+}
+
 // ── Compass bearing (degrees, clockwise from north) ───────────────────────────
 // Used to supply heading hints to GraphHopper intermediate waypoints.
 // Prevents waypoint U-turns: a northbound route told to pass through a point
@@ -883,6 +990,7 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
         points_encoded: false,
         instructions: true,
         locale: 'en',
+        details: ['road_class'],
       };
     } else {
       const carModel: any = { speed: [], priority: [], areas: { type: 'FeatureCollection', features: [] }, distance_influence: 90 };
@@ -894,6 +1002,7 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
         points_encoded: false,
         instructions: true,
         locale: 'en',
+        details: ['road_class'],
       };
     }
   } else {
@@ -916,6 +1025,7 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
       points_encoded: false,
       instructions: true,
       locale: 'en',
+      details: ['road_class'],
     };
     // v2.30: heading hints prevent via-point U-turn excursions.
     // Only applied to scenic (motorcycle) legs — car escape uses highways where
@@ -989,9 +1099,17 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
   const data = await res.json();
   const path = data.paths?.[0];
   if (!path) throw new Error('GraphHopper returned no paths');
+  const calibratedMs = calibrateDriveTimeMs(path);
+  const rawMs = path.time ?? 0;
+  if (rawMs > 0) {
+    const ratio = (calibratedMs / rawMs).toFixed(2);
+    console.log(`[getRoute] drive time: GH raw=${Math.round(rawMs/60000)}min → calibrated=${Math.round(calibratedMs/60000)}min (×${ratio})`);
+  }
   return {
     distance_miles: Math.round((path.distance / 1609.34) * 10) / 10,
-    time_minutes: Math.round(path.time / 60000),
+    time_minutes: Math.round(calibratedMs / 60000),
+    raw_time_minutes: Math.round(rawMs / 60000),
+    details: path.details || {},
     geometry: path.points, // GeoJSON LineString, points_encoded: false
     instructions: path.instructions || [],
   };
@@ -1582,6 +1700,7 @@ function mergeRoutes(leg1: any, leg2: any): any {
   return {
     distance_miles: Math.round((leg1.distance_miles + leg2.distance_miles) * 10) / 10,
     time_minutes: leg1.time_minutes + leg2.time_minutes,
+    raw_time_minutes: (leg1.raw_time_minutes ?? 0) + (leg2.raw_time_minutes ?? 0),
     geometry: { type: 'LineString', coordinates: [...coords1, ...coords2] },
     instructions: [...leg1.instructions, ...leg2.instructions],
   };
@@ -1897,12 +2016,21 @@ Deno.serve(async (req) => {
         .then(n => { log.narrative_ms = Date.now() - narrativeStart; return n; });
     });
 
+    // v2.57: ETA breakdown — drive (calibrated) + stop dwell time = total trip duration
+    const driveMinutes = route.time_minutes;
+    const stopMinutes = stops.reduce((sum, s) => sum + dwellMinutesForStop(s.type || ''), 0);
+    const totalMinutes = driveMinutes + stopMinutes;
+    const fmtDur = (m: number) => {
+      const h = Math.floor(m / 60), mm = m % 60;
+      return h > 0 ? `${h}h ${mm}m` : `${mm}m`;
+    };
+
     // Save route to Supabase (best-effort)
     try {
       const record = {
         title: `Route to ${destName}`,
         destination: destName,
-        duration_str: `${Math.floor(route.time_minutes / 60)}h ${route.time_minutes % 60}min`,
+        duration_str: fmtDur(totalMinutes),
         distance_mi: route.distance_miles,
         waypoints: allWaypoints,
         geojson: { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: route.geometry, properties: {} }] },
@@ -1930,10 +2058,34 @@ Deno.serve(async (req) => {
     log.narrative = narrative;
     log.total_ms = Date.now() - requestStart;
 
+    log.eta_breakdown = {
+      drive_minutes: driveMinutes,
+      raw_gh_minutes: route.raw_time_minutes ?? null,
+      stop_minutes: stopMinutes,
+      total_minutes: totalMinutes,
+    };
+
     // Write pipeline log (fire and forget)
     logPipeline(log);
 
-    return new Response(JSON.stringify({ success: true, route: { ...route, waypoints: allWaypoints, stops, destination: destName, title: `Route to ${destName}`, duration_str: `${Math.floor(route.time_minutes / 60)}h ${route.time_minutes % 60}min`, distance_mi: route.distance_miles, intent: rawIntent, narrative, road_scores: scores ?? undefined } }), {
+    return new Response(JSON.stringify({ success: true, route: {
+      ...route,
+      waypoints: allWaypoints,
+      stops,
+      destination: destName,
+      title: `Route to ${destName}`,
+      // v2.57: ETA breakdown — clients can render the full picture or fall back to duration_str
+      drive_minutes: driveMinutes,
+      stop_minutes: stopMinutes,
+      total_minutes: totalMinutes,
+      duration_str: fmtDur(totalMinutes),
+      drive_duration_str: fmtDur(driveMinutes),
+      stop_duration_str: stopMinutes > 0 ? fmtDur(stopMinutes) : null,
+      distance_mi: route.distance_miles,
+      intent: rawIntent,
+      narrative,
+      road_scores: scores ?? undefined,
+    } }), {
       status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
     });
 
