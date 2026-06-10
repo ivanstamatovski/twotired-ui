@@ -1,9 +1,17 @@
-// generate-route edge function — v2.57
-// v2.57: ETA calibration. Replaces GH's raw time (built on a generic speed model)
-//        with a motorcycle-pace estimate computed per-segment from road_class
-//        details. Also adds dwell time per stop (coffee 20min, lunch 45min, etc.)
-//        and returns drive_minutes / stop_minutes / total_minutes on the response
-//        for the frontend breakdown. duration_str now reflects total (drive + stops).
+// generate-route edge function — v2.59
+// v2.59: retry GraphHopper calls on transient network errors. Wraps the GH POST
+//        in fetchGHWithRetry — 3 attempts, short backoff. Absorbs TLS handshake
+//        EOFs and 5xx from Tailscale funnel restarts without surfacing them to
+//        users. Plain fetch threw on the first hiccup; now we get up to ~900ms
+//        of slack before failing.
+// v2.58: ETA calibration v2 — multiply GH raw time by a distance-weighted
+//        per-class slowdown factor instead of recomputing from a speed model.
+//        Pure-speed-model approach (v2.57) was producing ×0.86 / ×0.64 on real
+//        routes because the chosen m/s values were higher than GH's effective
+//        speeds. Multiplier approach is safer: calibration can only go UP from
+//        GH's number, never below. Tune PACE_MULT from rider logs.
+// v2.57: ETA calibration v1 (replaced by v2.58). Adds stop dwell time and
+//        returns drive_minutes / stop_minutes / total_minutes on the response.
 // v2.56: re-introduces two-phase routing for NYC origins with curviness 2/3.
 // v2.55: fixes 9W corridor MOTORWAY penalty scope. Global MOTORWAY:0.1 was hurting
 //        city approach legs (Astoria/Queens → GWB) by preventing expressway use.
@@ -77,6 +85,45 @@ async function fetchWithRetry(
     }
     return res;
   }
+}
+
+// ── GraphHopper-specific fetch with retry ────────────────────────────────────
+// Tailscale Funnel + a home-hosted GH service occasionally fails with TLS EOF,
+// ECONNRESET, or a brief 502/503 during funnel restarts. Plain fetch throws on
+// network errors (handshake aborts, dropped connections) and there's no way to
+// distinguish "Molly was down for 200ms" from "Molly is gone". Retry absorbs
+// the 200ms case without making the call slow when everything's healthy.
+//
+// Retries on: network errors (thrown), 5xx responses.
+// Does NOT retry on: 4xx (real client errors — bad request body etc).
+async function fetchGHWithRetry(url: string, body: any, maxAttempts = 3): Promise<Response> {
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (res.status >= 500 && res.status < 600 && attempt < maxAttempts) {
+        const delay = 300 * attempt;
+        console.warn(`[GH] ${res.status} on attempt ${attempt}/${maxAttempts}, retrying in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      return res;
+    } catch (e: any) {
+      lastErr = e;
+      if (attempt < maxAttempts) {
+        const delay = 300 * attempt;
+        console.warn(`[GH] network error on attempt ${attempt}/${maxAttempts}: ${e?.message} — retrying in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+    }
+  }
+  throw lastErr ?? new Error('GraphHopper unreachable after retries');
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -656,57 +703,72 @@ function haversineKm(a: LatLng, b: LatLng): number {
 }
 
 // ── ETA calibration (v2.57) ────────────────────────────────────────────────────
-// GH's raw time field uses a generic motorcycle speed model — accurate enough for
-// route choice but consistently optimistic for actual ride time. Real riders go
-// SLOWER than GH expects on twisty backroads (savoring the ride) and roughly
-// the same on motorways. We re-compute drive time per-segment from a sustained-
-// pace model keyed on OSM road_class. Speeds are average sustained motorcycle
-// pace in m/s — not posted speed limits. Tune from rider logs over time.
-const PACE_MS: Record<string, number> = {
-  motorway:        30.0,  // ~108 km/h, ~67 mph — slab cruising
-  motorway_link:   18.0,
-  trunk:           27.0,  // ~97 km/h
-  trunk_link:      15.0,
-  primary:         22.0,  // ~80 km/h — 9W open sections
-  primary_link:    13.0,
-  secondary:       18.0,  // ~65 km/h — typical scenic curvy
-  secondary_link:  11.0,
-  tertiary:        15.0,  // ~54 km/h — backroads
-  tertiary_link:    9.0,
-  unclassified:    12.0,  // ~43 km/h — small country roads
-  residential:     10.0,  // ~36 km/h — through town
-  living_street:    6.0,
-  service:          7.0,
-  track:            8.0,
-  path:             6.0,
-  road:            18.0,  // fallback
+// GH's raw time is consistently optimistic vs actual motorcycle ride time. Real
+// riders go SLOWER than GH expects on twisty backroads (savoring the ride) and
+// roughly the same on motorways. We MULTIPLY GH's raw time by a per-class
+// slowdown factor, weighted by the distance fraction each road class contributes
+// to the route. This is safer than recomputing speed from scratch — calibration
+// can only go UP from GH's number, never below.
+//
+// Values represent (real rider time) / (GH estimate). Tune from real ride logs.
+const PACE_MULT: Record<string, number> = {
+  motorway:        1.10,  // slab cruising — GH motorway speed already near real
+  motorway_link:   1.25,
+  trunk:           1.15,
+  trunk_link:      1.25,
+  primary:         1.25,  // 9W etc. — riders cruise slightly under car average
+  primary_link:    1.30,
+  secondary:       1.35,  // scenic twisty — riders savor, not race
+  secondary_link:  1.35,
+  tertiary:        1.45,  // backroads
+  tertiary_link:   1.45,
+  unclassified:    1.55,  // small country roads
+  residential:     1.30,  // through town
+  living_street:   1.45,
+  service:         1.35,
+  track:           1.60,
+  path:            1.60,
+  road:            1.25,  // fallback for unknown class
 };
-const DEFAULT_PACE_MS = 18.0;
+const DEFAULT_PACE_MULT = 1.25;
 
-// Walk path.details.road_class with the geometry to produce a calibrated total
-// drive time. Each detail tuple is [from_idx, to_idx, road_class_str] indexing
-// into the coordinate array. Returns ms. Falls back to a 1.15× scalar on GH's
-// raw time if the road_class detail is missing (e.g. GH config doesn't expose it).
+// Walk path.details.road_class with the geometry to produce a distance-weighted
+// slowdown multiplier, then multiply GH's raw time. Each detail tuple is
+// [from_idx, to_idx, road_class_str] indexing into the coordinate array.
+// Falls back to a flat DEFAULT_PACE_MULT scalar if the road_class detail is
+// missing (e.g. GH config doesn't expose it).
 function calibrateDriveTimeMs(path: any): number {
+  const rawMs = path?.time ?? 0;
   const coords: number[][] = path?.points?.coordinates;
   const detailRows: any[] = path?.details?.road_class;
   if (!coords?.length || !Array.isArray(detailRows) || !detailRows.length) {
-    return Math.round((path?.time ?? 0) * 1.15);
+    return Math.round(rawMs * DEFAULT_PACE_MULT);
   }
-  let totalMs = 0;
+
+  // Sum distance per road class and total distance
+  const classMeters: Record<string, number> = {};
+  let totalMeters = 0;
   for (const row of detailRows) {
     const from = row[0], to = row[1];
     const cls = String(row[2] || '').toLowerCase();
-    const pace = PACE_MS[cls] ?? DEFAULT_PACE_MS;
     let segMeters = 0;
     for (let i = from; i < to && i + 1 < coords.length; i++) {
       const a = { lat: coords[i][1],     lng: coords[i][0] };
       const b = { lat: coords[i + 1][1], lng: coords[i + 1][0] };
       segMeters += haversineKm(a, b) * 1000;
     }
-    totalMs += (segMeters / pace) * 1000;
+    classMeters[cls] = (classMeters[cls] || 0) + segMeters;
+    totalMeters += segMeters;
   }
-  return Math.round(totalMs);
+  if (totalMeters === 0) return Math.round(rawMs * DEFAULT_PACE_MULT);
+
+  // Distance-weighted average multiplier across all classes the route used
+  let weighted = 0;
+  for (const [cls, meters] of Object.entries(classMeters)) {
+    const mult = PACE_MULT[cls] ?? DEFAULT_PACE_MULT;
+    weighted += (meters / totalMeters) * mult;
+  }
+  return Math.round(rawMs * weighted);
 }
 
 // ── Stop dwell time (v2.57) ────────────────────────────────────────────────────
@@ -1046,11 +1108,7 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
   }
 
   const callGH = async (b: any) => {
-    return await fetch(`${GRAPHHOPPER_URL}/route`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(b),
-    });
+    return await fetchGHWithRetry(`${GRAPHHOPPER_URL}/route`, b);
   };
 
   let res = await callGH(body);
