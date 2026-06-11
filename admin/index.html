@@ -183,6 +183,33 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .debug-map-wrap{margin-top:14px}
 .debug-map-container{height:440px;border-radius:8px;overflow:hidden;border:1px solid var(--border);position:relative;background:var(--bg)}
 .debug-map-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--text-dim);align-items:center}
+
+/* ── Ride Logs ── */
+.ride-session-row{cursor:pointer}
+.ride-session-row:hover td{background:rgba(255,255,255,.04)}
+.ride-detail-grid{display:grid;grid-template-columns:1fr 360px;gap:16px;height:calc(100vh - 110px)}
+@media (max-width:780px){.ride-detail-grid{grid-template-columns:1fr;height:auto}}
+.ride-map{height:100%;min-height:380px;border-radius:8px;overflow:hidden;border:1px solid var(--border);background:var(--bg)}
+.ride-timeline{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow-y:auto;max-height:100%}
+.ride-event{padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px}
+.ride-event:last-child{border-bottom:none}
+.ride-event-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.ride-event-time{color:var(--text-muted);font-family:'SF Mono',Menlo,monospace;font-size:11px}
+.ride-event-meta{color:var(--text-dim);font-family:'SF Mono',Menlo,monospace;font-size:11px;word-break:break-all;line-height:1.45}
+.ride-event-key{color:var(--text)}
+.ride-summary-row{display:flex;flex-wrap:wrap;gap:18px;margin-bottom:14px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px}
+.ride-summary-item{display:flex;flex-direction:column}
+.ride-summary-label{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
+.ride-summary-value{font-size:14px;color:var(--text);font-weight:600;margin-top:2px}
+.ride-legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:11px;color:var(--text-dim)}
+.ride-legend-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.ev-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.ev-nav_start{background:rgba(34,197,94,.18);color:var(--green)}
+.ev-off_route{background:rgba(234,179,8,.18);color:var(--yellow)}
+.ev-reroute_request{background:var(--accent-dim);color:var(--accent)}
+.ev-reroute_complete{background:rgba(59,130,246,.18);color:var(--blue)}
+.ev-reroute_failed{background:rgba(239,68,68,.18);color:var(--red)}
+.ev-nav_stop{background:var(--surface2);color:var(--text-muted)}
 .legend-swatch{display:inline-block;width:12px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle}
 .legend-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
 /* Leaflet popup dark theme */
@@ -316,6 +343,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <span class="nav-icon">🔍</span> Route Debug
         <span class="nav-badge" id="badge-debug">—</span>
       </button>
+      <button class="nav-item" onclick="showPanel('rides',this)">
+        <span class="nav-icon">📍</span> Ride Logs
+        <span class="nav-badge" id="badge-rides">—</span>
+      </button>
       <button class="nav-item" onclick="showPanel('anns',this)">
         <span class="nav-icon">📣</span> Announcements
         <span class="nav-badge" id="badge-anns">—</span>
@@ -415,6 +446,29 @@ tr:hover td{background:rgba(255,255,255,.02)}
         </div>
       </div>
 
+      <!-- ── Ride Logs Panel ── -->
+      <div class="panel" id="panel-rides">
+        <div class="stats-row" id="rides-stats"></div>
+        <div class="section-header">
+          <div class="section-title">Navigation sessions</div>
+          <button class="refresh-btn" onclick="loadRideSessions()">↻ Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Started</th>
+              <th>User</th>
+              <th>Route</th>
+              <th>Duration</th>
+              <th>Events</th>
+              <th>Worst drift</th>
+              <th></th>
+            </tr></thead>
+            <tbody id="rides-body"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- ── Announcements Panel ── -->
       <div class="panel" id="panel-anns">
         <div class="section-header">
@@ -497,6 +551,16 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <div class="trace-modal-body" id="trace-modal-body"></div>
 </div>
 
+<!-- ── Fullscreen Ride Modal ── -->
+<div id="ride-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:var(--bg);flex-direction:column;overflow:hidden">
+  <div class="trace-modal-header">
+    <button class="trace-modal-back" onclick="closeRideModal()">‹</button>
+    <div class="trace-modal-title" id="ride-modal-title">Ride session</div>
+    <div class="trace-modal-meta" id="ride-modal-meta"></div>
+  </div>
+  <div class="trace-modal-body" id="ride-modal-body"></div>
+</div>
+
 <script>
 // ── Config ────────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://ujvfwzcjgxupvtiwllhw.supabase.co';
@@ -558,7 +622,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadAnnouncements(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadAnnouncements(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -1289,6 +1353,247 @@ async function loadRoutes() {
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
   }
+}
+
+// ── Ride Logs ────────────────────────────────────────────────────────────────
+// Cache of recent events keyed by session_id so the detail modal can render
+// without re-querying. Refilled each loadRideSessions() run.
+let _rideSessions = [];          // [{ session_id, events: [], user_id, ... }]
+let _rideMaps = {};              // Leaflet map instances keyed by container id
+const EVENT_COLORS = {
+  nav_start:        '#22c55e',
+  off_route:        '#eab308',
+  reroute_request:  '#f97316',
+  reroute_complete: '#3b82f6',
+  reroute_failed:   '#ef4444',
+  nav_stop:         '#888',
+};
+const EVENT_DEFAULT = '#888';
+
+async function loadRideSessions() {
+  const tbody = document.getElementById('rides-body');
+  tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>';
+  try {
+    // Pull the last ~1000 events. Group client-side by session_id.
+    // For test-scale (handful of riders, dozens of sessions per week) this is
+    // plenty; if it ever grows we'd switch to a server-side RPC view.
+    const events = await sb('/rest/v1/nav_events?select=*&order=created_at.desc&limit=1000');
+    if (!Array.isArray(events) || events.length === 0) {
+      document.getElementById('badge-rides').textContent = '0';
+      document.getElementById('rides-stats').innerHTML = '';
+      tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="empty-icon">📍</div>No ride sessions logged yet — generate a route and tap Navigate on the app to create one.</div></td></tr>';
+      return;
+    }
+
+    // Group events by session_id
+    const groups = {};
+    for (const ev of events) {
+      const sid = ev.session_id;
+      if (!sid) continue;
+      if (!groups[sid]) groups[sid] = [];
+      groups[sid].push(ev);
+    }
+
+    // Build session summaries
+    const sessions = Object.entries(groups).map(([sid, evs]) => {
+      // Order events chronologically within the session for summary math
+      evs.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      const start = evs.find(e => e.event_type === 'nav_start') || evs[0];
+      const stop  = evs.find(e => e.event_type === 'nav_stop')  || evs[evs.length - 1];
+      const navStartMeta = start?.metadata || {};
+      const offCount    = evs.filter(e => e.event_type === 'off_route').length;
+      const rerouteCount= evs.filter(e => e.event_type === 'reroute_request').length;
+      const reroutesOK  = evs.filter(e => e.event_type === 'reroute_complete').length;
+      const reroutesBad = evs.filter(e => e.event_type === 'reroute_failed').length;
+      const driftPeaks  = evs.filter(e => e.event_type === 'off_route')
+                              .map(e => e.metadata?.dist_off_route_m || 0);
+      const worstDrift  = driftPeaks.length ? Math.max(...driftPeaks) : null;
+      const durationMs  = (new Date(stop.created_at) - new Date(start.created_at));
+      return {
+        session_id: sid,
+        user_id: start.user_id || null,
+        events: evs,
+        started_at: start.created_at,
+        ended_at: stop.created_at,
+        duration_ms: durationMs,
+        route_title: navStartMeta.route_title || '—',
+        destination: navStartMeta.destination || null,
+        distance_mi: navStartMeta.distance_mi ?? null,
+        off_route_count: offCount,
+        reroute_count: rerouteCount,
+        reroute_ok_count: reroutesOK,
+        reroute_bad_count: reroutesBad,
+        worst_drift_m: worstDrift,
+      };
+    });
+
+    // Newest first
+    sessions.sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
+    _rideSessions = sessions;
+
+    document.getElementById('badge-rides').textContent = String(sessions.length);
+
+    // Stat cards
+    const totalSessions = sessions.length;
+    const totalReroutes = sessions.reduce((s, x) => s + x.reroute_count, 0);
+    const totalOffRoutes= sessions.reduce((s, x) => s + x.off_route_count, 0);
+    const last24        = sessions.filter(s => new Date(s.started_at) > new Date(Date.now() - 86400000)).length;
+    document.getElementById('rides-stats').innerHTML =
+      statCard(totalSessions, 'Sessions') +
+      statCard(last24, 'Last 24h', last24 > 0) +
+      statCard(totalOffRoutes, 'Off-route events') +
+      statCard(totalReroutes, 'Reroutes');
+
+    tbody.innerHTML = sessions.map((s, i) => {
+      const reroutesCell = s.reroute_count > 0
+        ? `<span class="badge ${s.reroute_bad_count > 0 ? 'badge-red' : 'badge-blue'}">${s.reroute_ok_count}/${s.reroute_count}</span>`
+        : '<span style="color:var(--text-muted)">0</span>';
+      const offCell = s.off_route_count > 0
+        ? `<span class="badge badge-yellow">${s.off_route_count}</span>`
+        : '<span style="color:var(--text-muted)">0</span>';
+      const driftCell = s.worst_drift_m != null ? `${s.worst_drift_m}m` : '—';
+      return `
+        <tr class="ride-session-row" onclick="openRideModal(${i})">
+          <td class="cell-mono" style="font-size:12px">${fmtDateShort(s.started_at)}</td>
+          <td class="cell-mono" style="font-size:11px">${s.user_id ? s.user_id.slice(0, 8) : '—'}</td>
+          <td class="cell-main">${escHtml(s.route_title)}${s.distance_mi != null ? `<div style="font-size:11px;color:var(--text-muted)">${s.distance_mi.toFixed(0)} mi</div>` : ''}</td>
+          <td class="cell-mono" style="font-size:12px">${fmtDuration(s.duration_ms)}</td>
+          <td>${offCell} ${reroutesCell}</td>
+          <td class="cell-mono" style="font-size:12px">${driftCell}</td>
+          <td><button class="expand-btn" onclick="event.stopPropagation();openRideModal(${i})">Open</button></td>
+        </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red);padding:24px">${escHtml(e.message)}</td></tr>`;
+  }
+}
+
+function fmtDuration(ms) {
+  if (!ms || ms < 0) return '—';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return '<1m';
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return h > 0 ? `${h}h ${mm}m` : `${mm}m`;
+}
+
+function openRideModal(idx) {
+  const s = _rideSessions[idx];
+  if (!s) return;
+  document.getElementById('ride-modal-title').textContent = s.route_title || 'Ride session';
+  document.getElementById('ride-modal-meta').textContent =
+    [fmtDateShort(s.started_at), fmtDuration(s.duration_ms),
+     s.off_route_count ? `${s.off_route_count} off-route` : null,
+     s.reroute_count ? `${s.reroute_count} reroute${s.reroute_count > 1 ? 's' : ''}` : null,
+    ].filter(Boolean).join(' · ');
+  document.getElementById('ride-modal-body').innerHTML = renderRideDetail(s);
+  document.getElementById('ride-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => initRideMap(s), 80);
+}
+
+function closeRideModal() {
+  document.getElementById('ride-modal').style.display = 'none';
+  document.body.style.overflow = '';
+  const m = _rideMaps['ride-map'];
+  if (m) { m.remove(); delete _rideMaps['ride-map']; }
+}
+
+function renderRideDetail(s) {
+  const summary = `
+    <div class="ride-summary-row">
+      <div class="ride-summary-item"><div class="ride-summary-label">Started</div><div class="ride-summary-value">${fmtDateShort(s.started_at)}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">Duration</div><div class="ride-summary-value">${fmtDuration(s.duration_ms)}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">Distance</div><div class="ride-summary-value">${s.distance_mi != null ? s.distance_mi.toFixed(0) + ' mi' : '—'}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">Off-route</div><div class="ride-summary-value">${s.off_route_count}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">Reroutes</div><div class="ride-summary-value">${s.reroute_ok_count}/${s.reroute_count}${s.reroute_bad_count > 0 ? ` <span style="color:var(--red);font-size:11px">(${s.reroute_bad_count} failed)</span>` : ''}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">Worst drift</div><div class="ride-summary-value">${s.worst_drift_m != null ? s.worst_drift_m + 'm' : '—'}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">User</div><div class="ride-summary-value" style="font-family:'SF Mono',Menlo,monospace;font-size:12px">${s.user_id ? s.user_id.slice(0, 12) : '—'}</div></div>
+    </div>`;
+
+  const legend = `
+    <div class="ride-legend">
+      ${Object.entries(EVENT_COLORS).map(([k, v]) =>
+        `<span><span class="ride-legend-dot" style="background:${v}"></span>${k.replace(/_/g, ' ')}</span>`
+      ).join('')}
+    </div>`;
+
+  const timeline = s.events.map(ev => {
+    const ts = fmtDateShort(ev.created_at).split(' ').slice(1).join(' '); // drop date prefix
+    const meta = ev.metadata || {};
+    let extra = '';
+    if (ev.event_type === 'off_route' && meta.dist_off_route_m != null) {
+      extra = `<span class="ride-event-key">drift:</span> ${meta.dist_off_route_m}m`;
+    } else if (ev.event_type === 'reroute_complete') {
+      const dist = meta.dist_from_rider_m;
+      const changed = meta.changed;
+      extra = `<span class="ride-event-key">changed:</span> ${changed ? 'yes' : 'no'}` +
+              (dist != null ? ` · <span class="ride-event-key">new start:</span> ${dist}m from rider` : '');
+    } else if (ev.event_type === 'nav_start' && meta.destination) {
+      extra = `→ ${escHtml(meta.destination)}`;
+    } else if (ev.event_type === 'reroute_failed' && meta.error) {
+      extra = `<span style="color:var(--red)">${escHtml(meta.error)}</span>`;
+    } else if (ev.event_type === 'reroute_request' && meta.destination) {
+      const d = meta.destination;
+      const destStr = typeof d === 'string' ? d : (d?.query || (d?.lat != null ? `${d.lat.toFixed(4)},${d.lng.toFixed(4)}` : ''));
+      extra = `→ ${escHtml(destStr)}`;
+    }
+    const coords = (ev.lat != null && ev.lng != null) ? `${ev.lat.toFixed(5)}, ${ev.lng.toFixed(5)}` : '—';
+    return `
+      <div class="ride-event">
+        <div class="ride-event-head">
+          <span class="ev-badge ev-${ev.event_type}">${ev.event_type.replace(/_/g, ' ')}</span>
+          <span class="ride-event-time">${ts}</span>
+        </div>
+        <div class="ride-event-meta">${coords}${extra ? ' · ' + extra : ''}</div>
+      </div>`;
+  }).join('');
+
+  return summary + `
+    <div class="ride-detail-grid">
+      <div class="ride-map" id="ride-map"></div>
+      <div class="ride-timeline">${timeline}</div>
+    </div>
+    ${legend}`;
+}
+
+function initRideMap(s) {
+  const container = document.getElementById('ride-map');
+  if (!container) return;
+  if (_rideMaps['ride-map']) { _rideMaps['ride-map'].remove(); delete _rideMaps['ride-map']; }
+
+  const points = s.events.filter(e => e.lat != null && e.lng != null);
+  if (points.length === 0) {
+    container.innerHTML = '<div class="empty" style="padding:60px 0">No GPS points recorded for this session</div>';
+    return;
+  }
+
+  const map = L.map(container, { zoomControl: true });
+  _rideMaps['ride-map'] = map;
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '©OpenStreetMap ©CARTO', maxZoom: 19,
+  }).addTo(map);
+
+  // Connect chronological GPS points with a faint trail
+  const trail = points.map(p => [p.lat, p.lng]);
+  if (trail.length > 1) {
+    L.polyline(trail, { color: '#444', weight: 2, opacity: 0.6, dashArray: '4 4' }).addTo(map);
+  }
+
+  // Markers per event with type-colored dots + popup
+  points.forEach((ev) => {
+    const color = EVENT_COLORS[ev.event_type] || EVENT_DEFAULT;
+    const meta = ev.metadata ? JSON.stringify(ev.metadata, null, 2) : '';
+    const popup = `<b>${ev.event_type.replace(/_/g, ' ')}</b><br>${fmtDateShort(ev.created_at).split(' ').slice(1).join(' ')}<br>${ev.lat.toFixed(5)}, ${ev.lng.toFixed(5)}${meta ? '<pre style="margin-top:6px;font-size:11px;max-width:280px;white-space:pre-wrap">' + escHtml(meta) + '</pre>' : ''}`;
+    L.circleMarker([ev.lat, ev.lng], {
+      radius: ev.event_type === 'nav_start' || ev.event_type === 'nav_stop' ? 8 : 6,
+      fillColor: color, color: '#1a1a1a', weight: 2, fillOpacity: 1,
+    }).bindPopup(popup).addTo(map);
+  });
+
+  // Fit bounds to all points
+  const bounds = L.latLngBounds(trail);
+  map.fitBounds(bounds, { padding: [30, 30] });
 }
 
 // ── Announcements ────────────────────────────────────────────────────────────
