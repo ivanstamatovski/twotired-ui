@@ -2981,7 +2981,14 @@ export default function App() {
       const oldGeomKey = JSON.stringify(routeDataRef.current?.geometry?.coordinates?.slice(0, 5));
       const oldLength  = routeDataRef.current?.geometry?.coordinates?.length;
       console.log('[reroute] calling generateRoute, oldRoute coords=', oldLength);
-      await generateRoute(reroutePayload, { lat, lng });
+      const genResult = await generateRoute(reroutePayload, { lat, lng });
+      // If generateRoute swallowed a server error, treat as a real failure
+      // (not a "complete with no change"). Without this, off-route during a
+      // server outage produced misleading reroute_complete events showing
+      // huge dist_from_rider distances vs. the unchanged original polyline.
+      if (genResult && genResult.ok === false && !genResult.aborted) {
+        throw new Error(genResult.error || 'generateRoute failed');
+      }
       const newFirstCoord = routeDataRef.current?.geometry?.coordinates?.[0];
       const newGeomKey = JSON.stringify(routeDataRef.current?.geometry?.coordinates?.slice(0, 5));
       const newLength  = routeDataRef.current?.geometry?.coordinates?.length;
@@ -3358,11 +3365,15 @@ export default function App() {
       setRecent(updated); localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
       // Persist last active route so it survives tab switches and reloads
       localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
+      return { ok: true };
 
     } catch(err) {
       clearInterval(ticker);
       // Rider hit the X button to abort; not a real error — stay silent.
       if (err.name !== 'AbortError') setError(err.message);
+      // Return an explicit failure so callers (e.g. rerouteFromCurrentPosition)
+      // can log reroute_failed instead of misleading reroute_complete.
+      return { ok: false, error: err?.message || String(err), aborted: err?.name === 'AbortError' };
     }
     finally {
       setLoading(false);
