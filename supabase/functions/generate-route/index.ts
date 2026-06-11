@@ -1,4 +1,22 @@
-// generate-route edge function — v2.62
+// generate-route edge function — v2.65
+// v2.65: removed the 'scoring' A/B variant entirely. Was added in v2.50 to
+//        compare joy-areas-only routing against the full custom model; in
+//        practice scoring stripped out road-class rules, corridor logic,
+//        NYC polygon, Palisades zone, and two-phase NYC escape — losing far
+//        more than the joy weights it gained. Classic already includes the
+//        joy_tier_c penalty so we keep the joy bias and all the other model
+//        knowledge. body.variant is now ignored (rejected silently to
+//        preserve back-compat); buildScoringModel + the scoring branch in
+//        the main handler are gone.
+// v2.64: v2.63 referenced joy_tier_b which doesn't exist (score server emits
+//        only tier_a + tier_c). GH rejected the model with "Area joy_tier_b
+//        wasn't found." Dropped the tier_b row; tier_c penalty alone is
+//        the routing bias. (Now obsolete — see v2.65.)
+// v2.63: scoring-variant routing was broken end-to-end since v2.50. GH LM
+//        mode caps multiply_by at 1.0; the `in_joy_tier_a × 1.5` boost
+//        triggered a 400 on every request, so every "scoring" route errored
+//        and never made it to the rider. Flipped to penalize-everything-else:
+//        joy_tier_b × 0.7, joy_tier_c × 0.4. (Now obsolete — see v2.65.)
 // v2.62: accept nav_session_id + event_origin from request body and log them
 //        into route_logs. Lets the admin portal join route_logs to nav_events
 //        on session_id so a ride session shows the full pipeline-call history
@@ -678,28 +696,6 @@ function buildCurvinessModel(curviness: 1 | 2 | 3): any {
     ...baseAreaFeatures,
     ...(_joyAreas?.features ?? []),
   ];
-  return {
-    speed: [],
-    priority,
-    areas: { type: 'FeatureCollection', features: areaFeatures },
-    distance_influence: 90,
-  };
-}
-
-// ── Score-only routing model (variant === 'scoring') ──────────────────────────
-// No road-class penalties at all. Joy area weights drive all route preference:
-//   tier_a (1.5×) keeps GH lingering in scenic zones.
-//   tier_c (0.4×) creates natural escape pressure from urban/boring areas —
-//   GH exits red zones via whatever road is fastest (often a motorway), no
-//   explicit penalty needed and no looping artefacts from the exit waypoint.
-function buildScoringModel(curviness: 2 | 3): any {
-  const priority: any[] = [
-    ...(_joyAreas ? [
-      { if: 'in_joy_tier_a', multiply_by: '1.5' },
-      { if: 'in_joy_tier_c', multiply_by: '0.4' },
-    ] : []),
-  ];
-  const areaFeatures = [...(_joyAreas?.features ?? [])];
   return {
     speed: [],
     priority,
@@ -1981,7 +1977,6 @@ Deno.serve(async (req) => {
     // Build waypoint chain
     const stopLLs: LatLng[] = stops.map(s => ({ lat: s.lat, lng: s.lng }));
     const curviness = (body.curviness ?? 2) as 1 | 2 | 3;
-    const variant   = (body.variant   ?? 'classic') as 'classic' | 'scoring';
     const corridor = body.road_corridor || undefined;
 
     let route: any;
@@ -2043,70 +2038,51 @@ Deno.serve(async (req) => {
     allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
     if (body.round_trip) allWaypoints.push(originLL);
 
-    if (variant === 'scoring' && curviness >= 2) {
-      // ── Score-only variant: single GH call, no exit waypoint, no two-phase ──
-      // Joy area weights handle everything: tier_c repels GH from urban zones
-      // (it exits via fastest road), tier_a keeps it on scenic roads beyond.
-      console.log('[generate-route] variant=scoring, single-phase score model');
-      const scoringModel = buildScoringModel(curviness as 2 | 3);
+    const exitPoint = pickExitPoint();
+
+    if (exitPoint) {
+      // Two-phase: car profile city exit → scenic profile from exit onward
+      const remainingIntermediates = intermediateWPs.length > 0 ? intermediateWPs.slice(1) : [];
+      const scenicPoints = [exitPoint, ...remainingIntermediates, ...stopLLs, destinationLL];
+      if (body.round_trip) scenicPoints.push(originLL);
+
+      console.log('[generate-route] two-phase: car escape to', JSON.stringify(exitPoint), '→ scenic from there');
+
+      // headings=[-1,-1] disables GH's default U-turn-avoidance on the snap:
+      // without it, an origin that snaps to (say) an eastbound GCP service road forces
+      // the route to drive east to the next intersection before it can head back NW,
+      // producing the Astoria loop seen in route 123.
+      const escapeLegPromise = getRoute([originLL, exitPoint], 0, [-1, -1]); // car profile — no motorway penalty
+
+      let scenicLegPromise: Promise<any>;
       if (corridor) {
         const corridorModel = await buildCorridorModel(corridor, curviness);
-        const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
-        const headings = allWaypoints.map((_, i) =>
-          (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
+        const overallBearing = Math.round(bearingDegrees(exitPoint, destinationLL));
+        const headings = scenicPoints.map((_, i) =>
+          (i === 0 || i === scenicPoints.length - 1) ? -1 : overallBearing
         );
-        route = await getRoute(allWaypoints, curviness, headings, scoringModel);
+        scenicLegPromise = getRoute(scenicPoints, curviness, headings, corridorModel);
       } else {
-        route = await getRoute(allWaypoints, curviness, undefined, scoringModel);
+        scenicLegPromise = getRoute(scenicPoints, curviness);
       }
+
+      const [escapeLeg, scenicLeg] = await Promise.all([escapeLegPromise, scenicLegPromise]);
+      route = mergeRoutes(escapeLeg, scenicLeg);
+    } else if (corridor) {
+      const corridorModel = await buildCorridorModel(corridor, curviness);
+      const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
+      const headings = allWaypoints.map((_, i) =>
+        (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
+      );
+      route = await getRoute(allWaypoints, curviness, headings, corridorModel);
     } else {
-      // ── Classic variant: existing two-phase pickExitPoint logic ──────────────
-      const exitPoint = pickExitPoint();
-
-      if (exitPoint) {
-        // Two-phase: car profile city exit → scenic profile from exit onward
-        const remainingIntermediates = intermediateWPs.length > 0 ? intermediateWPs.slice(1) : [];
-        const scenicPoints = [exitPoint, ...remainingIntermediates, ...stopLLs, destinationLL];
-        if (body.round_trip) scenicPoints.push(originLL);
-
-        console.log('[generate-route] two-phase: car escape to', JSON.stringify(exitPoint), '→ scenic from there');
-
-        // headings=[-1,-1] disables GH's default U-turn-avoidance on the snap:
-        // without it, an origin that snaps to (say) an eastbound GCP service road forces
-        // the route to drive east to the next intersection before it can head back NW,
-        // producing the Astoria loop seen in route 123.
-        const escapeLegPromise = getRoute([originLL, exitPoint], 0, [-1, -1]); // car profile — no motorway penalty
-
-        let scenicLegPromise: Promise<any>;
-        if (corridor) {
-          const corridorModel = await buildCorridorModel(corridor, curviness);
-          const overallBearing = Math.round(bearingDegrees(exitPoint, destinationLL));
-          const headings = scenicPoints.map((_, i) =>
-            (i === 0 || i === scenicPoints.length - 1) ? -1 : overallBearing
-          );
-          scenicLegPromise = getRoute(scenicPoints, curviness, headings, corridorModel);
-        } else {
-          scenicLegPromise = getRoute(scenicPoints, curviness);
-        }
-
-        const [escapeLeg, scenicLeg] = await Promise.all([escapeLegPromise, scenicLegPromise]);
-        route = mergeRoutes(escapeLeg, scenicLeg);
-      } else if (corridor) {
-        const corridorModel = await buildCorridorModel(corridor, curviness);
-        const overallBearing = Math.round(bearingDegrees(originLL, destinationLL));
-        const headings = allWaypoints.map((_, i) =>
-          (i === 0 || i === allWaypoints.length - 1) ? -1 : overallBearing
-        );
-        route = await getRoute(allWaypoints, curviness, headings, corridorModel);
-      } else {
-        route = await getRoute(allWaypoints, curviness);
-      }
+      route = await getRoute(allWaypoints, curviness);
     }
+
     log.route_ms = Date.now() - routeStart;
     log.routing_config = {
       profile: 'twotired',
       curviness,
-      variant,
       corridor: corridor ?? null,
       waypoint_count: allWaypoints.length,
     };

@@ -1287,8 +1287,6 @@ export default function App() {
   const navMapPannedReturnRef   = useRef(null);
   const [needsRecenter, setNeedsRecenter] = useState(false);
 
-  // Routing variant A/B toggle (dev tool)
-  const [routeVariant, setRouteVariant] = useState('scoring');
 
   // Bug report
   const [bugComment, setBugComment] = useState('');
@@ -3311,7 +3309,7 @@ export default function App() {
 
     try {
       const token = session?.access_token || SUPABASE_ANON_KEY;
-      const body = { ...payload, user_id: session?.user?.id || null, variant: routeVariant };
+      const body = { ...payload, user_id: session?.user?.id || null };
       if (gps) { body.userLat = gps.lat; body.userLng = gps.lng; }
       // Linkage so the admin portal can stitch route_logs ↔ nav_events for
       // a unified ride timeline. nav_session_id is set whenever navigation
@@ -4332,9 +4330,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Routing model toggle hidden — defaults to 'scoring' for
-                  released builds. Re-expose if a dev/debug menu is added. */}
-
               <div className="menu-divider"/>
               <div className="menu-user-row">
                 <span className="menu-user-email">{session.user.email}</span>
@@ -4723,7 +4718,6 @@ export default function App() {
           )}
 
           <div className="sidebar-bug">
-            {/* Routing model toggle hidden for release. Default is 'scoring'. */}
             <button className="bug-trigger" onClick={()=>setMenuOpen(x=>!x)}>🐛 Report issue</button>
             {menuOpen && (
               <div className="bug-inline">
