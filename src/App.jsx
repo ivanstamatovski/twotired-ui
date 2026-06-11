@@ -2667,8 +2667,14 @@ export default function App() {
               //                        (no destination etc.). No cooldown so
               //                        the next attempt can try again.
               rerouteFromCurrentPosition(p.lat, p.lng).then(ok => {
-                if (ok === 'changed' || ok === 'unchanged') lastRerouteAtRef.current = Date.now();
-                // else (false): leave lastRerouteAtRef alone
+                // Apply full cooldown on any attempt that reached the server
+                // — success ('changed'/'unchanged') OR error ('errored').
+                // Only skip cooldown when we never attempted (ok === false,
+                // e.g. no destination available). This prevents tight retry
+                // loops against a flaking server (see 2026-06-10 incident).
+                if (ok === 'changed' || ok === 'unchanged' || ok === 'errored') {
+                  lastRerouteAtRef.current = Date.now();
+                }
               });
             };
             if (offRouteTimerRef.current) clearTimeout(offRouteTimerRef.current);
@@ -3018,6 +3024,11 @@ export default function App() {
         lat, lng,
         metadata: { error: String(e?.message || e) },
       });
+      // Mark as errored (vs unattempted) so the caller applies a cooldown.
+      // Without this, a flaking server (e.g. today's Tailscale outage) puts
+      // the client in a tight reroute loop — see route_logs cluster of 80+
+      // errors against the same client in a 4-min window on 2026-06-10.
+      success = 'errored';
     } finally {
       reroutingRef.current = false;
       setRerouting(false);
