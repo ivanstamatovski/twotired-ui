@@ -1,4 +1,16 @@
-// generate-route edge function — v2.59
+// generate-route edge function — v2.61
+// v2.61: pre-snap GPS-sourced origin to the actual nearest road before sending
+//        to /route. GH's in-route snap is biased by snap_prevention and
+//        custom_model penalties (motorway exclusion + tier penalties) and can
+//        snap the rider to a road they're NOT on — often the original route
+//        they just drifted off — making reroutes appear to start from "some
+//        other point on the route." Calling /nearest first (no profile, no
+//        snap rules) gives us the actual closest routable edge; we use that as
+//        the origin if it's within 100m. Logs original→snapped→distance for
+//        diagnostics.
+// v2.60: log the body of routes-table insert failures (was status-only). The
+//        400 we'd been seeing was opaque; this surfaces PostgREST's
+//        message/details/hint so we can fix the actual schema mismatch.
 // v2.59: retry GraphHopper calls on transient network errors. Wraps the GH POST
 //        in fetchGHWithRetry — 3 attempts, short backoff. Absorbs TLS handshake
 //        EOFs and 5xx from Tailscale funnel restarts without surfacing them to
@@ -693,6 +705,30 @@ function buildScoringModel(curviness: 2 | 3): any {
 // Keep CURVINESS_MODELS as a lazy getter so corridor builder can still reference it
 // (corridor builder calls buildCorridorModel which needs the base speed array)
 const CURVINESS_MODELS = [1, 2, 3].map((c) => buildCurvinessModel(c as 1 | 2 | 3));
+
+// ── Pre-snap a coordinate to its nearest routable edge (v2.61) ────────────────
+// /nearest is profile-less — returns the absolute closest edge from GH's geo
+// index, ignoring snap_prevention and custom_model penalties. We use it BEFORE
+// /route so the rider's GPS gets snapped to the road they're actually on, not
+// the road GH thinks is "best" (which is often the original route they just
+// drifted off — see v2.61 banner).
+async function snapPointToRoad(point: LatLng): Promise<{ snapped: LatLng; distM: number } | null> {
+  try {
+    const res = await fetch(`${GRAPHHOPPER_URL}/nearest?point=${point.lat},${point.lng}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const lng = data?.coordinates?.[0];
+    const lat = data?.coordinates?.[1];
+    const distM = data?.distance;
+    if (lat == null || lng == null || distM == null) return null;
+    return { snapped: { lat, lng }, distM };
+  } catch (e: any) {
+    console.warn('[snapPointToRoad] failed:', e?.message);
+    return null;
+  }
+}
 
 // ── Haversine distance (km) ────────────────────────────────────────────────────
 function haversineKm(a: LatLng, b: LatLng): number {
@@ -1793,7 +1829,10 @@ async function logPipeline(record: Record<string, any>): Promise<void> {
       },
       body: JSON.stringify(record),
     });
-    if (!res.ok) console.warn('[logPipeline] insert failed:', res.status);
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.warn('[logPipeline] insert failed:', res.status, errBody);
+    }
   } catch (e: any) {
     console.warn('[logPipeline] error:', e.message);
   }
@@ -1865,9 +1904,23 @@ Deno.serve(async (req) => {
     log.parse_ms = Date.now() - parseStart;
     log.raw_intent = rawIntent;
 
-    // Override origin with actual GPS coords
+    // Override origin with actual GPS coords. Pre-snap to the closest routable
+    // edge via /nearest — this bypasses the snap_prevention + custom_model
+    // biases that /route applies internally, fixing the reroute-starts-from-
+    // wrong-point bug. Skip the snap if /nearest fails or the closest road is
+    // implausibly far (>100m — means the rider isn't really on any mapped
+    // road; let GH fall back to its own snap and re-snap logic).
     if (userLat !== undefined) {
-      body.origin = { lat: userLat, lng: userLng! };
+      const gpsOrigin: LatLng = { lat: userLat, lng: userLng! };
+      const snap = await snapPointToRoad(gpsOrigin);
+      if (snap && snap.distM <= 100) {
+        console.log(`[snap-origin] GPS ${gpsOrigin.lat.toFixed(6)},${gpsOrigin.lng.toFixed(6)} → road ${snap.snapped.lat.toFixed(6)},${snap.snapped.lng.toFixed(6)} (${snap.distM.toFixed(0)}m)`);
+        body.origin = snap.snapped;
+        log.snap_origin = { gps: gpsOrigin, road: snap.snapped, dist_m: snap.distM };
+      } else {
+        if (snap) console.warn(`[snap-origin] nearest road is ${snap.distM.toFixed(0)}m away — too far, using raw GPS`);
+        body.origin = gpsOrigin;
+      }
     }
 
     if (!body.origin || !body.destination) {
@@ -2107,7 +2160,10 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify(record),
       });
-      if (!dbRes.ok) console.error('[generate-route] DB insert failed:', dbRes.status);
+      if (!dbRes.ok) {
+        const errBody = await dbRes.text();
+        console.error('[generate-route] DB insert failed:', dbRes.status, errBody);
+      }
     } catch (dbErr: any) {
       console.error('[generate-route] DB insert exception:', dbErr.message);
     }

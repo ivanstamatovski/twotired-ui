@@ -1381,11 +1381,44 @@ export default function App() {
   const sessionEmailRef = useRef(null); // mirror of current account email for dev sim override
   const routeAbortRef = useRef(null);   // AbortController for the in-flight generate-route fetch
   const routeGenRef   = useRef(0);      // monotonically-increasing id of the latest generation request
+  // Nav telemetry: one session_id per Navigate→Stop arc, groups events for replay.
+  // Generated on startNavigation, cleared on stopNavigation.
+  const navSessionIdRef = useRef(null);
+  // Mirrors of state needed inside logNavEvent (a useCallback with empty deps).
+  const sessionRef = useRef(null);
+  // Most recent GPS fix — used to enrich nav events that fire from timers
+  // (e.g. off-route trigger) where pos isn't in scope.
+  const lastGpsFixRef = useRef(null);
+
+  // logNavEvent — fire-and-forget insert to public.nav_events. Never throws,
+  // never blocks. Skips when there's no session_id (i.e. not navigating).
+  const logNavEvent = useCallback(async (eventType, opts = {}) => {
+    const sessionId = navSessionIdRef.current;
+    if (!sessionId) return;
+    const pos = opts.pos ?? lastGpsFixRef.current;
+    try {
+      await supabase.from('nav_events').insert({
+        session_id: sessionId,
+        user_id: sessionRef.current?.user?.id ?? null,
+        route_id: routeDataRef.current?.id ?? null,
+        event_type: eventType,
+        lat: opts.lat ?? pos?.lat ?? null,
+        lng: opts.lng ?? pos?.lng ?? null,
+        speed_mps: opts.speed_mps ?? pos?.speed_mps ?? null,
+        heading: opts.heading ?? pos?.heading ?? null,
+        metadata: opts.metadata ?? null,
+      });
+    } catch (e) {
+      // Swallow — telemetry must never break the ride
+      console.warn('[logNavEvent] insert failed:', e?.message);
+    }
+  }, []);
 
   const isMobile = useIsMobile();
 
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
   useEffect(() => { navModeRef.current = navMode; }, [navMode]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
 
   // Fetch the native app version + build number once on mount. On web we
   // skip the call (Capacitor.App.getInfo throws on non-native) and just
@@ -2433,6 +2466,13 @@ export default function App() {
     }
 
     setUserLocation({ lat, lng });
+    // Snapshot last GPS fix so timer-driven nav events (e.g. off-route trigger)
+    // can attach position even when pos isn't in their scope.
+    lastGpsFixRef.current = {
+      lat, lng,
+      speed_mps: typeof pos.coords.speed === 'number' && !isNaN(pos.coords.speed) ? pos.coords.speed : null,
+      heading:   typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading) ? pos.coords.heading : null,
+    };
 
     // ── Map matching ────────────────────────────────────────────────────
     // During navigation, project the raw GPS onto the route polyline. If
@@ -2578,6 +2618,10 @@ export default function App() {
           if (offRouteSinceRef.current === null) {
             offRouteSinceRef.current = Date.now();
             console.log(`[offroute] entered off-route at ${offDist.toFixed(1)}m, scheduling reroute in ${OFF_ROUTE_GRACE_MS}ms`);
+            logNavEvent('off_route', {
+              lat, lng,
+              metadata: { dist_off_route_m: Math.round(offDist) },
+            });
             // Schedule a check at exactly grace-period later so the reroute
             // fires even if no new GPS events arrive in the meantime.
             const offRouteCheck = () => {
@@ -2891,6 +2935,10 @@ export default function App() {
     const destination = buildDestination();
     if (!destination) {
       console.warn('[reroute] no destination available from intent, routeData, or waypoints — skipping');
+      logNavEvent('reroute_failed', {
+        lat, lng,
+        metadata: { error: 'no_destination_available' },
+      });
       return false;  // false = don't start the cooldown, let the next off-route try again
     }
 
@@ -2902,6 +2950,10 @@ export default function App() {
     console.log(`[reroute] start lat=${lat.toFixed(6)} lng=${lng.toFixed(6)}`,
                 'destination=', JSON.stringify(destination),
                 'oldFirst=', oldFirstCoord);
+    logNavEvent('reroute_request', {
+      lat, lng,
+      metadata: { destination, old_first_coord: oldFirstCoord },
+    });
 
     let success = false;
     try {
@@ -2928,6 +2980,26 @@ export default function App() {
       console.log('[reroute] done. newFirst=', newFirstCoord, 'newLength=', newLength,
                   'changed=', changed,
                   changed ? '' : '(server returned identical first 5 coords)');
+      // Distance from rider's current position to the new route's first coord —
+      // this is THE diagnostic for the "reroute starts somewhere else" bug.
+      const newFirstLat = newFirstCoord?.[1];
+      const newFirstLng = newFirstCoord?.[0];
+      const distFromRiderM = (newFirstLat != null && newFirstLng != null)
+        ? Math.round(haversineM(lat, lng, newFirstLat, newFirstLng))
+        : null;
+      logNavEvent('reroute_complete', {
+        lat, lng,
+        metadata: {
+          changed,
+          new_first_lat: newFirstLat ?? null,
+          new_first_lng: newFirstLng ?? null,
+          dist_from_rider_m: distFromRiderM,
+          new_length: newLength ?? null,
+          drive_minutes: routeDataRef.current?.drive_minutes ?? null,
+          raw_gh_minutes: routeDataRef.current?.raw_time_minutes ?? null,
+          total_minutes: routeDataRef.current?.total_minutes ?? null,
+        },
+      });
       if (changed) {
         // Reset turn-announcement debouncer so the rider hears the first
         // instruction on the new route instead of waiting for the next bucket.
@@ -2942,6 +3014,10 @@ export default function App() {
       }
     } catch (e) {
       console.warn('[reroute] failed:', e?.message || e);
+      logNavEvent('reroute_failed', {
+        lat, lng,
+        metadata: { error: String(e?.message || e) },
+      });
     } finally {
       reroutingRef.current = false;
       setRerouting(false);
@@ -2976,6 +3052,20 @@ export default function App() {
   function startNavigation() {
     setNavMode(true);
     navModeRef.current = true;
+    // Start a fresh nav session id so all events from this ride group together.
+    navSessionIdRef.current = crypto.randomUUID();
+    logNavEvent('nav_start', {
+      lat: userLocation?.lat,
+      lng: userLocation?.lng,
+      metadata: {
+        route_title: routeData?.title,
+        distance_mi: routeData?.distance_mi,
+        drive_minutes: routeData?.drive_minutes,
+        stop_minutes: routeData?.stop_minutes,
+        total_minutes: routeData?.total_minutes,
+        destination: routeData?.destination,
+      },
+    });
     lastAnnouncedRef.current = null;
     lastNavPosRef.current = null;
     // Clear any leftover off-route state from a previous nav session.
@@ -3033,6 +3123,8 @@ export default function App() {
   }
 
   function stopNavigation() {
+    logNavEvent('nav_stop', { metadata: { reason: 'manual' } });
+    navSessionIdRef.current = null;
     setNavMode(false);
     navModeRef.current = false;
     setNextTurn(null);
