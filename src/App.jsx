@@ -2966,6 +2966,9 @@ export default function App() {
       const reroutePayload = {
         origin: { lat, lng },
         destination,
+        // Tag for the route_logs linkage so the admin Ride Detail timeline
+        // can label this pipeline call as a reroute (not the initial query).
+        event_origin: 'reroute',
         // Drop any old anchor waypoints — they were chosen for the original
         // origin and would pull the new route back toward the old path.
         intermediate_waypoints: [],
@@ -3303,6 +3306,12 @@ export default function App() {
       const token = session?.access_token || SUPABASE_ANON_KEY;
       const body = { ...payload, user_id: session?.user?.id || null, variant: routeVariant };
       if (gps) { body.userLat = gps.lat; body.userLng = gps.lng; }
+      // Linkage so the admin portal can stitch route_logs ↔ nav_events for
+      // a unified ride timeline. nav_session_id is set whenever navigation
+      // is active (reroutes during a ride). event_origin is set by the
+      // caller for non-default flows; default it from payload shape.
+      if (navSessionIdRef.current) body.nav_session_id = navSessionIdRef.current;
+      if (!body.event_origin) body.event_origin = payload?.refine ? 'refine' : 'initial_query';
       console.log('[generateRoute] sending body keys=', Object.keys(body).join(','),
                   'userLat=', body.userLat, 'userLng=', body.userLng,
                   'destination=', JSON.stringify(body.destination));

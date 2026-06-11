@@ -1,4 +1,10 @@
-// generate-route edge function — v2.61
+// generate-route edge function — v2.62
+// v2.62: accept nav_session_id + event_origin from request body and log them
+//        into route_logs. Lets the admin portal join route_logs to nav_events
+//        on session_id so a ride session shows the full pipeline-call history
+//        inline with its nav lifecycle events. event_origin distinguishes
+//        'initial_query' vs 'refine' vs 'reroute' so the timeline can label
+//        each pipeline call.
 // v2.61: pre-snap GPS-sourced origin to the actual nearest road before sending
 //        to /route. GH's in-route snap is biased by snap_prevention and
 //        custom_model penalties (motorway exclusion + tier penalties) and can
@@ -1869,6 +1875,9 @@ Deno.serve(async (req) => {
     log.query = typeof rawBody.query === 'string' ? rawBody.query : null;
     log.user_lat = userLat ?? null;
     log.user_lng = userLng ?? null;
+    // v2.62: linkage to nav session so admin can join route_logs↔nav_events.
+    log.nav_session_id = typeof rawBody.nav_session_id === 'string' ? rawBody.nav_session_id : null;
+    log.event_origin   = typeof rawBody.event_origin   === 'string' ? rawBody.event_origin   : null;
 
     // v2.10: detect mode — new query, refinement, or raw RouteRequest
     let body: RouteRequest;

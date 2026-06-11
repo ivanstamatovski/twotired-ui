@@ -1477,7 +1477,7 @@ function fmtDuration(ms) {
   return h > 0 ? `${h}h ${mm}m` : `${mm}m`;
 }
 
-function openRideModal(idx) {
+async function openRideModal(idx) {
   const s = _rideSessions[idx];
   if (!s) return;
   document.getElementById('ride-modal-title').textContent = s.route_title || 'Ride session';
@@ -1486,10 +1486,34 @@ function openRideModal(idx) {
      s.off_route_count ? `${s.off_route_count} off-route` : null,
      s.reroute_count ? `${s.reroute_count} reroute${s.reroute_count > 1 ? 's' : ''}` : null,
     ].filter(Boolean).join(' · ');
-  document.getElementById('ride-modal-body').innerHTML = renderRideDetail(s);
+  // Loading placeholder while we fetch the linked pipeline calls — opens
+  // instantly so the click feels responsive.
+  document.getElementById('ride-modal-body').innerHTML =
+    '<div class="loading-row"><span class="spinner"></span>Loading pipeline calls…</div>';
   document.getElementById('ride-modal').style.display = 'flex';
   document.body.style.overflow = 'hidden';
-  setTimeout(() => initRideMap(s), 80);
+
+  // Pipeline calls tied to this session via the new nav_session_id column.
+  // Plus a probe for the "initial query" route_log: the most recent call
+  // from the same user_id in the few minutes before the session started,
+  // which is most often the planning prompt the rider issued before tapping
+  // Navigate. Best-effort — failures don't break the modal.
+  let linkedLogs = [];
+  let initialLog = null;
+  try {
+    linkedLogs = await sb(`/rest/v1/route_logs?select=*&nav_session_id=eq.${s.session_id}&order=created_at.asc`);
+  } catch (e) { console.warn('linked route_logs fetch failed', e?.message); }
+  try {
+    if (s.user_id) {
+      const startIso = new Date(new Date(s.started_at).getTime() - 5 * 60 * 1000).toISOString();
+      const endIso   = s.started_at;
+      const probe = await sb(`/rest/v1/route_logs?select=*&user_id=eq.${s.user_id}&nav_session_id=is.null&created_at=gte.${startIso}&created_at=lt.${endIso}&order=created_at.desc&limit=1`);
+      if (probe && probe[0]) initialLog = probe[0];
+    }
+  } catch (e) { console.warn('initial route_log probe failed', e?.message); }
+
+  document.getElementById('ride-modal-body').innerHTML = renderRideDetail(s, linkedLogs, initialLog);
+  setTimeout(() => initRideMap(s, linkedLogs, initialLog), 80);
 }
 
 function closeRideModal() {
@@ -1499,7 +1523,10 @@ function closeRideModal() {
   if (m) { m.remove(); delete _rideMaps['ride-map']; }
 }
 
-function renderRideDetail(s) {
+function renderRideDetail(s, linkedLogs, initialLog) {
+  linkedLogs = linkedLogs || [];
+  const pipelineCount = linkedLogs.length + (initialLog ? 1 : 0);
+
   const summary = `
     <div class="ride-summary-row">
       <div class="ride-summary-item"><div class="ride-summary-label">Started</div><div class="ride-summary-value">${fmtDateShort(s.started_at)}</div></div>
@@ -1508,6 +1535,7 @@ function renderRideDetail(s) {
       <div class="ride-summary-item"><div class="ride-summary-label">Off-route</div><div class="ride-summary-value">${s.off_route_count}</div></div>
       <div class="ride-summary-item"><div class="ride-summary-label">Reroutes</div><div class="ride-summary-value">${s.reroute_ok_count}/${s.reroute_count}${s.reroute_bad_count > 0 ? ` <span style="color:var(--red);font-size:11px">(${s.reroute_bad_count} failed)</span>` : ''}</div></div>
       <div class="ride-summary-item"><div class="ride-summary-label">Worst drift</div><div class="ride-summary-value">${s.worst_drift_m != null ? s.worst_drift_m + 'm' : '—'}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">Pipeline calls</div><div class="ride-summary-value">${pipelineCount}</div></div>
       <div class="ride-summary-item"><div class="ride-summary-label">User</div><div class="ride-summary-value" style="font-family:'SF Mono',Menlo,monospace;font-size:12px">${s.user_id ? s.user_id.slice(0, 12) : '—'}</div></div>
     </div>`;
 
@@ -1516,55 +1544,117 @@ function renderRideDetail(s) {
       ${Object.entries(EVENT_COLORS).map(([k, v]) =>
         `<span><span class="ride-legend-dot" style="background:${v}"></span>${k.replace(/_/g, ' ')}</span>`
       ).join('')}
+      <span><span class="ride-legend-dot" style="background:#a855f7"></span>pipeline call</span>
     </div>`;
 
-  const timeline = s.events.map(ev => {
-    const ts = fmtDateShort(ev.created_at).split(' ').slice(1).join(' '); // drop date prefix
-    const meta = ev.metadata || {};
-    let extra = '';
-    if (ev.event_type === 'off_route' && meta.dist_off_route_m != null) {
-      extra = `<span class="ride-event-key">drift:</span> ${meta.dist_off_route_m}m`;
-    } else if (ev.event_type === 'reroute_complete') {
-      const dist = meta.dist_from_rider_m;
-      const changed = meta.changed;
-      extra = `<span class="ride-event-key">changed:</span> ${changed ? 'yes' : 'no'}` +
-              (dist != null ? ` · <span class="ride-event-key">new start:</span> ${dist}m from rider` : '');
-    } else if (ev.event_type === 'nav_start' && meta.destination) {
-      extra = `→ ${escHtml(meta.destination)}`;
-    } else if (ev.event_type === 'reroute_failed' && meta.error) {
-      extra = `<span style="color:var(--red)">${escHtml(meta.error)}</span>`;
-    } else if (ev.event_type === 'reroute_request' && meta.destination) {
-      const d = meta.destination;
-      const destStr = typeof d === 'string' ? d : (d?.query || (d?.lat != null ? `${d.lat.toFixed(4)},${d.lng.toFixed(4)}` : ''));
-      extra = `→ ${escHtml(destStr)}`;
-    }
-    const coords = (ev.lat != null && ev.lng != null) ? `${ev.lat.toFixed(5)}, ${ev.lng.toFixed(5)}` : '—';
-    return `
-      <div class="ride-event">
-        <div class="ride-event-head">
-          <span class="ev-badge ev-${ev.event_type}">${ev.event_type.replace(/_/g, ' ')}</span>
-          <span class="ride-event-time">${ts}</span>
-        </div>
-        <div class="ride-event-meta">${coords}${extra ? ' · ' + extra : ''}</div>
-      </div>`;
+  // Merge nav events with linked route_logs into one chronological array.
+  // Each item is { ts, kind: 'event'|'pipeline', payload }.
+  const items = [];
+  for (const ev of s.events) items.push({ ts: new Date(ev.created_at), kind: 'event', payload: ev });
+  if (initialLog) items.push({ ts: new Date(initialLog.created_at), kind: 'pipeline', payload: initialLog, label: 'initial planning' });
+  for (const lg of linkedLogs) items.push({ ts: new Date(lg.created_at), kind: 'pipeline', payload: lg, label: lg.event_origin || 'pipeline' });
+  items.sort((a, b) => a.ts - b.ts);
+
+  const timeline = items.map((item, i) => {
+    if (item.kind === 'event') return renderTimelineEvent(item.payload);
+    return renderTimelinePipeline(item.payload, item.label, i);
   }).join('');
 
   return summary + `
     <div class="ride-detail-grid">
       <div class="ride-map" id="ride-map"></div>
-      <div class="ride-timeline">${timeline}</div>
+      <div class="ride-timeline">${timeline || '<div class="empty" style="padding:32px 0">No events</div>'}</div>
     </div>
     ${legend}`;
 }
 
-function initRideMap(s) {
+function renderTimelineEvent(ev) {
+  const ts = fmtDateShort(ev.created_at).split(' ').slice(1).join(' ');
+  const meta = ev.metadata || {};
+  let extra = '';
+  if (ev.event_type === 'off_route' && meta.dist_off_route_m != null) {
+    extra = `<span class="ride-event-key">drift:</span> ${meta.dist_off_route_m}m`;
+  } else if (ev.event_type === 'reroute_complete') {
+    const dist = meta.dist_from_rider_m;
+    const changed = meta.changed;
+    extra = `<span class="ride-event-key">changed:</span> ${changed ? 'yes' : 'no'}` +
+            (dist != null ? ` · <span class="ride-event-key">new start:</span> ${dist}m from rider` : '');
+  } else if (ev.event_type === 'nav_start' && meta.destination) {
+    extra = `→ ${escHtml(meta.destination)}`;
+  } else if (ev.event_type === 'reroute_failed' && meta.error) {
+    extra = `<span style="color:var(--red)">${escHtml(meta.error)}</span>`;
+  } else if (ev.event_type === 'reroute_request' && meta.destination) {
+    const d = meta.destination;
+    const destStr = typeof d === 'string' ? d : (d?.query || (d?.lat != null ? `${d.lat.toFixed(4)},${d.lng.toFixed(4)}` : ''));
+    extra = `→ ${escHtml(destStr)}`;
+  }
+  const coords = (ev.lat != null && ev.lng != null) ? `${ev.lat.toFixed(5)}, ${ev.lng.toFixed(5)}` : '—';
+  return `
+    <div class="ride-event">
+      <div class="ride-event-head">
+        <span class="ev-badge ev-${ev.event_type}">${ev.event_type.replace(/_/g, ' ')}</span>
+        <span class="ride-event-time">${ts}</span>
+      </div>
+      <div class="ride-event-meta">${coords}${extra ? ' · ' + extra : ''}</div>
+    </div>`;
+}
+
+function renderTimelinePipeline(log, label, i) {
+  const ts = fmtDateShort(log.created_at).split(' ').slice(1).join(' ');
+  // Find this row's index in _debugLogs so the Trace button can open the
+  // existing Route Debug modal. If not loaded yet, the button shows the id.
+  let traceIdx = -1;
+  if (typeof _debugLogs !== 'undefined' && Array.isArray(_debugLogs)) {
+    traceIdx = _debugLogs.findIndex(r => r.id === log.id);
+  }
+  const intentMs = log.parse_ms ?? '—';
+  const routeMs  = log.route_ms ?? '—';
+  const narrMs   = log.narrative_ms ?? '—';
+  const totalMs  = log.total_ms ?? '—';
+  const dest = log.resolved_dest?.query || log.raw_intent?.destination || '—';
+  const query = log.query || '(no query)';
+  const error = log.error;
+  const traceBtn = traceIdx >= 0
+    ? `<button class="expand-btn" onclick="openTraceFromRide(${traceIdx})">Trace ↗</button>`
+    : `<span style="color:var(--text-muted);font-size:10px">load Route Debug to view trace</span>`;
+  return `
+    <div class="ride-event" style="border-left:3px solid #a855f7">
+      <div class="ride-event-head">
+        <span class="ev-badge" style="background:rgba(168,85,247,.18);color:#a855f7">▸ ${label}</span>
+        <span class="ride-event-time">${ts}</span>
+      </div>
+      <div class="ride-event-meta">
+        <div style="color:var(--text);margin-bottom:3px">${escHtml(query)}</div>
+        <div>→ ${escHtml(dest)}</div>
+        ${error
+          ? `<div style="color:var(--red);margin-top:4px">error: ${escHtml(error)}</div>`
+          : `<div style="margin-top:4px"><span class="ride-event-key">intent</span> ${intentMs}ms · <span class="ride-event-key">GH</span> ${routeMs}ms · <span class="ride-event-key">narrative</span> ${narrMs}ms · <span class="ride-event-key">total</span> ${totalMs}ms</div>`}
+        <div style="margin-top:6px">${traceBtn}</div>
+      </div>
+    </div>`;
+}
+
+// Open the existing Route Debug trace modal from within a Ride session.
+// Closes the ride modal first so we don't stack two fullscreen overlays.
+function openTraceFromRide(traceIdx) {
+  closeRideModal();
+  setTimeout(() => openTraceModal(traceIdx), 50);
+}
+
+function initRideMap(s, linkedLogs, initialLog) {
+  linkedLogs = linkedLogs || [];
   const container = document.getElementById('ride-map');
   if (!container) return;
   if (_rideMaps['ride-map']) { _rideMaps['ride-map'].remove(); delete _rideMaps['ride-map']; }
 
   const points = s.events.filter(e => e.lat != null && e.lng != null);
-  if (points.length === 0) {
-    container.innerHTML = '<div class="empty" style="padding:60px 0">No GPS points recorded for this session</div>';
+  const allRouteLogs = [...(initialLog ? [initialLog] : []), ...linkedLogs];
+  const routeGeoms = allRouteLogs
+    .map(r => r.route_geometry)
+    .filter(g => g?.coordinates?.length > 1);
+
+  if (points.length === 0 && routeGeoms.length === 0) {
+    container.innerHTML = '<div class="empty" style="padding:60px 0">No GPS points or pipeline geometry recorded for this session</div>';
     return;
   }
 
@@ -1574,10 +1664,27 @@ function initRideMap(s) {
     attribution: '©OpenStreetMap ©CARTO', maxZoom: 19,
   }).addTo(map);
 
-  // Connect chronological GPS points with a faint trail
-  const trail = points.map(p => [p.lat, p.lng]);
-  if (trail.length > 1) {
-    L.polyline(trail, { color: '#444', weight: 2, opacity: 0.6, dashArray: '4 4' }).addTo(map);
+  const allBounds = [];
+
+  // Layer each generated route polyline. Color steps through a palette so
+  // multiple reroutes don't blur into one orange smear. The first is the
+  // initial planning route (if found); the rest are reroutes in order.
+  const ROUTE_PALETTE = ['#f97316', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#ec4899', '#06b6d4', '#84cc16'];
+  routeGeoms.forEach((geom, idx) => {
+    const lls = geom.coordinates.map(c => [c[1], c[0]]);
+    L.polyline(lls, {
+      color: ROUTE_PALETTE[idx % ROUTE_PALETTE.length],
+      weight: 3.5,
+      opacity: 0.85,
+    }).bindPopup(`<b>Route #${idx + 1}</b><br>${idx === 0 && initialLog ? 'initial planning' : 'reroute'}`).addTo(map);
+    allBounds.push(...lls);
+  });
+
+  // Faint dashed GPS trail under the route polylines
+  if (points.length > 1) {
+    const trail = points.map(p => [p.lat, p.lng]);
+    L.polyline(trail, { color: '#888', weight: 2, opacity: 0.7, dashArray: '4 4' }).addTo(map);
+    allBounds.push(...trail);
   }
 
   // Markers per event with type-colored dots + popup
@@ -1591,9 +1698,11 @@ function initRideMap(s) {
     }).bindPopup(popup).addTo(map);
   });
 
-  // Fit bounds to all points
-  const bounds = L.latLngBounds(trail);
-  map.fitBounds(bounds, { padding: [30, 30] });
+  if (allBounds.length) {
+    map.fitBounds(L.latLngBounds(allBounds), { padding: [30, 30] });
+  } else {
+    map.setView([40.9, -74.2], 9);
+  }
 }
 
 // ── Announcements ────────────────────────────────────────────────────────────
