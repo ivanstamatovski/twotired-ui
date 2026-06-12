@@ -1,4 +1,11 @@
-// generate-route edge function — v2.66
+// generate-route edge function — v2.67
+// v2.67: log the body sent to GraphHopper per leg. New log.gh_request field
+//        (array of {label, request} — labels are 'escape'+'scenic' for two-
+//        phase routes, 'main' for single-call). custom_model.areas is
+//        truncated to id-list (polygons are reusable and would bloat each
+//        row). Lets the admin Route Debug detail show what the AI actually
+//        asked GH to compute. PAIRS WITH the route_logs.gh_request jsonb
+//        migration in supabase/migrations/2026-06-11_route_logs_gh_request.sql.
 // v2.66: isInNYC now uses the same hand-drawn 5-borough polygon GraphHopper
 //        uses for the `in_nyc` custom_model area (/home/ivan/graphhopper/
 //        nyc.json on Molly). Previously the edge function had its own wide
@@ -1215,6 +1222,41 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
     details: path.details || {},
     geometry: path.points, // GeoJSON LineString, points_encoded: false
     instructions: path.instructions || [],
+    // v2.67: snapshot of the body actually sent to GH, for admin Route Debug
+    // visibility. Areas are stripped to id list (each polygon is up to a few
+    // KB and they're reusable across requests; we just need to know WHICH
+    // areas were active, not their geometry). points + custom_model.priority
+    // + headings are what actually drive the routing decision.
+    gh_request: summarizeGhBody(body),
+  };
+}
+
+// Snapshot the body sent to GH for logging. Strips polygon geometries from
+// custom_model.areas (kept as id list) so we don't bloat route_logs with
+// the same FeatureCollection on every request.
+function summarizeGhBody(body: any): any {
+  const cm = body?.custom_model;
+  let summarizedModel: any = cm;
+  if (cm) {
+    summarizedModel = {
+      speed: cm.speed,
+      priority: cm.priority,
+      distance_influence: cm.distance_influence,
+      areas: cm.areas?.features
+        ? cm.areas.features.map((f: any) => f.id).filter(Boolean)
+        : undefined,
+    };
+  }
+  return {
+    profile: body?.profile,
+    points: body?.points,
+    'ch.disable': body?.['ch.disable'],
+    snap_prevention: body?.snap_prevention,
+    instructions: body?.instructions,
+    details: body?.details,
+    heading: body?.heading,
+    heading_penalty: body?.heading_penalty,
+    custom_model: summarizedModel,
   };
 }
 
@@ -1806,6 +1848,11 @@ function mergeRoutes(leg1: any, leg2: any): any {
     raw_time_minutes: (leg1.raw_time_minutes ?? 0) + (leg2.raw_time_minutes ?? 0),
     geometry: { type: 'LineString', coordinates: [...coords1, ...coords2] },
     instructions: [...leg1.instructions, ...leg2.instructions],
+    // v2.67: carry both leg requests so the admin can see escape + scenic separately
+    gh_request_legs: [
+      { label: 'escape', request: leg1.gh_request },
+      { label: 'scenic', request: leg2.gh_request },
+    ],
   };
 }
 
@@ -2162,6 +2209,15 @@ Deno.serve(async (req) => {
       waypoint_count: allWaypoints.length,
     };
     log.route_result = { distance_miles: route.distance_miles, time_minutes: route.time_minutes };
+    // v2.67: capture the body(s) we sent to GraphHopper. Two-phase routes
+    // come back from mergeRoutes with gh_request_legs (escape + scenic);
+    // single-call routes come back with gh_request directly. Either way,
+    // normalise to an array of {label, request} so the admin can iterate.
+    if (route.gh_request_legs) {
+      log.gh_request = route.gh_request_legs;
+    } else if (route.gh_request) {
+      log.gh_request = [{ label: 'main', request: route.gh_request }];
+    }
     // v2.53: store simplified geometry (≤100 pts) for Route Debug map in admin portal
     if (route.geometry?.coordinates?.length > 1) {
       const coords: [number, number][] = route.geometry.coordinates;

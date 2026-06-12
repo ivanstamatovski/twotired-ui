@@ -1173,6 +1173,55 @@ function renderDebugDetail(r, idx) {
         <span><span class="legend-swatch" style="background:rgba(34,197,94,.25);border:1px solid #22c55e"></span>Tier A (preferred)</span>
         <span><span class="legend-swatch" style="background:rgba(239,68,68,.3);border:1px solid #ef4444"></span>Tier C (penalized)</span>
       </div>
+    </div>
+
+    ${renderGhRequest(r.gh_request)}`;
+}
+
+// Render the GraphHopper request bodies (v2.67). Two-phase routes have two
+// legs (escape + scenic); single-call routes have one. Each leg displays
+// summary stats up top + the full JSON in a <details> for the curious.
+function renderGhRequest(legs) {
+  if (!Array.isArray(legs) || legs.length === 0) return '';
+  return `
+    <div style="margin-top:12px">
+      <div class="phase-title" style="margin-bottom:6px">⇉ GraphHopper Request <span style="font-weight:400;color:var(--text-muted)">${legs.length === 1 ? '1 leg' : legs.length + ' legs'}</span></div>
+      ${legs.map((leg, i) => renderGhRequestLeg(leg, i)).join('')}
+    </div>`;
+}
+
+function renderGhRequestLeg(leg, i) {
+  const req = leg.request || {};
+  const label = leg.label || `leg ${i + 1}`;
+  const priority = req.custom_model?.priority || [];
+  const areas = req.custom_model?.areas || [];
+  const pointsCount = req.points?.length ?? 0;
+  const heading = Array.isArray(req.heading)
+    ? req.heading.filter(h => h != null && h !== -1).length + ' headings'
+    : 'no headings';
+  return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:8px">
+        <span style="background:rgba(168,85,247,.18);color:#a855f7;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px">${escHtml(label)}</span>
+        <span style="color:var(--text-muted);font-size:12px">profile <b style="color:var(--text)">${escHtml(req.profile || '—')}</b></span>
+        <span style="color:var(--text-muted);font-size:12px">${pointsCount} points</span>
+        <span style="color:var(--text-muted);font-size:12px">${heading}</span>
+        ${req['ch.disable'] ? '<span style="color:var(--text-muted);font-size:12px">LM mode</span>' : ''}
+      </div>
+      ${priority.length ? `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">priority rules (${priority.length}):</div>
+        <ul style="margin:0 0 8px 18px;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--text-dim);line-height:1.6">
+          ${priority.slice(0, 30).map(p => `<li>${escHtml(p.if || '')} <span style="color:var(--text-muted)">→</span> ×${escHtml(p.multiply_by || '')}</li>`).join('')}
+          ${priority.length > 30 ? `<li style="color:var(--text-muted)">… +${priority.length - 30} more</li>` : ''}
+        </ul>
+      ` : ''}
+      ${areas.length ? `
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">active areas (${areas.length}): <span style="color:var(--text-dim);font-family:'SF Mono',Menlo,monospace">${areas.map(a => escHtml(String(a))).join(', ')}</span></div>
+      ` : ''}
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;color:var(--text-muted);font-size:11px">Full JSON</summary>
+        <pre style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-top:6px;font-size:11px;color:var(--text-dim);overflow:auto;max-height:400px;white-space:pre-wrap">${escHtml(JSON.stringify(req, null, 2))}</pre>
+      </details>
     </div>`;
 }
 
