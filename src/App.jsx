@@ -2428,13 +2428,24 @@ export default function App() {
       // the next GPS tick (instead of trying to setLngLat on a detached DOM).
       userMarkerRef.current = null;
     });
-    // Diagnostic — confirm the context-loss path is what's firing in the wild.
+    // WebGL context loss/restore. MapLibre USUALLY re-fires style.load when
+    // the context comes back, which the listener above handles. But on iOS
+    // and some browsers there's a window where the context is restored but
+    // style.load hasn't fired yet — the route layers stay invisible until
+    // the next visibility-change tick. Hook this event directly so the
+    // redraw is immediate.
     const mapCanvas = map.getCanvas();
     mapCanvas.addEventListener('webglcontextlost', () => {
       console.log('[map] WebGL context lost');
     }, { passive: true });
     mapCanvas.addEventListener('webglcontextrestored', () => {
-      console.log('[map] WebGL context restored');
+      console.log('[map] WebGL context restored — redrawing route');
+      const r = routeDataRef.current;
+      if (r?.geometry) {
+        try { drawRouteOnMap(r); }
+        catch (e) { console.warn('[webglcontextrestored] route redraw:', e?.message || e); }
+      }
+      userMarkerRef.current = null; // recreate on next GPS tick
     }, { passive: true });
 
     mapRef.current = map;
@@ -3222,22 +3233,25 @@ export default function App() {
   // ── Recover navigation after app is backgrounded and foregrounded ─────────
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState !== 'visible' || !navModeRef.current) return;
+      if (document.visibilityState !== 'visible') return;
+      // Re-draw the route polyline whenever we come back to visible. The
+      // WebGL surface gets reclaimed by the OS/browser during backgrounding
+      // and route-line / route-casing layers vanish — even when nav isn't
+      // active. Calling drawRouteOnMap with the current route re-adds the
+      // source + layers. Doing this BEFORE the navMode-only branch below
+      // covers the planned-but-not-navigating case too.
+      const activeRoute = routeDataRef.current;
+      if (activeRoute?.geometry && mapRef.current) {
+        try { drawRouteOnMap(activeRoute); }
+        catch (e) { console.warn('[foreground] failed to redraw route:', e?.message || e); }
+      }
+      if (!navModeRef.current) return;
       // Re-acquire wake lock (it is automatically released when backgrounded)
       navigator.wakeLock?.request('screen')
         .then(lock => { wakeLockRef.current = lock; })
         .catch(() => {});
       // Reset speech synthesis — iOS leaves it in a broken state after backgrounding
       if (window.speechSynthesis) window.speechSynthesis.cancel();
-      // Re-draw the route polyline: when iOS reclaims the WebGL surface during
-      // backgrounding the route-line and route-casing layers vanish, leaving
-      // navigation running over a map with no visible line. Calling
-      // drawRouteOnMap with the current route re-adds the source + layers.
-      const activeRoute = routeDataRef.current;
-      if (activeRoute?.geometry && mapRef.current) {
-        try { drawRouteOnMap(activeRoute); }
-        catch (e) { console.warn('[foreground] failed to redraw route:', e?.message || e); }
-      }
       // Trigger a fresh GPS fix and re-centre the map
       if (navigator.geolocation && mapRef.current) {
         navigator.geolocation.getCurrentPosition(
