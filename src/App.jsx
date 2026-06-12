@@ -3071,8 +3071,11 @@ export default function App() {
   function startNavigation() {
     setNavMode(true);
     navModeRef.current = true;
-    // Start a fresh nav session id so all events from this ride group together.
-    navSessionIdRef.current = crypto.randomUUID();
+    // Reuse the session_id minted by submitQuery so the initial planning
+    // route_log and the nav events are tied together. Fallback to a fresh
+    // UUID only if no session exists (e.g. nav started on a route restored
+    // from localStorage without going through a generateRoute call).
+    if (!navSessionIdRef.current) navSessionIdRef.current = crypto.randomUUID();
     logNavEvent('nav_start', {
       lat: userLocation?.lat,
       lng: userLocation?.lng,
@@ -3414,6 +3417,12 @@ export default function App() {
     if (!text || loading) return;
     // Stop voice recognition so it doesn't keep appending to the next query.
     if (voice.listening) voice.stop();
+    // Fresh query → mint a new session_id so the initial planning route_log
+    // AND any nav events that follow share the same session arc. Without
+    // this, sessions where the rider rode the route perfectly (no reroutes)
+    // had no route_log linked — the admin map showed nothing because the
+    // initial-route probe only catches calls within a 5-min window.
+    navSessionIdRef.current = crypto.randomUUID();
     // Keep the captured prompt visible in the input pill while we plan — the
     // rider may not have been watching when the words appeared. We clear it
     // in generateRoute's `finally` once planning is done.
