@@ -1,4 +1,11 @@
-// generate-route edge function — v2.65
+// generate-route edge function — v2.66
+// v2.66: isInNYC now uses the same hand-drawn 5-borough polygon GraphHopper
+//        uses for the `in_nyc` custom_model area (/home/ivan/graphhopper/
+//        nyc.json on Molly). Previously the edge function had its own wide
+//        bounding box that false-positived on east-NJ towns (Bloomfield,
+//        Newark, Clifton, Paterson, Jersey City), triggering the GWB
+//        two-phase escape for north-bound NJ rides → routes crossed the
+//        Hudson and came back. Single source of truth now.
 // v2.65: removed the 'scoring' A/B variant entirely. Was added in v2.50 to
 //        compare joy-areas-only routing against the full custom model; in
 //        practice scoring stripped out road-class rules, corridor logic,
@@ -1803,17 +1810,85 @@ function mergeRoutes(leg1: any, leg2: any): any {
 }
 
 // ── NYC 5-borough boundary check ──────────────────────────────────────────────
-// Returns true if the point is inside the approximate bounding box of all 5 NYC boroughs.
-// Manhattan, Brooklyn, Queens, Bronx, Staten Island are all "the city" for routing purposes.
-// Used to trigger two-phase routing: car profile (highway-preferring) to the first boundary
-// intermediate, then motorcycle profile for the scenic leg beyond the city.
-// Why: GH motorcycle profile penalises motorways but also deprioritises TRUNK/PRIMARY slightly,
-// so from Queens it routes via Queensboro Bridge → Manhattan surface streets → GWB instead
-// of via the Bronx expressways → GWB. Car profile has no scenic penalties → picks highways.
+// Uses the exact polygon Ivan hand-drew in geojson.io on 2026-06-08 — the same
+// shape that's loaded into GraphHopper as `in_nyc` on Molly (custom_model rules
+// for road-class adjustments inside the city). Keeping both definitions in sync
+// is the right behaviour: the edge function decides "do I need NYC two-phase
+// escape routing?" using the same shape GH uses to apply in-NYC road weights.
+//
+// Source of truth: /home/ivan/graphhopper/nyc.json on Molly. When that
+// polygon is edited, this constant must be updated too. (Future cleanup: read
+// it from Supabase or fetch from Molly at cold start.)
+//
+// Coordinates are [longitude, latitude] pairs forming a closed ring.
+// Pulled verbatim from /home/ivan/graphhopper/nyc.json on 2026-06-11. If you
+// edit that file (redraw the polygon), update this constant too.
+const NYC_POLYGON_COORDS: number[][] = [
+  [-73.7977454, 40.8220611],
+  [-73.7893238, 40.7968829],
+  [-73.7832442, 40.7476199],
+  [-73.7247680, 40.6265338],
+  [-73.8338487, 40.5479661],
+  [-74.1622152, 40.4975318],
+  [-74.2533032, 40.4906904],
+  [-74.2557920, 40.5128308],
+  [-74.2465785, 40.5218362],
+  [-74.2482237, 40.5348420],
+  [-74.2515143, 40.5450947],
+  [-74.2396683, 40.5540958],
+  [-74.2284804, 40.5583459],
+  [-74.2176216, 40.5575959],
+  [-74.2100533, 40.5703447],
+  [-74.2070918, 40.5868396],
+  [-74.2041303, 40.5933365],
+  [-74.2001816, 40.5973343],
+  [-74.1993981, 40.6014041],
+  [-74.2040281, 40.6072988],
+  [-74.2029596, 40.6167617],
+  [-74.2023688, 40.6312749],
+  [-74.1877500, 40.6442138],
+  [-74.1690861, 40.6489029],
+  [-74.1460677, 40.6426418],
+  [-74.1187066, 40.6439600],
+  [-74.1043746, 40.6485734],
+  [-74.0930827, 40.6482438],
+  [-74.0414007, 40.6683413],
+  [-74.0235943, 40.7157604],
+  [-74.0104414, 40.7614454],
+  [-73.9283144, 40.8828998],
+  [-73.8945943, 40.8876707],
+  [-73.8152467, 40.8534236],
+  [-73.7977454, 40.8220611],
+];
+
+// Ray-casting point-in-polygon test. Assumes polygon is a simple (non-self-
+// intersecting) closed ring of [lng, lat] points. Returns true if the point
+// is inside (or on the edge).
+function pointInPolygon(ll: LatLng, polygon: number[][]): boolean {
+  if (polygon.length < 3) return false;
+  const x = ll.lng, y = ll.lat;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 function isInNYC(ll: LatLng): boolean {
-  // Bounding box covers all 5 boroughs with a small margin.
-  // Eastern limit -73.70 clips to just past JFK; western -74.27 covers western SI tip.
-  return ll.lat >= 40.49 && ll.lat <= 40.92 && ll.lng >= -74.27 && ll.lng <= -73.70;
+  if (NYC_POLYGON_COORDS.length >= 3) {
+    return pointInPolygon(ll, NYC_POLYGON_COORDS);
+  }
+  // Fallback while NYC_POLYGON_COORDS is empty — use the tightened bounding
+  // box (east of Hudson for main boroughs, SI carve-out south of 40.65) so
+  // east-NJ origins don't trigger the GWB-and-back escape.
+  if (ll.lat < 40.49 || ll.lat > 40.92) return false;
+  if (ll.lng < -74.26 || ll.lng > -73.70) return false;
+  if (ll.lat < 40.65 && ll.lng >= -74.26 && ll.lng <= -74.05) return true;
+  return ll.lng >= -74.02;
 }
 
 // ── Pipeline logger (v2.45) ───────────────────────────────────────────────────
