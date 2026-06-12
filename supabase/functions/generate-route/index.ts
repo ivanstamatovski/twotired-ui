@@ -1,4 +1,10 @@
-// generate-route edge function — v2.67
+// generate-route edge function — v2.68
+// v2.68: pickExitPoint now returns null when BOTH origin and destination are
+//        inside NYC. Before, an intra-NYC trip (Brooklyn → Brooklyn) bearing
+//        SW would pick Goethals Bridge as exit and route via Staten Island —
+//        16-reroute, 30-mi detour for a 2-mi trip. Real ride hit this on
+//        2026-06-11 (route log "Route to Wegmans, Brooklyn, NY", 18 off-
+//        routes, all reroutes converged on the same monster polyline).
 // v2.67: log the body sent to GraphHopper per leg. New log.gh_request field
 //        (array of {label, request} — labels are 'escape'+'scenic' for two-
 //        phase routes, 'main' for single-call). custom_model.areas is
@@ -2137,6 +2143,13 @@ Deno.serve(async (req) => {
       // Without those rules active, expect SW routes from Queens/Brooklyn to
       // cut through Manhattan — that's the Molly Phase 2 work, not a code bug.
       if (!isInNYC(originLL) || curviness < 2) return null;
+      // v2.67-hotfix (2026-06-11): when destination is ALSO inside NYC, the
+      // rider doesn't need to "escape" — they're staying in the city. Without
+      // this, an intra-NYC trip (e.g. Boerum Hill → Wegmans Brooklyn, 2 mi)
+      // picks Goethals Bridge as exit and routes 30+ mi via Staten Island
+      // and back. Caught from a real ride log: 16 reroutes in 8 min on the
+      // same monster detour.
+      if (isInNYC(destinationLL)) return null;
       const override = getEscapeOverride(originLL, destinationLL, reqCorrections);
       if (override) return override;
       if (intermediateWPs.length > 0) return intermediateWPs[0];
