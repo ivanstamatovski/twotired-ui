@@ -1594,6 +1594,8 @@ function renderRideDetail(s, linkedLogs, initialLog) {
         `<span><span class="ride-legend-dot" style="background:${v}"></span>${k.replace(/_/g, ' ')}</span>`
       ).join('')}
       <span><span class="ride-legend-dot" style="background:#a855f7"></span>pipeline call</span>
+      <span><span class="ride-legend-dot" style="background:#3b82f6"></span>route leg — escape</span>
+      <span><span class="ride-legend-dot" style="background:#f97316"></span>route leg — scenic</span>
     </div>`;
 
   // Merge nav events with linked route_logs into one chronological array.
@@ -1698,11 +1700,11 @@ function initRideMap(s, linkedLogs, initialLog) {
 
   const points = s.events.filter(e => e.lat != null && e.lng != null);
   const allRouteLogs = [...(initialLog ? [initialLog] : []), ...linkedLogs];
-  const routeGeoms = allRouteLogs
-    .map(r => r.route_geometry)
-    .filter(g => g?.coordinates?.length > 1);
+  const hasAnyGeom = allRouteLogs.some(r =>
+    r.route_legs?.length > 0 || r.route_geometry?.coordinates?.length > 1
+  );
 
-  if (points.length === 0 && routeGeoms.length === 0) {
+  if (points.length === 0 && !hasAnyGeom) {
     container.innerHTML = '<div class="empty" style="padding:60px 0">No GPS points or pipeline geometry recorded for this session</div>';
     return;
   }
@@ -1715,18 +1717,42 @@ function initRideMap(s, linkedLogs, initialLog) {
 
   const allBounds = [];
 
-  // Layer each generated route polyline. Color steps through a palette so
-  // multiple reroutes don't blur into one orange smear. The first is the
-  // initial planning route (if found); the rest are reroutes in order.
+  // Color one route's legs distinctly: escape (city exit, fast/highway) is
+  // muted blue; scenic (the fun part) is bright orange. For multi-route
+  // sessions (initial + reroutes), apply this scheme to each route's legs.
+  // Palette is used as the FALLBACK color for single-call routes and unknown
+  // labels so reroutes still get visually distinct lines.
+  const LEG_COLORS = { escape: '#3b82f6', scenic: '#f97316', main: '#f97316' };
   const ROUTE_PALETTE = ['#f97316', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#ec4899', '#06b6d4', '#84cc16'];
-  routeGeoms.forEach((geom, idx) => {
-    const lls = geom.coordinates.map(c => [c[1], c[0]]);
-    L.polyline(lls, {
-      color: ROUTE_PALETTE[idx % ROUTE_PALETTE.length],
-      weight: 3.5,
-      opacity: 0.85,
-    }).bindPopup(`<b>Route #${idx + 1}</b><br>${idx === 0 && initialLog ? 'initial planning' : 'reroute'}`).addTo(map);
-    allBounds.push(...lls);
+
+  allRouteLogs.forEach((rlog, idx) => {
+    const routeLabel = idx === 0 && initialLog ? 'initial planning' : 'reroute';
+    const legs = rlog.route_legs;
+    if (Array.isArray(legs) && legs.length > 0) {
+      // Two-phase (or future multi-leg) route — color each leg distinctly
+      legs.forEach((leg) => {
+        const coords = leg.geometry?.coordinates;
+        if (!Array.isArray(coords) || coords.length < 2) return;
+        const lls = coords.map(c => [c[1], c[0]]);
+        const color = LEG_COLORS[leg.label] || ROUTE_PALETTE[idx % ROUTE_PALETTE.length];
+        L.polyline(lls, { color, weight: 3.5, opacity: 0.85 })
+          .bindPopup(`<b>Route #${idx + 1}</b> · ${routeLabel}<br>leg: ${escHtml(leg.label || '—')}`)
+          .addTo(map);
+        allBounds.push(...lls);
+      });
+    } else {
+      // Single-call route — one color from the palette
+      const geom = rlog.route_geometry;
+      if (geom?.coordinates?.length > 1) {
+        const lls = geom.coordinates.map(c => [c[1], c[0]]);
+        L.polyline(lls, {
+          color: ROUTE_PALETTE[idx % ROUTE_PALETTE.length],
+          weight: 3.5,
+          opacity: 0.85,
+        }).bindPopup(`<b>Route #${idx + 1}</b><br>${routeLabel}`).addTo(map);
+        allBounds.push(...lls);
+      }
+    }
   });
 
   // Faint dashed GPS trail under the route polylines

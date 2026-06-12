@@ -1,4 +1,10 @@
-// generate-route edge function — v2.68
+// generate-route edge function — v2.69
+// v2.69: per-leg geometries on two-phase routes. mergeRoutes carries both
+//        leg geometries through; main handler simplifies each to ≤50 pts
+//        and stores in new log.route_legs jsonb column. Admin map can now
+//        color the escape leg (city exit) distinctly from the scenic leg
+//        (beyond NYC) — answers Ivan's "I thought it'd show two tiers."
+//        PAIRS WITH supabase/migrations/2026-06-11_route_logs_route_legs.sql.
 // v2.68: two fixes for the Wegmans Brooklyn disaster (intra-NYC 2-mi trip
 //        routed 30 mi via Staten Island, 16 reroutes in 8 min):
 //        1. pickExitPoint returns null when BOTH origin AND destination are
@@ -1863,7 +1869,24 @@ function mergeRoutes(leg1: any, leg2: any): any {
       { label: 'escape', request: leg1.gh_request },
       { label: 'scenic', request: leg2.gh_request },
     ],
+    // v2.69: carry per-leg geometries so the admin can color them distinctly
+    leg_geometries: [
+      { label: 'escape', geometry: leg1.geometry },
+      { label: 'scenic', geometry: leg2.geometry },
+    ],
   };
+}
+
+// Reduce a LineString's coordinate count to ≤ maxPoints by even-stepped
+// sampling. Always preserves first and last points so the start/end markers
+// match the rendered polyline exactly.
+function simplifyLineString(geom: any, maxPoints: number): any {
+  const coords = geom?.coordinates;
+  if (!Array.isArray(coords) || coords.length <= maxPoints) return geom;
+  const step = Math.ceil(coords.length / maxPoints);
+  const sampled = coords.filter((_: any, i: number) => i % step === 0);
+  if (sampled[sampled.length - 1] !== coords[coords.length - 1]) sampled.push(coords[coords.length - 1]);
+  return { type: 'LineString', coordinates: sampled };
 }
 
 // ── NYC 5-borough boundary check ──────────────────────────────────────────────
@@ -2255,6 +2278,16 @@ Deno.serve(async (req) => {
       log.gh_request = route.gh_request_legs;
     } else if (route.gh_request) {
       log.gh_request = [{ label: 'main', request: route.gh_request }];
+    }
+    // v2.69: per-leg simplified geometries so the admin can color the escape
+    // and scenic legs distinctly. Sampled to ≤50 pts each (≤100 total — same
+    // budget as the existing single route_geometry). Single-call routes leave
+    // route_legs null and the admin falls back to route_geometry.
+    if (route.leg_geometries) {
+      log.route_legs = route.leg_geometries.map((leg: any) => ({
+        label: leg.label,
+        geometry: simplifyLineString(leg.geometry, 50),
+      }));
     }
     // v2.53: store simplified geometry (≤100 pts) for Route Debug map in admin portal
     if (route.geometry?.coordinates?.length > 1) {
