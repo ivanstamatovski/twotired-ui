@@ -1,10 +1,14 @@
 // generate-route edge function — v2.68
-// v2.68: pickExitPoint now returns null when BOTH origin and destination are
-//        inside NYC. Before, an intra-NYC trip (Brooklyn → Brooklyn) bearing
-//        SW would pick Goethals Bridge as exit and route via Staten Island —
-//        16-reroute, 30-mi detour for a 2-mi trip. Real ride hit this on
-//        2026-06-11 (route log "Route to Wegmans, Brooklyn, NY", 18 off-
-//        routes, all reroutes converged on the same monster polyline).
+// v2.68: two fixes for the Wegmans Brooklyn disaster (intra-NYC 2-mi trip
+//        routed 30 mi via Staten Island, 16 reroutes in 8 min):
+//        1. pickExitPoint returns null when BOTH origin AND destination are
+//           inside NYC — no escape needed if you're staying in the city.
+//        2. curviness autotune: short intra-NYC trips (< 5 mi straight-line)
+//           force curviness=1 (no road-class scenic penalties). Stashed in
+//           log.routing_config.curviness_autotune so admin can see the swap.
+//        Both apply only when origin AND destination are in the NYC polygon —
+//        intra-NYC routes still get curviness 2/3 if longer than 5 mi, and
+//        cross-NYC routes (NYC → Bear Mountain) are unaffected.
 // v2.67: log the body sent to GraphHopper per leg. New log.gh_request field
 //        (array of {label, request} — labels are 'escape'+'scenic' for two-
 //        phase routes, 'main' for single-call). custom_model.areas is
@@ -2104,8 +2108,28 @@ Deno.serve(async (req) => {
 
     // Build waypoint chain
     const stopLLs: LatLng[] = stops.map(s => ({ lat: s.lat, lng: s.lng }));
-    const curviness = (body.curviness ?? 2) as 1 | 2 | 3;
+    let curviness = (body.curviness ?? 2) as 1 | 2 | 3;
+    let curvinessAutotune: { from: number; to: number; reason: string; straight_line_mi: number } | null = null;
     const corridor = body.road_corridor || undefined;
+
+    // v2.68: short intra-NYC trips don't have a meaningful "scenic" option —
+    // it's all grid streets. Force curviness=1 so the MOTORWAY/TRUNK/PRIMARY
+    // penalties of curviness 2/3 don't produce absurd routing (the Wegmans
+    // Brooklyn ride hit this 2026-06-11). Threshold 5 mi covers most
+    // borough-internal trips without affecting longer urban→suburb rides.
+    if (curviness > 1) {
+      const straightLineMi = haversineKm(originLL, destinationLL) * 0.621371;
+      if (straightLineMi < 5 && isInNYC(originLL) && isInNYC(destinationLL)) {
+        console.log(`[curviness-autotune] short intra-NYC (${straightLineMi.toFixed(1)} mi) → forcing curviness 1 from ${curviness}`);
+        curvinessAutotune = {
+          from: curviness,
+          to: 1,
+          reason: 'short_intra_nyc',
+          straight_line_mi: Math.round(straightLineMi * 10) / 10,
+        };
+        curviness = 1;
+      }
+    }
 
     let route: any;
     let allWaypoints: LatLng[];
@@ -2218,6 +2242,7 @@ Deno.serve(async (req) => {
     log.routing_config = {
       profile: 'twotired',
       curviness,
+      curviness_autotune: curvinessAutotune,
       corridor: corridor ?? null,
       waypoint_count: allWaypoints.length,
     };
