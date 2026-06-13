@@ -252,6 +252,11 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .task-modal-delete:hover{background:rgba(239,68,68,.12);border-color:var(--red)}
 
 /* ── Ride Logs ── */
+.pipeline-section{margin-bottom:12px}
+.pipeline-section:last-child{margin-bottom:0}
+.pipeline-section-title{font-size:11px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.pipeline-kv{color:var(--text-dim);font-size:12px;line-height:1.6;font-family:'SF Mono',Menlo,monospace}
+.pipeline-k{color:var(--text-muted);font-weight:600}
 .ride-session-row{cursor:pointer}
 .ride-session-row:hover td{background:rgba(255,255,255,.04)}
 .ride-detail-grid{display:grid;grid-template-columns:1fr 360px;gap:16px;height:calc(100vh - 110px)}
@@ -398,20 +403,12 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <span class="nav-icon">👥</span> Users
         <span class="nav-badge" id="badge-users">—</span>
       </button>
-      <button class="nav-item" onclick="showPanel('routes',this)">
-        <span class="nav-icon">🏍️</span> Routes
-        <span class="nav-badge" id="badge-routes">—</span>
-      </button>
       <button class="nav-item" onclick="showPanel('rulebook',this)">
         <span class="nav-icon">📋</span> Rulebook
         <span class="nav-badge" id="badge-rulebook">—</span>
       </button>
-      <button class="nav-item" onclick="showPanel('debug',this)">
-        <span class="nav-icon">🔍</span> Route Debug
-        <span class="nav-badge" id="badge-debug">—</span>
-      </button>
       <button class="nav-item" onclick="showPanel('rides',this)">
-        <span class="nav-icon">📍</span> Ride Logs
+        <span class="nav-icon">🏍️</span> Rides
         <span class="nav-badge" id="badge-rides">—</span>
       </button>
       <button class="nav-item" onclick="showPanel('tasks',this)">
@@ -517,22 +514,38 @@ tr:hover td{background:rgba(255,255,255,.02)}
         </div>
       </div>
 
-      <!-- ── Ride Logs Panel ── -->
+      <!-- ── Rides Panel ── -->
       <div class="panel" id="panel-rides">
         <div class="stats-row" id="rides-stats"></div>
         <div class="section-header">
-          <div class="section-title">Navigation sessions</div>
+          <div class="section-title">Rides</div>
           <button class="refresh-btn" onclick="loadRideSessions()">↻ Refresh</button>
+        </div>
+        <div class="tasks-filters">
+          <div class="tasks-filter-group">
+            <span class="tasks-filter-label">Show</span>
+            <button class="task-chip task-chip--active" data-rfilter="all" onclick="setRidesFilter('all')">All</button>
+            <button class="task-chip" data-rfilter="navigated" onclick="setRidesFilter('navigated')">Navigated only</button>
+            <button class="task-chip" data-rfilter="planning" onclick="setRidesFilter('planning')">Planning only</button>
+            <button class="task-chip" data-rfilter="errors" onclick="setRidesFilter('errors')">Has errors</button>
+            <button class="task-chip" data-rfilter="reroutes" onclick="setRidesFilter('reroutes')">Has reroutes</button>
+          </div>
+          <div class="tasks-filter-group">
+            <span class="tasks-filter-label">When</span>
+            <button class="task-chip task-chip--active" data-rwhen="all" onclick="setRidesWhen('all')">All time</button>
+            <button class="task-chip" data-rwhen="today" onclick="setRidesWhen('today')">Today</button>
+            <button class="task-chip" data-rwhen="week" onclick="setRidesWhen('week')">This week</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table>
             <thead><tr>
               <th>Started</th>
               <th>User</th>
-              <th>Route</th>
-              <th>Duration</th>
-              <th>Events</th>
-              <th>Worst drift</th>
+              <th>Prompt</th>
+              <th>Destination</th>
+              <th>Pipeline</th>
+              <th>Nav</th>
               <th></th>
             </tr></thead>
             <tbody id="rides-body"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
@@ -1592,8 +1605,10 @@ async function loadRoutes() {
 // ── Ride Logs ────────────────────────────────────────────────────────────────
 // Cache of recent events keyed by session_id so the detail modal can render
 // without re-querying. Refilled each loadRideSessions() run.
-let _rideSessions = [];          // [{ session_id, events: [], user_id, ... }]
+let _rideSessions = [];          // unified ride sessions (nav + planning-only)
 let _rideMaps = {};              // Leaflet map instances keyed by container id
+let _ridesFilter = 'all';        // all | navigated | planning | errors | reroutes
+let _ridesWhen   = 'all';        // all | today | week
 const EVENT_COLORS = {
   nav_start:        '#22c55e',
   off_route:        '#eab308',
@@ -1604,102 +1619,202 @@ const EVENT_COLORS = {
 };
 const EVENT_DEFAULT = '#888';
 
+function setRidesFilter(f) {
+  _ridesFilter = f;
+  document.querySelectorAll('.task-chip[data-rfilter]').forEach(el => {
+    el.classList.toggle('task-chip--active', el.dataset.rfilter === f);
+  });
+  renderRides();
+}
+function setRidesWhen(w) {
+  _ridesWhen = w;
+  document.querySelectorAll('.task-chip[data-rwhen]').forEach(el => {
+    el.classList.toggle('task-chip--active', el.dataset.rwhen === w);
+  });
+  renderRides();
+}
+
 async function loadRideSessions() {
   const tbody = document.getElementById('rides-body');
   tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>';
   try {
-    // Pull the last ~1000 events. Group client-side by session_id.
-    // For test-scale (handful of riders, dozens of sessions per week) this is
-    // plenty; if it ever grows we'd switch to a server-side RPC view.
-    const events = await sb('/rest/v1/nav_events?select=*&order=created_at.desc&limit=1000');
-    if (!Array.isArray(events) || events.length === 0) {
+    // Two sources of truth share the same nav_session_id:
+    //   nav_events  — what the rider DID (nav lifecycle)
+    //   route_logs  — what the backend computed (pipeline traces)
+    // Union them so sessions that have either source surface here.
+    const [events, logs] = await Promise.all([
+      sb('/rest/v1/nav_events?select=*&order=created_at.desc&limit=1500'),
+      sb('/rest/v1/route_logs?select=*&nav_session_id=not.is.null&order=created_at.desc&limit=1500'),
+    ]);
+
+    const groups = {};  // session_id → { events: [], logs: [], user_id, ... }
+
+    for (const ev of (events || [])) {
+      const sid = ev.session_id;
+      if (!sid) continue;
+      if (!groups[sid]) groups[sid] = { events: [], logs: [], user_id: null };
+      groups[sid].events.push(ev);
+      if (!groups[sid].user_id && ev.user_id) groups[sid].user_id = ev.user_id;
+    }
+    for (const lg of (logs || [])) {
+      const sid = lg.nav_session_id;
+      if (!sid) continue;
+      if (!groups[sid]) groups[sid] = { events: [], logs: [], user_id: null };
+      groups[sid].logs.push(lg);
+      if (!groups[sid].user_id && lg.user_id) groups[sid].user_id = lg.user_id;
+    }
+
+    if (Object.keys(groups).length === 0) {
       document.getElementById('badge-rides').textContent = '0';
       document.getElementById('rides-stats').innerHTML = '';
-      tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="empty-icon">📍</div>No ride sessions logged yet — generate a route and tap Navigate on the app to create one.</div></td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="empty-icon">🏍️</div>No rides logged yet — generate a route on the app to create one.</div></td></tr>';
       return;
     }
 
-    // Group events by session_id
-    const groups = {};
-    for (const ev of events) {
-      const sid = ev.session_id;
-      if (!sid) continue;
-      if (!groups[sid]) groups[sid] = [];
-      groups[sid].push(ev);
-    }
-
     // Build session summaries
-    const sessions = Object.entries(groups).map(([sid, evs]) => {
-      // Order events chronologically within the session for summary math
-      evs.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-      const start = evs.find(e => e.event_type === 'nav_start') || evs[0];
-      const stop  = evs.find(e => e.event_type === 'nav_stop')  || evs[evs.length - 1];
-      const navStartMeta = start?.metadata || {};
-      const offCount    = evs.filter(e => e.event_type === 'off_route').length;
-      const rerouteCount= evs.filter(e => e.event_type === 'reroute_request').length;
-      const reroutesOK  = evs.filter(e => e.event_type === 'reroute_complete').length;
-      const reroutesBad = evs.filter(e => e.event_type === 'reroute_failed').length;
-      const driftPeaks  = evs.filter(e => e.event_type === 'off_route')
+    const sessions = Object.entries(groups).map(([sid, group]) => {
+      const evs = group.events.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      const lgs = group.logs.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+      // Headline timestamps: prefer the planning route_log if it predates nav_start
+      const allTs = [
+        ...evs.map(e => new Date(e.created_at)),
+        ...lgs.map(l => new Date(l.created_at)),
+      ];
+      const started_at = allTs.length ? new Date(Math.min(...allTs)).toISOString() : null;
+      const ended_at   = allTs.length ? new Date(Math.max(...allTs)).toISOString() : null;
+
+      // Prompt + destination — pull from the first initial_query log if present,
+      // else the first log, else the nav_start metadata.
+      const initialLog = lgs.find(l => l.event_origin === 'initial_query') || lgs[0] || null;
+      const navStart   = evs.find(e => e.event_type === 'nav_start');
+      const navStartMeta = navStart?.metadata || {};
+      const prompt = initialLog?.query || navStartMeta.route_title || null;
+      const destination = initialLog?.resolved_dest?.query
+        || initialLog?.raw_intent?.destination
+        || navStartMeta.destination
+        || null;
+      const distanceMi = initialLog?.route_result?.distance_miles
+        ?? navStartMeta.distance_mi
+        ?? null;
+
+      // Nav event counts
+      const offCount     = evs.filter(e => e.event_type === 'off_route').length;
+      const rerouteCount = evs.filter(e => e.event_type === 'reroute_request').length;
+      const reroutesOK   = evs.filter(e => e.event_type === 'reroute_complete').length;
+      const reroutesBad  = evs.filter(e => e.event_type === 'reroute_failed').length;
+      const driftPeaks   = evs.filter(e => e.event_type === 'off_route')
                               .map(e => e.metadata?.dist_off_route_m || 0);
-      const worstDrift  = driftPeaks.length ? Math.max(...driftPeaks) : null;
-      const durationMs  = (new Date(stop.created_at) - new Date(start.created_at));
+      const worstDrift   = driftPeaks.length ? Math.max(...driftPeaks) : null;
+
+      // Pipeline-call stats
+      const pipelineCount = lgs.length;
+      const errorCount    = lgs.filter(l => l.error).length;
+
+      // Duration (only meaningful for navigated sessions)
+      const navEnd = evs.findLast?.(e => e.event_type === 'nav_stop') ||
+                     [...evs].reverse().find(e => e.event_type === 'nav_stop');
+      const navStartTs = navStart ? new Date(navStart.created_at) : null;
+      const navEndTs   = navEnd   ? new Date(navEnd.created_at)   : null;
+      const durationMs = (navStartTs && navEndTs) ? (navEndTs - navStartTs) : null;
+
       return {
         session_id: sid,
-        user_id: start.user_id || null,
+        user_id: group.user_id,
         events: evs,
-        started_at: start.created_at,
-        ended_at: stop.created_at,
+        logs: lgs,
+        initialLog,                                  // re-used by the detail map probe
+        started_at: started_at || (navStart?.created_at) || (lgs[0]?.created_at),
+        ended_at,
         duration_ms: durationMs,
-        route_title: navStartMeta.route_title || '—',
-        destination: navStartMeta.destination || null,
-        distance_mi: navStartMeta.distance_mi ?? null,
+        prompt,
+        destination,
+        distance_mi: distanceMi,
+        nav_event_count: evs.length,
         off_route_count: offCount,
         reroute_count: rerouteCount,
         reroute_ok_count: reroutesOK,
         reroute_bad_count: reroutesBad,
         worst_drift_m: worstDrift,
+        pipeline_count: pipelineCount,
+        error_count: errorCount,
       };
     });
 
     // Newest first
     sessions.sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
     _rideSessions = sessions;
+    renderRides();
 
-    document.getElementById('badge-rides').textContent = String(sessions.length);
-
-    // Stat cards
-    const totalSessions = sessions.length;
-    const totalReroutes = sessions.reduce((s, x) => s + x.reroute_count, 0);
-    const totalOffRoutes= sessions.reduce((s, x) => s + x.off_route_count, 0);
-    const last24        = sessions.filter(s => new Date(s.started_at) > new Date(Date.now() - 86400000)).length;
-    document.getElementById('rides-stats').innerHTML =
-      statCard(totalSessions, 'Sessions') +
-      statCard(last24, 'Last 24h', last24 > 0) +
-      statCard(totalOffRoutes, 'Off-route events') +
-      statCard(totalReroutes, 'Reroutes');
-
-    tbody.innerHTML = sessions.map((s, i) => {
-      const reroutesCell = s.reroute_count > 0
-        ? `<span class="badge ${s.reroute_bad_count > 0 ? 'badge-red' : 'badge-blue'}">${s.reroute_ok_count}/${s.reroute_count}</span>`
-        : '<span style="color:var(--text-muted)">0</span>';
-      const offCell = s.off_route_count > 0
-        ? `<span class="badge badge-yellow">${s.off_route_count}</span>`
-        : '<span style="color:var(--text-muted)">0</span>';
-      const driftCell = s.worst_drift_m != null ? `${s.worst_drift_m}m` : '—';
-      return `
-        <tr class="ride-session-row" onclick="openRideModal(${i})">
-          <td class="cell-mono" style="font-size:12px">${fmtDateShort(s.started_at)}</td>
-          <td class="cell-mono" style="font-size:11px">${s.user_id ? s.user_id.slice(0, 8) : '—'}</td>
-          <td class="cell-main">${escHtml(s.route_title)}${s.distance_mi != null ? `<div style="font-size:11px;color:var(--text-muted)">${s.distance_mi.toFixed(0)} mi</div>` : ''}</td>
-          <td class="cell-mono" style="font-size:12px">${fmtDuration(s.duration_ms)}</td>
-          <td>${offCell} ${reroutesCell}</td>
-          <td class="cell-mono" style="font-size:12px">${driftCell}</td>
-          <td><button class="expand-btn" onclick="event.stopPropagation();openRideModal(${i})">Open</button></td>
-        </tr>`;
-    }).join('');
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red);padding:24px">${escHtml(e.message)}</td></tr>`;
   }
+}
+
+function applyRidesFilters() {
+  return _rideSessions.filter(s => {
+    if (_ridesWhen === 'today' && new Date(s.started_at) < new Date(Date.now() - 86400000)) return false;
+    if (_ridesWhen === 'week'  && new Date(s.started_at) < new Date(Date.now() - 7 * 86400000)) return false;
+    if (_ridesFilter === 'navigated' && s.nav_event_count === 0) return false;
+    if (_ridesFilter === 'planning'  && s.nav_event_count > 0) return false;
+    if (_ridesFilter === 'errors'    && s.error_count === 0) return false;
+    if (_ridesFilter === 'reroutes'  && s.reroute_count === 0) return false;
+    return true;
+  });
+}
+
+function renderRides() {
+  const tbody = document.getElementById('rides-body');
+  const filtered = applyRidesFilters();
+
+  // Stats from the full set (not the filter), so filtering doesn't make the
+  // top-line numbers swing wildly.
+  const totalSessions  = _rideSessions.length;
+  const navigated      = _rideSessions.filter(s => s.nav_event_count > 0).length;
+  const last24         = _rideSessions.filter(s => new Date(s.started_at) > new Date(Date.now() - 86400000)).length;
+  const errored        = _rideSessions.filter(s => s.error_count > 0).length;
+  document.getElementById('badge-rides').textContent = String(totalSessions);
+  document.getElementById('rides-stats').innerHTML =
+    statCard(totalSessions, 'Rides') +
+    statCard(navigated, 'Navigated') +
+    statCard(last24, 'Last 24h', last24 > 0) +
+    statCard(errored, 'With errors', errored > 0);
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="empty-icon">🔍</div>No rides match the current filter</div></td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((s) => {
+    const promptCell = s.prompt
+      ? `<div class="cell-main" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(s.prompt)}">${escHtml(s.prompt)}</div>`
+      : '<span style="color:var(--text-muted);font-style:italic">no prompt</span>';
+    const destCell = s.destination
+      ? `<div style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(s.destination)}">${escHtml(s.destination)}${s.distance_mi != null ? `<div style="font-size:11px;color:var(--text-muted)">${Math.round(s.distance_mi)} mi</div>` : ''}</div>`
+      : '—';
+    const pipelineCell = s.pipeline_count > 0
+      ? `<span class="badge ${s.error_count > 0 ? 'badge-red' : 'badge-blue'}">${s.pipeline_count - s.error_count}/${s.pipeline_count}</span>`
+      : '<span style="color:var(--text-muted)">—</span>';
+    let navCell;
+    if (s.nav_event_count === 0) {
+      navCell = '<span style="color:var(--text-muted);font-size:11px">planning only</span>';
+    } else {
+      const offChip = s.off_route_count > 0 ? `<span class="badge badge-yellow">${s.off_route_count} off</span>` : '';
+      const reChip  = s.reroute_count > 0 ? `<span class="badge ${s.reroute_bad_count > 0 ? 'badge-red' : 'badge-blue'}">${s.reroute_ok_count}/${s.reroute_count} re</span>` : '';
+      const durChip = s.duration_ms ? `<span style="font-size:11px;color:var(--text-muted)">${fmtDuration(s.duration_ms)}</span>` : '';
+      navCell = [offChip, reChip, durChip].filter(Boolean).join(' ') || '<span style="color:var(--text-muted)">—</span>';
+    }
+    return `
+      <tr class="ride-session-row" onclick="openRideModal('${s.session_id}')">
+        <td class="cell-mono" style="font-size:12px">${fmtDateShort(s.started_at)}</td>
+        <td class="cell-mono" style="font-size:11px">${s.user_id ? s.user_id.slice(0, 8) : '—'}</td>
+        <td>${promptCell}</td>
+        <td>${destCell}</td>
+        <td>${pipelineCell}</td>
+        <td>${navCell}</td>
+        <td><button class="expand-btn" onclick="event.stopPropagation();openRideModal('${s.session_id}')">Open</button></td>
+      </tr>`;
+  }).join('');
 }
 
 function fmtDuration(ms) {
@@ -1711,40 +1826,40 @@ function fmtDuration(ms) {
   return h > 0 ? `${h}h ${mm}m` : `${mm}m`;
 }
 
-async function openRideModal(idx) {
-  const s = _rideSessions[idx];
+async function openRideModal(idOrIdx) {
+  const s = typeof idOrIdx === 'string'
+    ? _rideSessions.find(x => x.session_id === idOrIdx)
+    : _rideSessions[idOrIdx];
   if (!s) return;
-  document.getElementById('ride-modal-title').textContent = s.route_title || 'Ride session';
+
+  document.getElementById('ride-modal-title').textContent = s.prompt || s.destination || 'Ride';
   document.getElementById('ride-modal-meta').textContent =
-    [fmtDateShort(s.started_at), fmtDuration(s.duration_ms),
+    [fmtDateShort(s.started_at),
+     s.duration_ms ? fmtDuration(s.duration_ms) : null,
+     s.pipeline_count ? `${s.pipeline_count} call${s.pipeline_count > 1 ? 's' : ''}` : null,
      s.off_route_count ? `${s.off_route_count} off-route` : null,
      s.reroute_count ? `${s.reroute_count} reroute${s.reroute_count > 1 ? 's' : ''}` : null,
+     s.error_count ? `${s.error_count} error${s.error_count > 1 ? 's' : ''}` : null,
     ].filter(Boolean).join(' · ');
-  // Loading placeholder while we fetch the linked pipeline calls — opens
-  // instantly so the click feels responsive.
   document.getElementById('ride-modal-body').innerHTML =
-    '<div class="loading-row"><span class="spinner"></span>Loading pipeline calls…</div>';
+    '<div class="loading-row"><span class="spinner"></span>Loading…</div>';
   document.getElementById('ride-modal').style.display = 'flex';
   document.body.style.overflow = 'hidden';
 
-  // Pipeline calls tied to this session via the new nav_session_id column.
-  // Plus a probe for the "initial query" route_log: the most recent call
-  // from the same user_id in the few minutes before the session started,
-  // which is most often the planning prompt the rider issued before tapping
-  // Navigate. Best-effort — failures don't break the modal.
-  let linkedLogs = [];
-  let initialLog = null;
-  try {
-    linkedLogs = await sb(`/rest/v1/route_logs?select=*&nav_session_id=eq.${s.session_id}&order=created_at.asc`);
-  } catch (e) { console.warn('linked route_logs fetch failed', e?.message); }
-  try {
-    if (s.user_id) {
+  // The pipeline logs ALREADY came back with loadRideSessions (the union
+  // query). For legacy sessions without a linked initial log, fall back to
+  // the time-window probe (user_id + 5 min before nav_start) so older test
+  // sessions still render their planning route.
+  let linkedLogs = s.logs || [];
+  let initialLog = s.initialLog || null;
+  if (linkedLogs.length === 0 && s.user_id) {
+    try {
       const startIso = new Date(new Date(s.started_at).getTime() - 5 * 60 * 1000).toISOString();
       const endIso   = s.started_at;
       const probe = await sb(`/rest/v1/route_logs?select=*&user_id=eq.${s.user_id}&nav_session_id=is.null&created_at=gte.${startIso}&created_at=lt.${endIso}&order=created_at.desc&limit=1`);
       if (probe && probe[0]) initialLog = probe[0];
-    }
-  } catch (e) { console.warn('initial route_log probe failed', e?.message); }
+    } catch (e) { console.warn('legacy initial route_log probe failed', e?.message); }
+  }
 
   document.getElementById('ride-modal-body').innerHTML = renderRideDetail(s, linkedLogs, initialLog);
   setTimeout(() => initRideMap(s, linkedLogs, initialLog), 80);
@@ -1837,12 +1952,6 @@ function renderTimelineEvent(ev) {
 
 function renderTimelinePipeline(log, label, i) {
   const ts = fmtDateShort(log.created_at).split(' ').slice(1).join(' ');
-  // Find this row's index in _debugLogs so the Trace button can open the
-  // existing Route Debug modal. If not loaded yet, the button shows the id.
-  let traceIdx = -1;
-  if (typeof _debugLogs !== 'undefined' && Array.isArray(_debugLogs)) {
-    traceIdx = _debugLogs.findIndex(r => r.id === log.id);
-  }
   const intentMs = log.parse_ms ?? '—';
   const routeMs  = log.route_ms ?? '—';
   const narrMs   = log.narrative_ms ?? '—';
@@ -1850,11 +1959,9 @@ function renderTimelinePipeline(log, label, i) {
   const dest = log.resolved_dest?.query || log.raw_intent?.destination || '—';
   const query = log.query || '(no query)';
   const error = log.error;
-  const traceBtn = traceIdx >= 0
-    ? `<button class="expand-btn" onclick="openTraceFromRide(${traceIdx})">Trace ↗</button>`
-    : `<span style="color:var(--text-muted);font-size:10px">load Route Debug to view trace</span>`;
+  const detailId = `pipeline-detail-${log.id}`;
   return `
-    <div class="ride-event" style="border-left:3px solid #a855f7">
+    <div class="ride-event" style="border-left:3px solid #a855f7;cursor:pointer" onclick="togglePipelineDetail('${log.id}')">
       <div class="ride-event-head">
         <span class="ev-badge" style="background:rgba(168,85,247,.18);color:#a855f7">▸ ${label}</span>
         <span class="ride-event-time">${ts}</span>
@@ -1865,16 +1972,134 @@ function renderTimelinePipeline(log, label, i) {
         ${error
           ? `<div style="color:var(--red);margin-top:4px">error: ${escHtml(error)}</div>`
           : `<div style="margin-top:4px"><span class="ride-event-key">intent</span> ${intentMs}ms · <span class="ride-event-key">GH</span> ${routeMs}ms · <span class="ride-event-key">narrative</span> ${narrMs}ms · <span class="ride-event-key">total</span> ${totalMs}ms</div>`}
-        <div style="margin-top:6px">${traceBtn}</div>
+        <div style="margin-top:6px;color:var(--accent);font-size:10px" id="${detailId}-toggle">click to expand ▾</div>
       </div>
-    </div>`;
+    </div>
+    <div id="${detailId}" style="display:none;margin-left:18px;margin-bottom:8px;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">${renderPipelineDetailInline(log)}</div>`;
 }
 
-// Open the existing Route Debug trace modal from within a Ride session.
-// Closes the ride modal first so we don't stack two fullscreen overlays.
-function openTraceFromRide(traceIdx) {
-  closeRideModal();
-  setTimeout(() => openTraceModal(traceIdx), 50);
+function togglePipelineDetail(id) {
+  const el = document.getElementById('pipeline-detail-' + id);
+  const tog = document.getElementById('pipeline-detail-' + id + '-toggle');
+  if (!el) return;
+  const isOpen = el.style.display !== 'none';
+  el.style.display = isOpen ? 'none' : 'block';
+  if (tog) tog.textContent = isOpen ? 'click to expand ▾' : 'click to collapse ▴';
+}
+
+// Render the full pipeline detail INLINE inside a Ride session timeline so
+// we don't bounce out to a separate Route Debug modal. Shows intent reasoning,
+// resolved waypoints, routing config (with autotune), road scores, the
+// GraphHopper request body per leg, and the narrative.
+function renderPipelineDetailInline(log) {
+  const sections = [];
+  const intent = log.raw_intent || {};
+  const routing = log.routing_config || {};
+  const scores = log.road_scores || {};
+
+  // Claude's interpretation
+  const intentBits = [
+    intent.curviness != null ? `curviness ${intent.curviness}` : null,
+    intent.road_corridor ? `corridor ${escHtml(intent.road_corridor)}` : null,
+    intent.intermediate_waypoints?.length ? `${intent.intermediate_waypoints.length} waypoint(s)` : null,
+    intent.stops?.length ? `${intent.stops.length} stop(s)` : null,
+    intent.round_trip ? 'round trip' : null,
+  ].filter(Boolean).join(' · ');
+  if (intent.destination || intent.reasoning || intentBits) {
+    sections.push(`
+      <div class="pipeline-section">
+        <div class="pipeline-section-title">🧠 Claude's interpretation</div>
+        ${intent.destination ? `<div class="pipeline-kv"><span class="pipeline-k">destination</span> ${escHtml(intent.destination)}</div>` : ''}
+        ${intentBits ? `<div class="pipeline-kv">${intentBits}</div>` : ''}
+        ${intent.reasoning ? `<div class="pipeline-kv" style="font-style:italic;color:var(--text-dim)">"${escHtml(intent.reasoning)}"</div>` : ''}
+      </div>`);
+  }
+
+  // Resolved waypoints
+  const origin = log.resolved_origin;
+  const dest = log.resolved_dest;
+  const wps = log.resolved_waypoints || [];
+  const stops = log.resolved_stops || [];
+  if (origin || dest || wps.length || stops.length) {
+    sections.push(`
+      <div class="pipeline-section">
+        <div class="pipeline-section-title">📍 Resolved points</div>
+        ${origin ? `<div class="pipeline-kv"><span class="pipeline-k">origin</span> ${origin.lat?.toFixed?.(4)}, ${origin.lng?.toFixed?.(4)}${origin.source ? ` <span style="color:var(--text-muted)">(${origin.source})</span>` : ''}</div>` : ''}
+        ${dest ? `<div class="pipeline-kv"><span class="pipeline-k">destination</span> ${dest.lat?.toFixed?.(4)}, ${dest.lng?.toFixed?.(4)} ${dest.query ? `<span style="color:var(--text-dim)">${escHtml(dest.query)}</span>` : ''}</div>` : ''}
+        ${wps.length ? `<div class="pipeline-kv"><span class="pipeline-k">waypoints</span> ${wps.map(w => escHtml(w.name || `${w.lat?.toFixed?.(4)},${w.lng?.toFixed?.(4)}`)).join(' → ')}</div>` : ''}
+        ${stops.length ? `<div class="pipeline-kv"><span class="pipeline-k">stops</span> ${stops.map(s => escHtml(s.name)).join(', ')}</div>` : ''}
+      </div>`);
+  }
+
+  // Routing config + autotune
+  if (routing.curviness != null || routing.corridor || routing.curviness_autotune) {
+    const autotune = routing.curviness_autotune
+      ? `<span style="background:rgba(234,179,8,.18);color:var(--yellow);padding:1px 6px;border-radius:3px;font-size:10px;margin-left:4px">autotuned ${routing.curviness_autotune.from}→${routing.curviness_autotune.to} (${routing.curviness_autotune.reason}, ${routing.curviness_autotune.straight_line_mi} mi)</span>`
+      : '';
+    sections.push(`
+      <div class="pipeline-section">
+        <div class="pipeline-section-title">⚙️ Routing config</div>
+        <div class="pipeline-kv">
+          <span class="pipeline-k">curviness</span> ${routing.curviness ?? '—'}${autotune}
+        </div>
+        ${routing.corridor ? `<div class="pipeline-kv"><span class="pipeline-k">corridor</span> ${escHtml(routing.corridor)}</div>` : ''}
+        ${routing.waypoint_count != null ? `<div class="pipeline-kv"><span class="pipeline-k">waypoint count</span> ${routing.waypoint_count}</div>` : ''}
+      </div>`);
+  }
+
+  // Snap origin (v2.61)
+  if (log.snap_origin) {
+    const so = log.snap_origin;
+    sections.push(`
+      <div class="pipeline-section">
+        <div class="pipeline-section-title">🎯 Pre-snap origin</div>
+        <div class="pipeline-kv"><span class="pipeline-k">GPS</span> ${so.gps?.lat?.toFixed?.(5)}, ${so.gps?.lng?.toFixed?.(5)}</div>
+        <div class="pipeline-kv"><span class="pipeline-k">snapped to road</span> ${so.road?.lat?.toFixed?.(5)}, ${so.road?.lng?.toFixed?.(5)} <span style="color:var(--text-muted)">(${so.dist_m?.toFixed?.(0)}m)</span></div>
+      </div>`);
+  }
+
+  // ETA breakdown
+  if (log.eta_breakdown) {
+    const e = log.eta_breakdown;
+    sections.push(`
+      <div class="pipeline-section">
+        <div class="pipeline-section-title">⏱ ETA breakdown</div>
+        <div class="pipeline-kv"><span class="pipeline-k">drive (calibrated)</span> ${e.drive_minutes} min · GH raw was ${e.raw_gh_minutes}</div>
+        ${e.stop_minutes ? `<div class="pipeline-kv"><span class="pipeline-k">stops</span> ${e.stop_minutes} min</div>` : ''}
+        <div class="pipeline-kv"><span class="pipeline-k">total</span> ${e.total_minutes} min</div>
+      </div>`);
+  }
+
+  // Road scores
+  if (scores.score_joy != null || scores.score_transit != null) {
+    sections.push(`
+      <div class="pipeline-section">
+        <div class="pipeline-section-title">🌄 Road scores</div>
+        <div class="pipeline-kv">
+          ${scores.score_joy != null ? `<span class="pipeline-k">joy</span> ${scores.score_joy}/5 · ` : ''}
+          ${scores.score_transit != null ? `<span class="pipeline-k">transit</span> ${scores.score_transit}/5 · ` : ''}
+          ${scores.avg_curvature != null ? `<span class="pipeline-k">curvature</span> ${scores.avg_curvature} · ` : ''}
+          ${scores.avg_signals_per_km != null ? `<span class="pipeline-k">signals/km</span> ${scores.avg_signals_per_km}` : ''}
+        </div>
+      </div>`);
+  }
+
+  // GraphHopper request (already a v2.67 helper)
+  if (Array.isArray(log.gh_request) && log.gh_request.length) {
+    sections.push(`<div class="pipeline-section">${renderGhRequest(log.gh_request)}</div>`);
+  }
+
+  // Narrative
+  if (log.narrative) {
+    sections.push(`
+      <div class="pipeline-section">
+        <div class="pipeline-section-title">📝 Narrative <span style="font-weight:400;color:var(--text-muted)">${log.narrative_ms != null ? log.narrative_ms + 'ms' : ''}</span></div>
+        <div class="narrative-box" style="font-size:12px">${escHtml(log.narrative)}</div>
+      </div>`);
+  }
+
+  return sections.length ? sections.join('') : '<div style="color:var(--text-muted);font-size:12px">No detail captured for this call</div>';
+}
 }
 
 function initRideMap(s, linkedLogs, initialLog) {
