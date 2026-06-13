@@ -1902,7 +1902,13 @@ function renderRideDetail(s, linkedLogs, initialLog) {
   // Each item is { ts, kind: 'event'|'pipeline', payload }.
   const items = [];
   for (const ev of s.events) items.push({ ts: new Date(ev.created_at), kind: 'event', payload: ev });
-  if (initialLog) items.push({ ts: new Date(initialLog.created_at), kind: 'pipeline', payload: initialLog, label: 'initial planning' });
+  // initialLog is part of linkedLogs in the normal (linked-by-nav_session_id)
+  // case — only push it separately when it's a probe result (orphan / legacy
+  // session whose initial route_log predates nav_session_id linkage). The
+  // probe only fires when linkedLogs is empty, so this check is enough.
+  if (initialLog && !linkedLogs.some(l => l.id === initialLog.id)) {
+    items.push({ ts: new Date(initialLog.created_at), kind: 'pipeline', payload: initialLog, label: 'initial planning' });
+  }
   for (const lg of linkedLogs) items.push({ ts: new Date(lg.created_at), kind: 'pipeline', payload: lg, label: lg.event_origin || 'pipeline' });
   items.sort((a, b) => a.ts - b.ts);
 
