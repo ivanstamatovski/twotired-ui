@@ -184,6 +184,43 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .debug-map-container{height:440px;border-radius:8px;overflow:hidden;border:1px solid var(--border);position:relative;background:var(--bg)}
 .debug-map-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--text-dim);align-items:center}
 
+/* ── Tasks ── */
+.tasks-filters{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+.tasks-filter-group{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.tasks-filter-label{font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;width:64px}
+.task-chip{background:var(--surface);border:1px solid var(--border);border-radius:14px;color:var(--text-dim);padding:3px 11px;font-size:12px;cursor:pointer;transition:border-color .12s,color .12s;font-family:inherit}
+.task-chip:hover{border-color:var(--text-dim);color:var(--text)}
+.task-chip--active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);font-weight:600}
+.task-chip--p0{}
+.task-chip--p1{}
+.task-chip--p2{}
+.task-chip--p3{}
+.tasks-show-done{font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:auto}
+.tasks-show-done input{accent-color:var(--accent)}
+.tasks-group{margin-bottom:22px}
+.tasks-group-header{display:flex;align-items:center;gap:10px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.tasks-group-title{font-size:13px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.6px}
+.tasks-group-count{background:var(--surface2);border:1px solid var(--border);color:var(--text-muted);font-size:11px;font-weight:700;border-radius:10px;padding:1px 8px}
+.task-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .12s}
+.task-card:hover{border-color:var(--text-dim)}
+.task-card-row{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.task-card-title{flex:1;color:var(--text);font-size:14px;font-weight:600}
+.task-card-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11px;color:var(--text-muted)}
+.task-pri{display:inline-block;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase}
+.task-pri--p0{background:rgba(239,68,68,.22);color:var(--red)}
+.task-pri--p1{background:var(--accent-dim);color:var(--accent)}
+.task-pri--p2{background:rgba(234,179,8,.22);color:var(--yellow)}
+.task-pri--p3{background:var(--surface2);color:var(--text-muted)}
+.task-cat{display:inline-block;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:600;background:var(--surface2);color:var(--text-dim);text-transform:lowercase}
+.task-blocked{color:var(--red);font-size:11px}
+.task-desc{color:var(--text-dim);font-size:12px;margin-top:2px;line-height:1.5}
+.task-detail-row{display:none;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-top:-4px;margin-bottom:8px}
+.task-detail-row.open{display:block}
+.task-detail-label{font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;margin-top:10px}
+.task-detail-label:first-child{margin-top:0}
+.task-detail-value{color:var(--text-dim);font-size:13px;line-height:1.5;white-space:pre-wrap}
+.task-link-chip{display:inline-block;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'SF Mono',Menlo,monospace;font-size:11px;padding:2px 7px;margin:2px 4px 2px 0}
+
 /* ── Ride Logs ── */
 .ride-session-row{cursor:pointer}
 .ride-session-row:hover td{background:rgba(255,255,255,.04)}
@@ -347,6 +384,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <span class="nav-icon">📍</span> Ride Logs
         <span class="nav-badge" id="badge-rides">—</span>
       </button>
+      <button class="nav-item" onclick="showPanel('tasks',this)">
+        <span class="nav-icon">📌</span> Tasks
+        <span class="nav-badge" id="badge-tasks">—</span>
+      </button>
       <button class="nav-item" onclick="showPanel('anns',this)">
         <span class="nav-icon">📣</span> Announcements
         <span class="nav-badge" id="badge-anns">—</span>
@@ -467,6 +508,38 @@ tr:hover td{background:rgba(255,255,255,.02)}
             <tbody id="rides-body"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
+      </div>
+
+      <!-- ── Tasks Panel ── -->
+      <div class="panel" id="panel-tasks">
+        <div class="stats-row" id="tasks-stats"></div>
+        <div class="section-header">
+          <div class="section-title">Backlog</div>
+          <button class="refresh-btn" onclick="loadTasks()">↻ Refresh</button>
+        </div>
+        <div class="tasks-filters">
+          <div class="tasks-filter-group">
+            <span class="tasks-filter-label">Priority</span>
+            <button class="task-chip task-chip--active" data-filter="priority" data-value="" onclick="setTaskFilter('priority','')">All</button>
+            <button class="task-chip task-chip--p0" data-filter="priority" data-value="p0" onclick="setTaskFilter('priority','p0')">p0</button>
+            <button class="task-chip task-chip--p1" data-filter="priority" data-value="p1" onclick="setTaskFilter('priority','p1')">p1</button>
+            <button class="task-chip task-chip--p2" data-filter="priority" data-value="p2" onclick="setTaskFilter('priority','p2')">p2</button>
+            <button class="task-chip task-chip--p3" data-filter="priority" data-value="p3" onclick="setTaskFilter('priority','p3')">p3</button>
+          </div>
+          <div class="tasks-filter-group">
+            <span class="tasks-filter-label">Category</span>
+            <button class="task-chip task-chip--active" data-filter="category" data-value="" onclick="setTaskFilter('category','')">All</button>
+            <button class="task-chip" data-filter="category" data-value="feature" onclick="setTaskFilter('category','feature')">feature</button>
+            <button class="task-chip" data-filter="category" data-value="bug" onclick="setTaskFilter('category','bug')">bug</button>
+            <button class="task-chip" data-filter="category" data-value="infra" onclick="setTaskFilter('category','infra')">infra</button>
+            <button class="task-chip" data-filter="category" data-value="ops" onclick="setTaskFilter('category','ops')">ops</button>
+            <button class="task-chip" data-filter="category" data-value="paperwork" onclick="setTaskFilter('category','paperwork')">paperwork</button>
+          </div>
+          <div class="tasks-filter-group">
+            <label class="tasks-show-done"><input type="checkbox" id="tasks-show-done" onchange="loadTasks()"> show done / wontdo</label>
+          </div>
+        </div>
+        <div id="tasks-groups"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
       </div>
 
       <!-- ── Announcements Panel ── -->
@@ -622,7 +695,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadAnnouncements(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadTasks(); loadAnnouncements(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -1778,6 +1851,134 @@ function initRideMap(s, linkedLogs, initialLog) {
   } else {
     map.setView([40.9, -74.2], 9);
   }
+}
+
+// ── Tasks ────────────────────────────────────────────────────────────────────
+// Backlog + work-tracking. Reads from public.tasks; service role gives full
+// access. Future iteration: drag-drop between status columns, add/edit drawer.
+const TASK_STATUSES = [
+  { key: 'in_progress', label: 'In Progress' },
+  { key: 'todo',        label: 'Todo' },
+  { key: 'blocked',     label: 'Blocked' },
+  { key: 'inbox',       label: 'Inbox' },
+  { key: 'done',        label: 'Done' },
+  { key: 'wontdo',      label: 'Won\'t Do' },
+];
+let _tasksCache = [];
+let _taskFilters = { priority: '', category: '' };
+
+async function loadTasks() {
+  const root = document.getElementById('tasks-groups');
+  root.innerHTML = '<div class="loading-row"><span class="spinner"></span>Loading…</div>';
+  try {
+    const tasks = await sb('/rest/v1/tasks?select=*&order=priority.asc.nullslast,updated_at.desc');
+    _tasksCache = Array.isArray(tasks) ? tasks : [];
+    renderTasks();
+  } catch (e) {
+    root.innerHTML = `<div style="color:var(--red);padding:16px">${escHtml(e.message)}</div>`;
+  }
+}
+
+function setTaskFilter(kind, value) {
+  _taskFilters[kind] = value;
+  // Sync the chip-active class
+  document.querySelectorAll(`.task-chip[data-filter="${kind}"]`).forEach(el => {
+    el.classList.toggle('task-chip--active', (el.dataset.value || '') === value);
+  });
+  renderTasks();
+}
+
+function renderTasks() {
+  const root = document.getElementById('tasks-groups');
+  const showDone = document.getElementById('tasks-show-done')?.checked;
+
+  // Apply filters first
+  const filtered = _tasksCache.filter(t => {
+    if (_taskFilters.priority && t.priority !== _taskFilters.priority) return false;
+    if (_taskFilters.category && t.category !== _taskFilters.category) return false;
+    if (!showDone && (t.status === 'done' || t.status === 'wontdo')) return false;
+    return true;
+  });
+
+  // Stats row (only counts active items, ignores done filter)
+  const active = _tasksCache.filter(t => !['done','wontdo'].includes(t.status));
+  document.getElementById('badge-tasks').textContent = String(active.length);
+  document.getElementById('tasks-stats').innerHTML =
+    statCard(active.length, 'Active') +
+    statCard(active.filter(t => t.priority === 'p0').length, 'P0', active.some(t => t.priority === 'p0')) +
+    statCard(active.filter(t => t.status === 'in_progress').length, 'In Progress') +
+    statCard(active.filter(t => t.status === 'blocked').length, 'Blocked', active.some(t => t.status === 'blocked'));
+
+  if (!filtered.length) {
+    root.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>No tasks match these filters</div>';
+    return;
+  }
+
+  // Group by status, preserving the TASK_STATUSES order
+  const groups = {};
+  for (const status of TASK_STATUSES.map(s => s.key)) groups[status] = [];
+  for (const t of filtered) (groups[t.status] || (groups[t.status] = [])).push(t);
+
+  root.innerHTML = TASK_STATUSES
+    .filter(s => groups[s.key]?.length)
+    .map(s => `
+      <div class="tasks-group">
+        <div class="tasks-group-header">
+          <span class="tasks-group-title">${s.label}</span>
+          <span class="tasks-group-count">${groups[s.key].length}</span>
+        </div>
+        ${groups[s.key].map(t => renderTaskCard(t)).join('')}
+      </div>
+    `).join('');
+}
+
+function renderTaskCard(t) {
+  const detailId = `task-detail-${t.id}`;
+  const blocked = t.status === 'blocked' && t.blocked_by
+    ? `<span class="task-blocked">⛔ ${escHtml(t.blocked_by)}</span>` : '';
+  const meta = [
+    t.priority ? `<span class="task-pri task-pri--${t.priority}">${t.priority}</span>` : '',
+    t.category ? `<span class="task-cat">${escHtml(t.category)}</span>` : '',
+    blocked,
+  ].filter(Boolean).join('');
+
+  const detailParts = [];
+  if (t.description) {
+    detailParts.push(`<div class="task-detail-label">Description</div><div class="task-detail-value">${escHtml(t.description)}</div>`);
+  }
+  if (t.notes) {
+    detailParts.push(`<div class="task-detail-label">Notes</div><div class="task-detail-value">${escHtml(t.notes)}</div>`);
+  }
+  if (t.blocked_by) {
+    detailParts.push(`<div class="task-detail-label">Blocked by</div><div class="task-detail-value">${escHtml(t.blocked_by)}</div>`);
+  }
+  if (Array.isArray(t.linked_memory) && t.linked_memory.length) {
+    detailParts.push(`<div class="task-detail-label">Linked memory</div><div class="task-detail-value">${t.linked_memory.map(m => `<span class="task-link-chip">${escHtml(m)}</span>`).join('')}</div>`);
+  }
+  if (Array.isArray(t.linked_files) && t.linked_files.length) {
+    detailParts.push(`<div class="task-detail-label">Linked files</div><div class="task-detail-value">${t.linked_files.map(f => `<span class="task-link-chip">${escHtml(f)}</span>`).join('')}</div>`);
+  }
+  detailParts.push(`<div class="task-detail-label">Created</div><div class="task-detail-value">${fmtDateShort(t.created_at)}</div>`);
+  if (t.done_at) {
+    detailParts.push(`<div class="task-detail-label">Done</div><div class="task-detail-value">${fmtDateShort(t.done_at)}</div>`);
+  } else if (t.updated_at) {
+    detailParts.push(`<div class="task-detail-label">Updated</div><div class="task-detail-value">${fmtDateShort(t.updated_at)}</div>`);
+  }
+
+  return `
+    <div class="task-card" onclick="toggleTaskDetail('${escHtml(t.id)}')">
+      <div class="task-card-row">
+        <div class="task-card-title">${escHtml(t.title)}</div>
+        <div class="task-card-meta">${meta}</div>
+      </div>
+      ${t.description ? `<div class="task-desc">${escHtml(t.description).slice(0, 180)}${t.description.length > 180 ? '…' : ''}</div>` : ''}
+    </div>
+    <div class="task-detail-row" id="${detailId}">${detailParts.join('')}</div>`;
+}
+
+function toggleTaskDetail(id) {
+  const el = document.getElementById('task-detail-' + id);
+  if (el) el.classList.toggle('open');
 }
 
 // ── Announcements ────────────────────────────────────────────────────────────
