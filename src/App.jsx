@@ -1382,6 +1382,14 @@ export default function App() {
   // Nav telemetry: one session_id per Navigate→Stop arc, groups events for replay.
   // Generated on startNavigation, cleared on stopNavigation.
   const navSessionIdRef = useRef(null);
+  // Synchronous dedupe for submitQuery. The `loading` state check at the top
+  // of submitQuery can't catch back-to-back calls in the same React tick
+  // because setLoading(true) is batched — two synchronous calls both see
+  // loading === false and both fire. This ref is set/cleared synchronously
+  // so the second call exits immediately. Caught from route_logs analysis
+  // 2026-06-12 — every test prompt was creating two route_logs rows with
+  // different session_ids 0-2 sec apart.
+  const submittingRef = useRef(false);
   // Mirrors of state needed inside logNavEvent (a useCallback with empty deps).
   const sessionRef = useRef(null);
   // Most recent GPS fix — used to enrich nav events that fire from timers
@@ -3429,6 +3437,10 @@ export default function App() {
   async function submitQuery(q) {
     const text = (q || query).trim();
     if (!text || loading) return;
+    // Synchronous dedupe — see submittingRef declaration. Catches the case
+    // where two click/keydown handlers both fire in the same React tick.
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     // Stop voice recognition so it doesn't keep appending to the next query.
     if (voice.listening) voice.stop();
     // Fresh query → mint a new session_id so the initial planning route_log
@@ -3459,10 +3471,16 @@ export default function App() {
 
     if (gps && !isInServiceArea(gps.lat, gps.lng)) {
       setOutOfAreaToast(true);
+      submittingRef.current = false;
       return;
     }
 
-    generateRoute({ query: text }, gps);
+    // Release the dedupe ref once generateRoute completes (success or fail).
+    // generateRoute itself manages the `loading` React state, so once it
+    // settles the regular state check covers future submissions too.
+    generateRoute({ query: text }, gps).finally(() => {
+      submittingRef.current = false;
+    });
   }
 
   async function handleFollowUp(text) {
