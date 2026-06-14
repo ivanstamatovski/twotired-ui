@@ -1470,7 +1470,7 @@ export default function App() {
   // fires the survey. Tuned for real-world stopping behaviour — under 2 min
   // is likely just a red light near the place, not actually arriving.
   const STOP_RADIUS_M = 50;
-  const STOP_DWELL_MS = 2 * 60 * 1000;
+  const STOP_DWELL_MS = 15 * 1000;  // TEMP: testing — revert to 2 * 60 * 1000 before sleep
 
   // logNavEvent — fire-and-forget insert to public.nav_events. Never throws,
   // never blocks. Skips when there's no session_id (i.e. not navigating).
