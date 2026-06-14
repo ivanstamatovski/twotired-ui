@@ -415,6 +415,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <span class="nav-icon">📌</span> Tasks
         <span class="nav-badge" id="badge-tasks">—</span>
       </button>
+      <button class="nav-item" onclick="showPanel('stoprate',this)">
+        <span class="nav-icon">⭐</span> Stop ratings
+        <span class="nav-badge" id="badge-stoprate">—</span>
+      </button>
       <button class="nav-item" onclick="showPanel('anns',this)">
         <span class="nav-icon">📣</span> Announcements
         <span class="nav-badge" id="badge-anns">—</span>
@@ -667,6 +671,46 @@ tr:hover td{background:rgba(255,255,255,.02)}
         </div>
       </div>
 
+      <!-- ── Stop Ratings Panel ── -->
+      <div class="panel" id="panel-stoprate">
+        <div class="stats-row" id="stoprate-stats"></div>
+        <div class="section-header">
+          <div class="section-title">Recent stop ratings</div>
+          <button class="refresh-btn" onclick="loadStopRatings()">↻ Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Rated</th>
+              <th>User</th>
+              <th>Place</th>
+              <th>Type</th>
+              <th>Rating</th>
+              <th>Comment</th>
+            </tr></thead>
+            <tbody id="stoprate-body"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="section-header" style="margin-top:28px">
+          <div class="section-title">Top-rated places (3+ ratings)</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Place</th>
+              <th>Type</th>
+              <th>Ratings</th>
+              <th>Avg</th>
+              <th>👎</th>
+              <th>😐</th>
+              <th>👍</th>
+            </tr></thead>
+            <tbody id="stoprate-aggregate-body"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- ── Announcements Panel ── -->
       <div class="panel" id="panel-anns">
         <div class="section-header">
@@ -820,7 +864,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadTasks(); loadAnnouncements(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadTasks(); loadStopRatings(); loadAnnouncements(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -2478,6 +2522,87 @@ document.addEventListener('keydown', (e) => {
     if (modal && modal.style.display !== 'none') closeTaskModal();
   }
 });
+
+// ── Stop ratings ─────────────────────────────────────────────────────────────
+const RATING_EMOJI = { '-1': '👎', '0': '😐', '1': '👍' };
+const RATING_COLOR = { '-1': 'badge-red', '0': 'badge-yellow', '1': 'badge-green' };
+
+async function loadStopRatings() {
+  const tbody = document.getElementById('stoprate-body');
+  const aggBody = document.getElementById('stoprate-aggregate-body');
+  tbody.innerHTML = '<tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>';
+  aggBody.innerHTML = '<tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>';
+  try {
+    const ratings = await sb('/rest/v1/stop_ratings?select=*&order=created_at.desc&limit=500');
+    if (!Array.isArray(ratings) || ratings.length === 0) {
+      document.getElementById('badge-stoprate').textContent = '0';
+      document.getElementById('stoprate-stats').innerHTML = '';
+      tbody.innerHTML = '<tr><td colspan="6"><div class="empty"><div class="empty-icon">⭐</div>No stop ratings yet — they fire when a rider dwells at a suggested stop for ≥2 min.</div></td></tr>';
+      aggBody.innerHTML = '<tr><td colspan="7" style="color:var(--text-muted);padding:24px;text-align:center">(none yet)</td></tr>';
+      return;
+    }
+
+    document.getElementById('badge-stoprate').textContent = String(ratings.length);
+    const up = ratings.filter(r => r.rating === 1).length;
+    const down = ratings.filter(r => r.rating === -1).length;
+    const neutral = ratings.filter(r => r.rating === 0).length;
+    const avg = ratings.reduce((s, r) => s + r.rating, 0) / ratings.length;
+    document.getElementById('stoprate-stats').innerHTML =
+      statCard(ratings.length, 'Total ratings') +
+      statCard(up, '👍 Good', up > 0) +
+      statCard(neutral, '😐 Meh') +
+      statCard(down, '👎 Bad', down > 0);
+
+    tbody.innerHTML = ratings.slice(0, 100).map(r => `
+      <tr>
+        <td class="cell-mono" style="font-size:12px">${fmtDateShort(r.created_at)}</td>
+        <td class="cell-mono" style="font-size:11px">${r.user_id ? r.user_id.slice(0, 8) : '—'}</td>
+        <td class="cell-main">${escHtml(r.place_name)}</td>
+        <td><span class="badge badge-gray">${escHtml(r.place_type || '—')}</span></td>
+        <td><span class="badge ${RATING_COLOR[String(r.rating)]}">${RATING_EMOJI[String(r.rating)]} ${r.rating}</span></td>
+        <td style="max-width:280px;color:var(--text-dim);font-style:italic">${r.comment ? escHtml(r.comment) : '<span style="color:var(--text-muted);font-style:normal">—</span>'}</td>
+      </tr>
+    `).join('');
+
+    // Aggregate by place_id (or fall back to name if no place_id)
+    const groups = {};
+    for (const r of ratings) {
+      const key = r.place_id || `name:${r.place_name}`;
+      if (!groups[key]) groups[key] = { name: r.place_name, type: r.place_type, ratings: [] };
+      groups[key].ratings.push(r.rating);
+    }
+    const agg = Object.values(groups)
+      .filter(g => g.ratings.length >= 3)
+      .map(g => ({
+        name: g.name,
+        type: g.type,
+        count: g.ratings.length,
+        avg: g.ratings.reduce((s, x) => s + x, 0) / g.ratings.length,
+        down: g.ratings.filter(x => x === -1).length,
+        neutral: g.ratings.filter(x => x === 0).length,
+        up: g.ratings.filter(x => x === 1).length,
+      }))
+      .sort((a, b) => b.avg - a.avg || b.count - a.count);
+
+    if (agg.length === 0) {
+      aggBody.innerHTML = '<tr><td colspan="7" style="color:var(--text-muted);padding:24px;text-align:center">No place has 3+ ratings yet.</td></tr>';
+    } else {
+      aggBody.innerHTML = agg.map(g => `
+        <tr>
+          <td class="cell-main">${escHtml(g.name)}</td>
+          <td><span class="badge badge-gray">${escHtml(g.type || '—')}</span></td>
+          <td class="cell-mono">${g.count}</td>
+          <td><span class="badge ${g.avg > 0.3 ? 'badge-green' : g.avg < -0.3 ? 'badge-red' : 'badge-yellow'}">${g.avg.toFixed(2)}</span></td>
+          <td style="color:var(--red)">${g.down || ''}</td>
+          <td style="color:var(--yellow)">${g.neutral || ''}</td>
+          <td style="color:var(--green)">${g.up || ''}</td>
+        </tr>
+      `).join('');
+    }
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red);padding:24px">${escHtml(e.message)}</td></tr>`;
+  }
+}
 
 // ── Announcements ────────────────────────────────────────────────────────────
 function fmtAnnTime(ts) {

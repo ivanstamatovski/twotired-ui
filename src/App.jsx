@@ -62,6 +62,65 @@ function formatPriceLevel(level) {
   }
 }
 
+function StopRatingSheet({ stop, onRate, onSkip }) {
+  const [comment, setComment] = useState('');
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (rating) => {
+    if (submitting) return;
+    setSubmitting(true);
+    await onRate(rating, comment);
+  };
+
+  return (
+    <div className="stop-rating-overlay" role="dialog" aria-modal="true">
+      <div className="stop-rating-sheet">
+        <div className="stop-rating-header">
+          <div className="stop-rating-label">How was this stop?</div>
+          <button className="stop-rating-skip" onClick={onSkip} aria-label="Skip">Skip</button>
+        </div>
+        <div className="stop-rating-place">
+          <div className="stop-rating-name">{stop.name}</div>
+          {stop.address && <div className="stop-rating-address">{stop.address}</div>}
+        </div>
+        <div className="stop-rating-buttons">
+          <button className="stop-rating-btn stop-rating-btn--down"
+            onClick={() => submit(-1)} disabled={submitting} aria-label="Thumbs down">
+            <span className="stop-rating-emoji">👎</span>
+            <span className="stop-rating-btn-label">Bad</span>
+          </button>
+          <button className="stop-rating-btn stop-rating-btn--neutral"
+            onClick={() => submit(0)} disabled={submitting} aria-label="Neutral">
+            <span className="stop-rating-emoji">😐</span>
+            <span className="stop-rating-btn-label">Meh</span>
+          </button>
+          <button className="stop-rating-btn stop-rating-btn--up"
+            onClick={() => submit(1)} disabled={submitting} aria-label="Thumbs up">
+            <span className="stop-rating-emoji">👍</span>
+            <span className="stop-rating-btn-label">Good</span>
+          </button>
+        </div>
+        {commentOpen ? (
+          <textarea
+            className="stop-rating-comment"
+            placeholder="Anything specific? (optional)"
+            rows={2}
+            maxLength={500}
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            autoFocus/>
+        ) : (
+          <button className="stop-rating-comment-toggle"
+            onClick={() => setCommentOpen(true)}>
+            + Add a note
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PlaceModal({ place, onClose }) {
   const [hoursOpen, setHoursOpen] = useState(false);
   // null = no photo expanded; number = the index of the photo shown full-screen
@@ -1396,8 +1455,53 @@ export default function App() {
   // (e.g. off-route trigger) where pos isn't in scope.
   const lastGpsFixRef = useRef(null);
 
+  // Stop rating dwell tracking (v2026-06-13).
+  // stopDwellRef: { [stopIndex]: { enteredAt: ms timestamp } } — when rider
+  //   first entered the 50m radius of that stop. Cleared when they leave the
+  //   radius without rating. Fires the survey when enteredAt is ≥ 2 min ago.
+  // ratedStopsRef: Set<stopIndex> for the current nav session — stops the
+  //   rider has already rated OR explicitly skipped, so we don't re-fire.
+  const stopDwellRef = useRef({});
+  const ratedStopsRef = useRef(new Set());
+  // The stop currently asking to be rated. null = no sheet visible.
+  // { stopIndex, name, address, place_id, type } when active.
+  const [pendingStopRating, setPendingStopRating] = useState(null);
+  // 50m radius around a stop counts as "at the stop"; 2 min continuous dwell
+  // fires the survey. Tuned for real-world stopping behaviour — under 2 min
+  // is likely just a red light near the place, not actually arriving.
+  const STOP_RADIUS_M = 50;
+  const STOP_DWELL_MS = 2 * 60 * 1000;
+
   // logNavEvent — fire-and-forget insert to public.nav_events. Never throws,
   // never blocks. Skips when there's no session_id (i.e. not navigating).
+  // Submit a stop rating to public.stop_ratings. Best-effort; failures don't
+  // block the rider or block dismissal of the sheet.
+  const submitStopRating = useCallback(async (rating, comment) => {
+    const target = pendingStopRating;
+    if (!target) return;
+    setPendingStopRating(null);
+    try {
+      await supabase.from('stop_ratings').insert({
+        user_id:    sessionRef.current?.user?.id ?? null,
+        session_id: navSessionIdRef.current,
+        stop_index: target.stopIndex,
+        place_id:   target.place_id ?? null,
+        place_name: target.name,
+        place_type: target.type ?? null,
+        rating,
+        comment:    comment?.trim() ? comment.trim() : null,
+      });
+    } catch (e) {
+      console.warn('[stop-rating] insert failed:', e?.message);
+    }
+  }, [pendingStopRating]);
+
+  // Skip = dismiss without rating; rider already marked as handled so we
+  // don't re-prompt on the next GPS tick within this nav session.
+  const skipStopRating = useCallback(() => {
+    setPendingStopRating(null);
+  }, []);
+
   const logNavEvent = useCallback(async (eventType, opts = {}) => {
     const sessionId = navSessionIdRef.current;
     if (!sessionId) return;
@@ -2707,6 +2811,46 @@ export default function App() {
           }
         }
       }
+
+      // ── Stop dwell detection (v2026-06-13) ──────────────────────────────
+      // For each unrated stop, check if rider is within STOP_RADIUS_M. If
+      // yes, start (or continue) the dwell timer. When dwell >= STOP_DWELL_MS
+      // and no rating sheet is already open, fire the survey. If rider leaves
+      // the radius, reset that stop's timer (false-positive — they were just
+      // passing by, e.g. red light near the place).
+      const stops = route?.stops;
+      if (Array.isArray(stops) && stops.length && !pendingStopRating) {
+        const now = Date.now();
+        for (let i = 0; i < stops.length; i++) {
+          if (ratedStopsRef.current.has(i)) continue;
+          const s = stops[i];
+          if (s?.lat == null || s?.lng == null) continue;
+          const distM = haversineM(lat, lng, s.lat, s.lng);
+          if (distM <= STOP_RADIUS_M) {
+            const dwell = stopDwellRef.current[i];
+            if (!dwell) {
+              stopDwellRef.current[i] = { enteredAt: now };
+              console.log(`[stop-dwell] entered stop ${i} (${s.name}) at ${distM.toFixed(0)}m`);
+            } else if (now - dwell.enteredAt >= STOP_DWELL_MS) {
+              console.log(`[stop-dwell] firing rating sheet for stop ${i} (${s.name})`);
+              setPendingStopRating({
+                stopIndex: i,
+                name:     s.name,
+                address:  s.address,
+                place_id: s.placeId || null,
+                type:     s.type || null,
+              });
+              // Mark as "handled" right away so we don't re-fire on the next
+              // tick before the user interacts.
+              ratedStopsRef.current.add(i);
+              break;
+            }
+          } else if (stopDwellRef.current[i]) {
+            // Left the radius before dwell threshold — was a drive-by.
+            delete stopDwellRef.current[i];
+          }
+        }
+      }
     }
   }
 
@@ -3095,6 +3239,11 @@ export default function App() {
     // UUID only if no session exists (e.g. nav started on a route restored
     // from localStorage without going through a generateRoute call).
     if (!navSessionIdRef.current) navSessionIdRef.current = crypto.randomUUID();
+    // Fresh dwell + rated state per ride. Otherwise yesterday's "already
+    // rated" set would silently suppress today's surveys.
+    stopDwellRef.current = {};
+    ratedStopsRef.current = new Set();
+    setPendingStopRating(null);
     logNavEvent('nav_start', {
       lat: userLocation?.lat,
       lng: userLocation?.lng,
@@ -3166,6 +3315,9 @@ export default function App() {
   function stopNavigation() {
     logNavEvent('nav_stop', { metadata: { reason: 'manual' } });
     navSessionIdRef.current = null;
+    stopDwellRef.current = {};
+    ratedStopsRef.current = new Set();
+    setPendingStopRating(null);
     setNavMode(false);
     navModeRef.current = false;
     setNextTurn(null);
@@ -3848,6 +4000,16 @@ export default function App() {
             onClick={() => setOutOfAreaToast(false)}
             aria-label="Dismiss">✕</button>
         </div>
+      )}
+
+      {/* Stop rating sheet — fires after rider dwells at a suggested stop for
+          ≥2 min. One tap on a rating button submits and dismisses; Skip
+          dismisses without rating. Comment is optional, collapsed by default. */}
+      {pendingStopRating && (
+        <StopRatingSheet
+          stop={pendingStopRating}
+          onRate={submitStopRating}
+          onSkip={skipStopRating}/>
       )}
 
       {/* Full-screen Google Maps Embed for a tapped stop. Uses Maps Embed API
