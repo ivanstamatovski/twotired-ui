@@ -1455,6 +1455,19 @@ export default function App() {
   // (e.g. off-route trigger) where pos isn't in scope.
   const lastGpsFixRef = useRef(null);
 
+  // DEV: expose a window helper so we can preview the rating sheet from the
+  // console without waiting for dwell timing. REMOVE before next ship.
+  useEffect(() => {
+    window.__showStopRating = (name, addr) => setPendingStopRating({
+      stopIndex: 0,
+      name:     name || 'Joe Coffee (TEST)',
+      address:  addr || '124 Lispenard St, Tribeca, NYC',
+      place_id: null,
+      type:     'coffee shop',
+    });
+    return () => { delete window.__showStopRating; };
+  }, []);
+
   // Stop rating dwell tracking (v2026-06-13).
   // stopDwellRef: { [stopIndex]: { enteredAt: ms timestamp } } — when rider
   //   first entered the 50m radius of that stop. Cleared when they leave the
