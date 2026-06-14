@@ -2829,9 +2829,36 @@ export default function App() {
           if (distM <= STOP_RADIUS_M) {
             const dwell = stopDwellRef.current[i];
             if (!dwell) {
-              stopDwellRef.current[i] = { enteredAt: now };
-              console.log(`[stop-dwell] entered stop ${i} (${s.name}) at ${distM.toFixed(0)}m`);
+              // First entry — record time AND schedule a one-shot timer so the
+              // survey fires even if no further GPS ticks arrive (the rider
+              // stopped moving; DevTools Sensors only emits one event per set).
+              const timer = setTimeout(() => {
+                // Re-check: rider might have left the radius and the GPS-tick
+                // path already cleared this entry, OR the sheet is already up
+                // for another stop, OR they already rated this one. If any of
+                // those, do nothing.
+                const stillThere = stopDwellRef.current[i];
+                if (!stillThere) return;
+                if (ratedStopsRef.current.has(i)) return;
+                const r = routeDataRef.current;
+                const stop = r?.stops?.[i];
+                if (!stop) return;
+                console.log(`[stop-dwell] timer fired for stop ${i} (${stop.name})`);
+                ratedStopsRef.current.add(i);
+                setPendingStopRating({
+                  stopIndex: i,
+                  name:     stop.name,
+                  address:  stop.address,
+                  place_id: stop.placeId || null,
+                  type:     stop.type || null,
+                });
+              }, STOP_DWELL_MS);
+              stopDwellRef.current[i] = { enteredAt: now, timer };
+              console.log(`[stop-dwell] entered stop ${i} (${s.name}) at ${distM.toFixed(0)}m — timer ${STOP_DWELL_MS}ms`);
             } else if (now - dwell.enteredAt >= STOP_DWELL_MS) {
+              // Belt-and-suspenders: timer should have fired by now anyway,
+              // but if for some reason GPS ticks beat the timer, fire here.
+              if (dwell.timer) clearTimeout(dwell.timer);
               console.log(`[stop-dwell] firing rating sheet for stop ${i} (${s.name})`);
               setPendingStopRating({
                 stopIndex: i,
@@ -2840,13 +2867,13 @@ export default function App() {
                 place_id: s.placeId || null,
                 type:     s.type || null,
               });
-              // Mark as "handled" right away so we don't re-fire on the next
-              // tick before the user interacts.
               ratedStopsRef.current.add(i);
               break;
             }
           } else if (stopDwellRef.current[i]) {
             // Left the radius before dwell threshold — was a drive-by.
+            // Cancel the pending timer so it doesn't fire from outside.
+            if (stopDwellRef.current[i].timer) clearTimeout(stopDwellRef.current[i].timer);
             delete stopDwellRef.current[i];
           }
         }
@@ -3241,6 +3268,9 @@ export default function App() {
     if (!navSessionIdRef.current) navSessionIdRef.current = crypto.randomUUID();
     // Fresh dwell + rated state per ride. Otherwise yesterday's "already
     // rated" set would silently suppress today's surveys.
+    for (const dwell of Object.values(stopDwellRef.current)) {
+      if (dwell?.timer) clearTimeout(dwell.timer);
+    }
     stopDwellRef.current = {};
     ratedStopsRef.current = new Set();
     setPendingStopRating(null);
@@ -3315,6 +3345,10 @@ export default function App() {
   function stopNavigation() {
     logNavEvent('nav_stop', { metadata: { reason: 'manual' } });
     navSessionIdRef.current = null;
+    // Cancel any pending dwell timers so they don't fire after nav stops.
+    for (const dwell of Object.values(stopDwellRef.current)) {
+      if (dwell?.timer) clearTimeout(dwell.timer);
+    }
     stopDwellRef.current = {};
     ratedStopsRef.current = new Set();
     setPendingStopRating(null);
