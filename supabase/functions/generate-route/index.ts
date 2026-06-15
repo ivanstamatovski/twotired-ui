@@ -1,4 +1,29 @@
-// generate-route edge function — v2.69
+// generate-route edge function — v2.73
+// v2.73: soften joy_tier_c penalty from × 0.4 to × 0.55. After widening the
+//        polygon from <2.30 to <2.70 in v2.72-ops (Molly score server) the
+//        penalty × area product effectively doubled, creating a "wall around
+//        NYC" — routes from Long Island to Bear Mountain detoured 50+ miles
+//        via SI/NJ rather than crossing through the Bronx. 0.55 still
+//        discourages tier_c but lets through-routes win when going around
+//        adds significant distance. Should still bypass Paterson when
+//        alternatives exist (Paterson is ENTIRELY surrounded by tier_c).
+// v2.72: build curviness model per-request instead of caching at module load.
+//        The cache was capturing _joyAreas=null because loadRoutingAreas() is
+//        async — even when v2.71 logged "joy areas loaded", every route flowed
+//        through GH without the joy_tier_c penalty because the cached model
+//        had been built before _joyAreas was populated. Building on demand
+//        is the real fix; v2.71's retry was a useful debug tool but didn't
+//        solve the actual bug.
+// v2.71: loadRoutingAreas retries up to 3 times with backoff. Previous one-shot
+//        left edge function silently un-tuned for its lifetime if score server
+//        was briefly unreachable at cold start. Also logs explicitly when
+//        ROAD_SCORE_URL secret is missing (was silent before).
+// v2.70
+// v2.70: persist user_id on route_logs from body.user_id. Was always null
+//        because we only read userLat/userLng/nav_session_id/event_origin
+//        from the body — admin Rides view then showed "—" for planning-only
+//        sessions because there was no nav_events row to source the rider
+//        from. Now both planning-only and navigated sessions show the rider.
 // v2.69: per-leg geometries on two-phase routes. mergeRoutes carries both
 //        leg geometries through; main handler simplifies each to ≤50 pts
 //        and stores in new log.route_legs jsonb column. Admin map can now
@@ -418,17 +443,43 @@ let _joyAreas:     any | null = null;
 let _transitAreas: any | null = null;
 
 async function loadRoutingAreas(): Promise<void> {
-  if (!ROAD_SCORE_URL) return;
-  try {
-    const [jRes, tRes] = await Promise.all([
-      fetch(`${ROAD_SCORE_URL}/areas/joy`,     { signal: AbortSignal.timeout(10000) }),
-      fetch(`${ROAD_SCORE_URL}/areas/transit`, { signal: AbortSignal.timeout(10000) }),
-    ]);
-    if (jRes.ok) { _joyAreas     = await jRes.json(); console.log('[loadRoutingAreas] joy areas loaded'); }
-    if (tRes.ok) { _transitAreas = await tRes.json(); console.log('[loadRoutingAreas] transit areas loaded'); }
-  } catch (e: any) {
-    console.warn('[loadRoutingAreas] failed (will route without score areas):', e.message);
+  if (!ROAD_SCORE_URL) {
+    console.warn('[loadRoutingAreas] ROAD_SCORE_URL not set — no score areas will be loaded');
+    return;
   }
+  // v2.71: retry up to 3 times with backoff. The previous one-shot fetch left
+  // the edge function silently un-tuned for the rest of its lifetime if the
+  // score server happened to be briefly unreachable at cold start (caught on
+  // 2026-06-12 when a score-server restart racing a Monaco deploy left the
+  // function routing through Paterson because joy_tier_c never loaded).
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const [jRes, tRes] = await Promise.all([
+        fetch(`${ROAD_SCORE_URL}/areas/joy`,     { signal: AbortSignal.timeout(15000) }),
+        fetch(`${ROAD_SCORE_URL}/areas/transit`, { signal: AbortSignal.timeout(15000) }),
+      ]);
+      if (jRes.ok) {
+        _joyAreas = await jRes.json();
+        console.log(`[loadRoutingAreas] joy areas loaded (attempt ${attempt})`);
+      } else {
+        console.warn(`[loadRoutingAreas] joy areas returned ${jRes.status} (attempt ${attempt})`);
+      }
+      if (tRes.ok) {
+        _transitAreas = await tRes.json();
+        console.log(`[loadRoutingAreas] transit areas loaded (attempt ${attempt})`);
+      } else {
+        console.warn(`[loadRoutingAreas] transit areas returned ${tRes.status} (attempt ${attempt})`);
+      }
+      if (jRes.ok && tRes.ok) return;
+    } catch (e: any) {
+      console.warn(`[loadRoutingAreas] attempt ${attempt}/${maxAttempts} failed: ${e?.message}`);
+    }
+    if (attempt < maxAttempts) {
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+    }
+  }
+  console.warn('[loadRoutingAreas] all attempts failed — routing without score areas');
 }
 
 // Kick off at module load — warm by the time the first request arrives
@@ -700,7 +751,7 @@ function buildCurvinessModel(curviness: 1 | 2 | 3): any {
       { if: 'road_class == TRUNK',    multiply_by: '0.2'  },
       { if: 'road_class == PRIMARY',  multiply_by: '0.7'  },
       { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
-      ...(_joyAreas ? [{ if: 'in_joy_tier_c', multiply_by: '0.4' }] : []),
+      ...(_joyAreas ? [{ if: 'in_joy_tier_c', multiply_by: '0.55' }] : []),
     ];
     const areaFeatures = [
       ...baseAreaFeatures,
@@ -734,9 +785,12 @@ function buildCurvinessModel(curviness: 1 | 2 | 3): any {
   };
 }
 
-// Keep CURVINESS_MODELS as a lazy getter so corridor builder can still reference it
-// (corridor builder calls buildCorridorModel which needs the base speed array)
-const CURVINESS_MODELS = [1, 2, 3].map((c) => buildCurvinessModel(c as 1 | 2 | 3));
+// NOTE: don't pre-cache curviness models here. _joyAreas/_transitAreas are
+// populated asynchronously by loadRoutingAreas() AFTER module load — caching
+// the model at module load means it captures _joyAreas=null forever, and
+// every route flows through GH without the in_joy_tier_c penalty (see v2.71
+// log "joy areas loaded" co-existing with active areas missing joy_tier_c).
+// Build at request time so each call sees the latest _joyAreas state.
 
 // ── Pre-snap a coordinate to its nearest routable edge (v2.61) ────────────────
 // /nearest is profile-less — returns the absolute closest edge from GH's geo
@@ -1142,7 +1196,9 @@ async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings
     // Combined with the PALISADES_ZONE_AREAS penalty in custom_model, motorways in the
     // Palisades corridor are effectively ruled out for all scenic routing tiers (2 and 3).
     // v2.33: modelOverride allows corridor-specific custom_model (buildCorridorModel).
-    const model = modelOverride || CURVINESS_MODELS[curviness - 1];
+    // v2.72: build fresh each request so the model sees the current _joyAreas
+    // state (which loads asynchronously after module init).
+    const model = modelOverride || buildCurvinessModel(curviness);
     body = {
       points: points.map(p => [p.lng, p.lat]),
       // v2.52: single 'twotired' profile for all curviness tiers. Flat car-based base
@@ -2029,6 +2085,9 @@ Deno.serve(async (req) => {
     // v2.62: linkage to nav session so admin can join route_logs↔nav_events.
     log.nav_session_id = typeof rawBody.nav_session_id === 'string' ? rawBody.nav_session_id : null;
     log.event_origin   = typeof rawBody.event_origin   === 'string' ? rawBody.event_origin   : null;
+    // v2.70: persist user_id so the admin Rides view shows the rider even on
+    // planning-only sessions (where there's no nav_events row to source from).
+    log.user_id        = typeof rawBody.user_id        === 'string' ? rawBody.user_id        : null;
 
     // v2.10: detect mode — new query, refinement, or raw RouteRequest
     let body: RouteRequest;
