@@ -1,4 +1,13 @@
-// generate-route edge function — v2.73
+// generate-route edge function — v2.74
+// v2.74: differential joy_tier_c penalty. Instead of a global multiplier
+//        applied to every road in tier_c, the penalty now applies ONLY to
+//        surface streets (secondary/tertiary/unclassified/residential) at
+//        × 0.35. Motorways/trunks/primaries in tier_c keep their class
+//        penalty alone. This makes through-routes via motorway viable
+//        (Hempstead→Bear Mtn via Throgs Neck) while still pushing urban
+//        grids OFF the preferred path (Warwick→Paterson detours around).
+//        v2.73's global × 0.55 fixed Hempstead but let Paterson Main St
+//        sneak back in.
 // v2.73: soften joy_tier_c penalty from × 0.4 to × 0.55. After widening the
 //        polygon from <2.30 to <2.70 in v2.72-ops (Molly score server) the
 //        penalty × area product effectively doubled, creating a "wall around
@@ -751,7 +760,13 @@ function buildCurvinessModel(curviness: 1 | 2 | 3): any {
       { if: 'road_class == TRUNK',    multiply_by: '0.2'  },
       { if: 'road_class == PRIMARY',  multiply_by: '0.7'  },
       { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
-      ...(_joyAreas ? [{ if: 'in_joy_tier_c', multiply_by: '0.55' }] : []),
+      // tier_c only penalizes SURFACE streets (the actual urban grid problem).
+      // motorway/trunk/primary already have their own class penalty above —
+      // compounding tier_c on them creates the "wall around NYC" effect that
+      // sent Hempstead→Bear Mountain on a 50mi detour via SI/NJ.
+      ...(_joyAreas ? [
+        { if: 'in_joy_tier_c && (road_class == SECONDARY || road_class == TERTIARY || road_class == UNCLASSIFIED || road_class == RESIDENTIAL)', multiply_by: '0.35' },
+      ] : []),
     ];
     const areaFeatures = [
       ...baseAreaFeatures,
