@@ -317,7 +317,7 @@ function isInServiceArea(lat, lng) {
   return lat >= SERVICE_AREA_BBOX.south && lat <= SERVICE_AREA_BBOX.north
       && lng >= SERVICE_AREA_BBOX.west  && lng <= SERVICE_AREA_BBOX.east;
 }
-const OUT_OF_AREA_MSG = 'TwoTired currently supports rides in NY, NJ, CT, MA, and PA. More regions coming soon.';
+const OUT_OF_AREA_MSG = 'Looks like you\'re outside our current service area. TwoTired now supports NY, NJ, CT, MA, and PA — your region is on the roadmap. Thanks for trying it, and stay tuned!';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -1289,6 +1289,9 @@ export default function App() {
   const [error, setError] = useState(null);
   const [messages, setMessages] = useState([]);
   const [outOfAreaToast, setOutOfAreaToast] = useState(false);
+  // Show the out-of-area banner only ONCE per session even as GPS keeps
+  // pinging from outside the bounding box.
+  const outOfAreaShownRef = useRef(false);
   const [selectedPlace, setSelectedPlace] = useState(null);   // { name, placeId, address, website, lat, lng }
   const selectedPlaceRef = useRef(null);
   useEffect(() => { selectedPlaceRef.current = setSelectedPlace; }, []);
@@ -2587,6 +2590,14 @@ export default function App() {
     }
 
     setUserLocation({ lat, lng });
+    // Proactive out-of-area banner: fire ONCE per session if the rider's first
+    // GPS fix lands outside the service area (e.g. Florida users seeing the
+    // app in the App Store). The submission-time check already exists too —
+    // this one catches them on app open before they even type a query.
+    if (!outOfAreaShownRef.current && !isInServiceArea(lat, lng)) {
+      outOfAreaShownRef.current = true;
+      setOutOfAreaToast(true);
+    }
     // Snapshot last GPS fix so timer-driven nav events (e.g. off-route trigger)
     // can attach position even when pos isn't in their scope.
     lastGpsFixRef.current = {

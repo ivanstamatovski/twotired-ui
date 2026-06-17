@@ -1573,12 +1573,26 @@ async function initDebugMap(r, idx) {
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
+// Cache of user_id → user record so the Rides + Stop ratings views can show
+// email instead of a truncated UUID. Populated by loadUsers; falls back
+// gracefully if not yet loaded.
+const _usersById = {};
+
+function userLabel(id) {
+  if (!id) return '—';
+  const u = _usersById[id];
+  if (u?.email) return u.email;
+  return id.slice(0, 8);
+}
+
 async function loadUsers() {
   const tbody = document.getElementById('users-body');
   tbody.innerHTML = '<tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr>';
   try {
     const data = await sb('/auth/v1/admin/users?per_page=500');
     const users = data.users || data;
+    // Fill the lookup cache so other panels can resolve user_id → email.
+    for (const u of users) { _usersById[u.id] = u; }
     document.getElementById('badge-users').textContent = users.length;
     const today = users.filter(u => new Date(u.created_at) > new Date(Date.now()-86400000)).length;
     const week  = users.filter(u => new Date(u.created_at) > new Date(Date.now()-7*86400000)).length;
@@ -1851,7 +1865,7 @@ function renderRides() {
     return `
       <tr class="ride-session-row" onclick="openRideModal('${s.session_id}')">
         <td class="cell-mono" style="font-size:12px">${fmtDateShort(s.started_at)}</td>
-        <td class="cell-mono" style="font-size:11px">${s.user_id ? s.user_id.slice(0, 8) : '—'}</td>
+        <td class="cell-main" style="font-size:12px">${escHtml(userLabel(s.user_id))}</td>
         <td>${promptCell}</td>
         <td>${destCell}</td>
         <td>${pipelineCell}</td>
@@ -1929,7 +1943,7 @@ function renderRideDetail(s, linkedLogs, initialLog) {
       <div class="ride-summary-item"><div class="ride-summary-label">Reroutes</div><div class="ride-summary-value">${s.reroute_ok_count}/${s.reroute_count}${s.reroute_bad_count > 0 ? ` <span style="color:var(--red);font-size:11px">(${s.reroute_bad_count} failed)</span>` : ''}</div></div>
       <div class="ride-summary-item"><div class="ride-summary-label">Worst drift</div><div class="ride-summary-value">${s.worst_drift_m != null ? s.worst_drift_m + 'm' : '—'}</div></div>
       <div class="ride-summary-item"><div class="ride-summary-label">Pipeline calls</div><div class="ride-summary-value">${pipelineCount}</div></div>
-      <div class="ride-summary-item"><div class="ride-summary-label">User</div><div class="ride-summary-value" style="font-family:'SF Mono',Menlo,monospace;font-size:12px">${s.user_id ? s.user_id.slice(0, 12) : '—'}</div></div>
+      <div class="ride-summary-item"><div class="ride-summary-label">User</div><div class="ride-summary-value" style="font-size:13px">${escHtml(userLabel(s.user_id))}</div></div>
     </div>`;
 
   const legend = `
@@ -2556,7 +2570,7 @@ async function loadStopRatings() {
     tbody.innerHTML = ratings.slice(0, 100).map(r => `
       <tr>
         <td class="cell-mono" style="font-size:12px">${fmtDateShort(r.created_at)}</td>
-        <td class="cell-mono" style="font-size:11px">${r.user_id ? r.user_id.slice(0, 8) : '—'}</td>
+        <td class="cell-main" style="font-size:12px">${escHtml(userLabel(r.user_id))}</td>
         <td class="cell-main">${escHtml(r.place_name)}</td>
         <td><span class="badge badge-gray">${escHtml(r.place_type || '—')}</span></td>
         <td><span class="badge ${RATING_COLOR[String(r.rating)]}">${RATING_EMOJI[String(r.rating)]} ${r.rating}</span></td>
