@@ -453,9 +453,9 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>Email</th><th>Joined</th><th>Last Sign In</th><th>Provider</th><th>Status</th>
+              <th>Email</th><th>Joined</th><th>Last Sign In</th><th>Provider</th><th>Status</th><th></th>
             </tr></thead>
-            <tbody id="users-body"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody>
+            <tbody id="users-body"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -791,6 +791,36 @@ tr:hover td{background:rgba(255,255,255,.02)}
     <div class="trace-modal-meta" id="trace-modal-meta"></div>
   </div>
   <div class="trace-modal-body" id="trace-modal-body"></div>
+</div>
+
+<!-- ── Send User Message Modal ── -->
+<div id="msg-modal" class="task-modal" style="display:none">
+  <div class="task-modal-card" onclick="event.stopPropagation()" style="max-width:580px">
+    <div class="task-modal-header">
+      <span>✉ Send message to <span id="msg-modal-email" style="color:var(--accent);font-family:'SF Mono',Menlo,monospace;font-size:13px"></span></span>
+      <button class="task-modal-close" onclick="closeMessageModal()">✕</button>
+    </div>
+    <div class="task-modal-body">
+      <label class="task-field">
+        <span class="task-field-label">Subject <span class="task-field-required">*</span></span>
+        <input id="msg-form-subject" type="text" maxlength="200" autocomplete="off" placeholder="A quick note about your last ride"/>
+      </label>
+      <label class="task-field">
+        <span class="task-field-label">Body <span class="task-field-required">*</span></span>
+        <textarea id="msg-form-body" rows="8" placeholder="Hey — I noticed your route to..."></textarea>
+      </label>
+      <div style="color:var(--text-muted);font-size:11px">
+        Plain text only. Newlines preserved. Reply-to is <span id="msg-reply-to-display">support@twotired.net</span>.
+      </div>
+      <div id="msg-form-error" class="task-form-error"></div>
+      <div id="msg-recent-history" style="margin-top:14px"></div>
+    </div>
+    <div class="task-modal-footer">
+      <div style="flex:1"></div>
+      <button class="task-modal-cancel" onclick="closeMessageModal()">Cancel</button>
+      <button id="msg-modal-send" class="task-modal-save" onclick="sendUserMessage()">Send</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Fullscreen Ride Modal ── -->
@@ -1612,15 +1642,16 @@ async function loadUsers() {
       const confirmed = u.email_confirmed_at || u.confirmed_at;
       return `
         <tr>
-          <td class="cell-main">${u.email || '—'}</td>
+          <td class="cell-main">${escHtml(u.email || '—')}</td>
           <td class="cell-mono" style="font-size:12px">${fmtDateShort(u.created_at)}</td>
           <td class="cell-mono" style="font-size:12px">${u.last_sign_in_at ? timeSince(u.last_sign_in_at) : '—'}</td>
           <td><span class="badge ${provider==='google'?'badge-blue':'badge-gray'}">${provider}</span></td>
           <td><span class="badge ${confirmed?'badge-green':'badge-gray'}">${confirmed?'confirmed':'pending'}</span></td>
+          <td>${u.email ? `<button class="expand-btn" onclick="openMessageModal('${escHtml(u.id)}','${escHtml(u.email)}')">✉ Message</button>` : ''}</td>
         </tr>`;
     }).join('');
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red);padding:24px">${e.message}</td></tr>`;
   }
 }
 
@@ -2252,6 +2283,99 @@ function initRideMap(s, linkedLogs, initialLog) {
     map.setView([40.9, -74.2], 9);
   }
 }
+
+// ── Send user message ────────────────────────────────────────────────────────
+let _msgComposeUser = null;  // { id, email } of recipient
+
+async function openMessageModal(userId, email) {
+  _msgComposeUser = { id: userId, email };
+  document.getElementById('msg-modal-email').textContent = email;
+  document.getElementById('msg-form-subject').value = '';
+  document.getElementById('msg-form-body').value = '';
+  document.getElementById('msg-form-error').textContent = '';
+  document.getElementById('msg-recent-history').innerHTML = '<div style="color:var(--text-muted);font-size:11px">Loading recent messages…</div>';
+  document.getElementById('msg-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('msg-form-subject').focus(), 30);
+
+  // Pull recent messages to this user so we don't accidentally re-send the same thing.
+  try {
+    const rows = await sb(`/rest/v1/sent_messages?select=subject,status,error_text,created_at,sent_at&recipient_id=eq.${userId}&order=created_at.desc&limit=5`);
+    const hist = document.getElementById('msg-recent-history');
+    if (!rows.length) {
+      hist.innerHTML = '<div style="color:var(--text-muted);font-size:11px">No previous messages to this rider.</div>';
+    } else {
+      hist.innerHTML = '<div class="task-field-label" style="margin-bottom:6px">Recent messages to this rider</div>' +
+        rows.map(r => `
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <span style="color:var(--text)">${escHtml(r.subject)}</span>
+              <span class="badge ${r.status==='sent'?'badge-green':r.status==='failed'?'badge-red':'badge-gray'}" style="font-size:9px">${r.status}</span>
+            </div>
+            <div style="color:var(--text-muted);font-size:10px;margin-top:2px">${fmtDateShort(r.sent_at || r.created_at)}${r.error_text ? ` — <span style="color:var(--red)">${escHtml(r.error_text.slice(0,60))}</span>` : ''}</div>
+          </div>`).join('');
+    }
+  } catch (e) {
+    document.getElementById('msg-recent-history').innerHTML = `<div style="color:var(--red);font-size:11px">history load failed: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function closeMessageModal() {
+  document.getElementById('msg-modal').style.display = 'none';
+  _msgComposeUser = null;
+}
+
+async function sendUserMessage() {
+  if (!_msgComposeUser) return;
+  const errEl = document.getElementById('msg-form-error');
+  errEl.textContent = '';
+  const subject = document.getElementById('msg-form-subject').value.trim();
+  const bodyText = document.getElementById('msg-form-body').value.trim();
+  if (!subject) { errEl.textContent = 'Subject is required.'; return; }
+  if (!bodyText) { errEl.textContent = 'Body is required.'; return; }
+
+  const sendBtn = document.getElementById('msg-modal-send');
+  sendBtn.disabled = true;
+  sendBtn.textContent = 'Sending…';
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-user-message`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        apikey: SERVICE_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        recipient_id: _msgComposeUser.id,
+        subject,
+        body_text: bodyText,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      errEl.textContent = (data && (data.detail || data.error)) || `HTTP ${res.status}`;
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+      return;
+    }
+    closeMessageModal();
+  } catch (e) {
+    errEl.textContent = e?.message || 'Network error';
+    sendBtn.disabled = false;
+    sendBtn.textContent = 'Send';
+  }
+}
+
+// Click outside / Esc closes the message modal too (reuses pattern from Tasks).
+document.addEventListener('click', (e) => {
+  const modal = document.getElementById('msg-modal');
+  if (modal && modal.style.display !== 'none' && e.target === modal) closeMessageModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('msg-modal');
+    if (modal && modal.style.display !== 'none') closeMessageModal();
+  }
+});
 
 // ── Tasks (Kanban) ───────────────────────────────────────────────────────────
 // Backlog + work-tracking. Reads from public.tasks; admin uses service role
