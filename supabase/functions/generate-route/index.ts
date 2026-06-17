@@ -1,4 +1,13 @@
-// generate-route edge function — v2.74
+// generate-route edge function — v2.75
+// v2.75: parse coordinate-shaped destination strings before geocoding. Claude
+//        is instructed never to produce coordinates but occasionally does,
+//        especially for round-trip "1 hour loop" requests where it returns
+//        the rider's GPS as the destination. Previously this 400'd the
+//        whole pipeline at the Places geocode step ("Coordinates are not a
+//        valid input for the query search parameter"). Now resolveLocation
+//        treats any "lat,lng"-shaped query as a direct LatLng. Sanity
+//        bounded to lat ±90 / lng ±180 + minimum magnitude > 1 to avoid
+//        matching "1, 2 Broadway"-style strings.
 // v2.74: differential joy_tier_c penalty. Instead of a global multiplier
 //        applied to every road in tier_c, the penalty now applies ONLY to
 //        surface streets (secondary/tertiary/unclassified/residential) at
@@ -1075,12 +1084,43 @@ async function geocode(query: string): Promise<LatLng> {
   return { lat: loc.latitude, lng: loc.longitude };
 }
 
+// Parse a "lat,lng" coordinate string. Returns null if the input doesn't
+// look like a pair of decimals. Used to catch the case where Claude returns
+// the rider's GPS as the destination string for round-trip loops — without
+// this, the geocode call below sends those coords to Google Places, which
+// rejects them with INVALID_ARGUMENT (Places' textQuery doesn't accept
+// coordinate input).
+function parseCoordString(s: string): LatLng | null {
+  if (typeof s !== 'string') return null;
+  const m = s.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const lat = parseFloat(m[1]);
+  const lng = parseFloat(m[2]);
+  if (isNaN(lat) || isNaN(lng)) return null;
+  // Sanity-check magnitudes — reject "1, 2" which could be a place name like
+  // "1, 2 Broadway" (unlikely but defensive). Coords for our service area
+  // fall in lat 38..47, lng -82..-66.
+  if (Math.abs(lat) < 1 || Math.abs(lng) < 1) return null;
+  if (lat > 90 || lat < -90 || lng > 180 || lng < -180) return null;
+  return { lat, lng };
+}
+
 // ── Resolve Location → LatLng ─────────────────────────────────────────────────
 // Check hardcoded KNOWN_WAYPOINTS first so destinations like "Bear Mountain"
 // snap to a known road-adjacent coord rather than Google Places' off-road
 // geocode (e.g. parking lot or trail head 250m from any routable road).
 async function resolveLocation(loc: Location): Promise<LatLng> {
   if ('lat' in loc) return loc;
+  // v2.75: catch coordinate-shaped strings before geocoding. Claude is told
+  // never to produce coordinates but occasionally does anyway, especially
+  // for round-trip "loop" requests where it returns the rider's GPS as the
+  // destination. Without this check the geocode call below 400s and the
+  // whole route generation fails.
+  const asCoord = parseCoordString(loc.query);
+  if (asCoord) {
+    console.log(`[resolveLocation] coord-string destination "${loc.query}" → ${asCoord.lat},${asCoord.lng}`);
+    return asCoord;
+  }
   const hardcoded = lookupWaypoint(loc.query);
   if (hardcoded) return hardcoded;
   return await geocode(loc.query);
