@@ -1,4 +1,11 @@
-// generate-route edge function — v2.75
+// generate-route edge function — v2.76
+// v2.76: real circular loops via GH round_trip algorithm. When round_trip=true
+//        AND destination ≈ origin AND no intermediates/stops/corridor, use
+//        GH's /route?algorithm=round_trip instead of routing point-to-point
+//        (which produced out-and-back on the same road). Default target
+//        distance 40 km (~25 mi) — fits "1 hour twisty loop" at curviness 3.
+//        Override via body.loop_distance_km. Two-phase NYC escape is bypassed
+//        for loops since by definition the rider starts/ends in the same place.
 // v2.75: parse coordinate-shaped destination strings before geocoding. Claude
 //        is instructed never to produce coordinates but occasionally does,
 //        especially for round-trip "1 hour loop" requests where it returns
@@ -1202,6 +1209,67 @@ async function findPOI(type: string, near: LatLng, radius_km = 25): Promise<any 
 //   U-turn excursions into town centers. E.g. northbound 9W → heading ≈ 0 at Nyack
 //   means GraphHopper must pass through Nyack traveling north — it cannot dip south
 //   to reach the town center and backtrack, because that would require a U-turn.
+// ── Round-trip loop route (v2.76) ─────────────────────────────────────────────
+// Uses GH's round_trip algorithm to generate a real circular loop instead of
+// an out-and-back. Single start point, target distance, GH picks the loop.
+// Combines with the same curviness custom_model so twisty / scenic preferences
+// still apply. Two-phase NYC escape doesn't apply here — by definition the
+// rider starts and ends in the same place.
+async function getRoundTripRoute(
+  origin: LatLng,
+  targetMeters: number,
+  curviness: 1 | 2 | 3,
+): Promise<any> {
+  const learnedCorrections = await getLearnedCorrections();
+  const profileLearned = relevantTo('twotired', learnedCorrections).filter(
+    c => c.rule_kind === 'area_penalty' || c.rule_kind === 'edge_penalty',
+  );
+
+  const model = buildCurvinessModel(curviness);
+  if (model && profileLearned.length) {
+    applyAreaPenalties(model, 'twotired', profileLearned);
+    applyEdgePenalties(model, 'twotired', profileLearned);
+  }
+
+  const body: any = {
+    points: [[origin.lng, origin.lat]],
+    profile: 'twotired',
+    custom_model: model,
+    'ch.disable': true,
+    algorithm: 'round_trip',
+    'round_trip.distance': targetMeters,
+    'round_trip.seed': Math.floor(Math.random() * 1_000_000),
+    snap_prevention: ['motorway', 'motorway_link'],
+    points_encoded: false,
+    instructions: true,
+    locale: 'en',
+    details: ['road_class'],
+  };
+
+  const res = await fetchGHWithRetry(`${GRAPHHOPPER_URL}/route`, body);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`GraphHopper round_trip error: ${res.status} ${err}`);
+  }
+  const data = await res.json();
+  const path = data.paths?.[0];
+  if (!path) throw new Error('GraphHopper round_trip returned no paths');
+  const calibratedMs = calibrateDriveTimeMs(path);
+  const rawMs = path.time ?? 0;
+  if (rawMs > 0) {
+    console.log(`[getRoundTripRoute] target=${(targetMeters/1000).toFixed(0)}km · result=${(path.distance/1000).toFixed(1)}km · raw=${Math.round(rawMs/60000)}min → calibrated=${Math.round(calibratedMs/60000)}min`);
+  }
+  return {
+    distance_miles: Math.round((path.distance / 1609.34) * 10) / 10,
+    time_minutes: Math.round(calibratedMs / 60000),
+    raw_time_minutes: Math.round(rawMs / 60000),
+    details: path.details || {},
+    geometry: path.points,
+    instructions: path.instructions || [],
+    gh_request: summarizeGhBody(body),
+  };
+}
+
 async function getRoute(points: LatLng[], curviness: 0 | 1 | 2 | 3 = 2, headings?: number[], modelOverride?: any): Promise<any> {
   // Fetch human-reviewed routing corrections up front. Two reasons we need
   // them this early: (1) the car-leg branch below has to know whether to
@@ -2334,6 +2402,24 @@ Deno.serve(async (req) => {
     allWaypoints = [originLL, ...intermediateWPs, ...stopLLs, destinationLL];
     if (body.round_trip) allWaypoints.push(originLL);
 
+    // ── Loop route (v2.76) ────────────────────────────────────────────────────
+    // round_trip + destination essentially at origin + no other waypoints =
+    // rider wants a CIRCULAR loop, not an out-and-back. Use GH's round_trip
+    // algorithm with a target distance. Default 40 km (~25 mi, fits "1 hour
+    // twisty" at curviness 3); override via body.loop_distance_km.
+    const isCircularLoop = body.round_trip
+      && haversineKm(originLL, destinationLL) < 1.0
+      && intermediateWPs.length === 0
+      && stopLLs.length === 0
+      && !corridor;
+    if (isCircularLoop) {
+      const targetKm = (body as any).loop_distance_km ?? 40;
+      const targetMeters = Math.max(5000, Math.min(targetKm * 1000, 200000));
+      console.log(`[generate-route] circular loop request: target ${targetKm} km curviness ${curviness}`);
+      route = await getRoundTripRoute(originLL, targetMeters, curviness as 1 | 2 | 3);
+      // The point list collapses to just the origin for downstream logging.
+      allWaypoints = [originLL];
+    } else {
     const exitPoint = pickExitPoint();
 
     if (exitPoint) {
@@ -2374,6 +2460,7 @@ Deno.serve(async (req) => {
     } else {
       route = await getRoute(allWaypoints, curviness);
     }
+    }  // close the v2.76 circular-loop else branch
 
     log.route_ms = Date.now() - routeStart;
     log.routing_config = {
