@@ -2925,7 +2925,7 @@ export default function App() {
       layout:{ 'line-join':'round','line-cap':'round' },
       paint:{
         'line-color':'#fff',
-        'line-opacity':0.5,
+        'line-opacity':0.25,
         'line-width': ['interpolate', ['linear'], ['zoom'],
           10, 6,
           14, 10,
@@ -2937,7 +2937,7 @@ export default function App() {
       layout:{ 'line-join':'round','line-cap':'round' },
       paint:{
         'line-color':'#2563eb',
-        'line-opacity':0.95,
+        'line-opacity':0.75,
         'line-width': ['interpolate', ['linear'], ['zoom'],
           10, 4,
           14, 7,
