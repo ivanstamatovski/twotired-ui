@@ -358,7 +358,7 @@ function boostRoadLabels(map) {
     try {
       map.setPaintProperty(id, 'text-color', '#111');
       map.setPaintProperty(id, 'text-halo-color', '#fff');
-      map.setPaintProperty(id, 'text-halo-width', 3.5);
+      map.setPaintProperty(id, 'text-halo-width', 1.5);
       map.setPaintProperty(id, 'text-halo-blur', 0);
       matched.push(id);
     } catch (e) {
