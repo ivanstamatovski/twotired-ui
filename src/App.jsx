@@ -2906,6 +2906,18 @@ export default function App() {
     if (!route?.geometry) return;
 
     map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:route.geometry } });
+    // Find the first symbol (label) layer in the basemap style. We insert our
+    // route polyline BEFORE it so road names, route shields, place names, etc
+    // render ON TOP of the blue ribbon — otherwise the line covers them when
+    // it crosses major streets. Falls back to top of stack if no symbol layer
+    // is found (style without labels), which preserves the old behaviour.
+    const firstLabelLayer = (() => {
+      try {
+        const layers = map.getStyle()?.layers || [];
+        const first = layers.find(l => l.type === 'symbol');
+        return first?.id;
+      } catch { return undefined; }
+    })();
     // Zoom-aware width: thin at preview zoom (~10) where the whole route fits on
     // screen, fat at nav zoom (~17+) so the rider can see the line clearly while
     // riding. Casing scales in lockstep so it always reads as a single ribbon.
@@ -2920,7 +2932,7 @@ export default function App() {
           17, 18,
           20, 24,
         ],
-      } });
+      } }, firstLabelLayer);
     map.addLayer({ id:'route-line', type:'line', source:'route',
       layout:{ 'line-join':'round','line-cap':'round' },
       paint:{
@@ -2932,7 +2944,7 @@ export default function App() {
           17, 13,
           20, 18,
         ],
-      } });
+      } }, firstLabelLayer);
 
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
