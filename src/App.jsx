@@ -339,6 +339,34 @@ function buildNavUrl(waypoints) {
   return `https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}${wps?`&waypoints=${wps}`:''}&travelmode=driving`;
 }
 
+// Boost road-name labels on the basemap. OpenFreeMap's Liberty style ships
+// with low-contrast text + a thin halo, which gets hard to read against the
+// blue route polyline (even after we moved the polyline below the label
+// layer). Bump halo width / opacity + darken text fill. Skips non-road labels
+// so place names, POIs, etc keep their original styling.
+function boostRoadLabels(map) {
+  if (!map?.getStyle) return;
+  let layers;
+  try { layers = map.getStyle()?.layers || []; }
+  catch { return; }
+  for (const l of layers) {
+    if (l?.type !== 'symbol') continue;
+    // OpenMapTiles convention: road-name labels live in layers whose id
+    // begins with "transportation_name" (Liberty/Maputnik) or "road_label"
+    // (some forks). Match loosely.
+    const id = l.id || '';
+    if (!/transportation[_-]?name|road[_-]?label|road[_-]?name/i.test(id)) continue;
+    try {
+      map.setPaintProperty(id, 'text-color', '#111');
+      map.setPaintProperty(id, 'text-halo-color', '#fff');
+      map.setPaintProperty(id, 'text-halo-width', 2.0);
+      map.setPaintProperty(id, 'text-halo-blur', 0);
+    } catch (e) {
+      console.warn('[boostRoadLabels] could not boost', id, e?.message || e);
+    }
+  }
+}
+
 function haversineM(lat1, lng1, lat2, lng2) {
   const R = 6_371_000;
   const toR = (d) => d * Math.PI / 180;
@@ -2442,6 +2470,7 @@ export default function App() {
 
     map.on('load', () => {
       mapLoadedRef.current = true;
+      boostRoadLabels(map);
       if (pendingRoute.current) {
         drawRouteOnMap(pendingRoute.current);
         pendingRoute.current = null;
@@ -2518,6 +2547,9 @@ export default function App() {
     map.on('style.load', () => {
       if (!initialStyleLoad) { initialStyleLoad = true; return; }
       console.log('[map] style reloaded — reconciling layers and markers');
+      // Re-apply road label boost — the basemap style was reloaded so our
+      // earlier setPaintProperty overrides are gone.
+      boostRoadLabels(map);
       // 1. Route polyline + stop markers
       const r = routeDataRef.current;
       if (r?.geometry) {
