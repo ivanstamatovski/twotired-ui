@@ -3615,6 +3615,13 @@ export default function App() {
       const data = await res.json();
       if (stale()) { clearInterval(ticker); return; }
       clearInterval(ticker);
+      // v2.77 server-side check: destination outside the service area.
+      // Pop the same banner we use for rider-out-of-area instead of bubbling
+      // up a vague error. setLoading and setQuery handled by the finally block.
+      if (!res.ok && data?.error === 'destination_out_of_area') {
+        setOutOfAreaToast(true);
+        return { ok: false, aborted: true };
+      }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
       if (data.clarify) {

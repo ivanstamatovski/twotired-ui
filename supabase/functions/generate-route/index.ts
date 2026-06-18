@@ -1,4 +1,10 @@
-// generate-route edge function — v2.76
+// generate-route edge function — v2.77
+// v2.77: reject destinations outside the service-area bounding box early.
+//        Previously a NY rider asking for a route to Miami got a confusing
+//        routing error / no-route surfaced. Now we return a structured
+//        error code 'destination_out_of_area' so the frontend can show the
+//        same out-of-area banner it shows when the rider's GPS is outside.
+//        Bounding box mirrors App.jsx's SERVICE_AREA_BBOX.
 // v2.76: real circular loops via GH round_trip algorithm. When round_trip=true
 //        AND destination ≈ origin AND no intermediates/stops/corridor, use
 //        GH's /route?algorithm=round_trip instead of routing point-to-point
@@ -1069,6 +1075,17 @@ const NORTHEAST_BBOX = {
   low:  { latitude: 38.5, longitude: -80.0 }, // SW corner: SW Pennsylvania
   high: { latitude: 47.5, longitude: -66.5 }, // NE corner: Maine coast
 };
+
+// Service-area bounding box for destination validation. Must mirror the
+// SERVICE_AREA_BBOX constant in App.jsx. Covers NY/NJ/CT/MA/PA with a small
+// margin. Used by v2.77 to reject out-of-area destinations early so the
+// frontend can pop the existing out-of-area banner instead of producing a
+// confusing routing failure.
+const SERVICE_AREA_BBOX = { south: 38.8, north: 45.1, west: -80.6, east: -69.8 };
+function isInServiceArea(lat: number, lng: number): boolean {
+  return lat >= SERVICE_AREA_BBOX.south && lat <= SERVICE_AREA_BBOX.north
+      && lng >= SERVICE_AREA_BBOX.west  && lng <= SERVICE_AREA_BBOX.east;
+}
 
 async function geocode(query: string): Promise<LatLng> {
   const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
@@ -2287,6 +2304,25 @@ Deno.serve(async (req) => {
       query: 'query' in body.destination ? body.destination.query : null,
       source: 'lat' in body.destination ? 'coords' : 'places',
     };
+
+    // v2.77: reject early if the destination resolves outside the service-area
+    // bounding box. Same bbox as the frontend's isInServiceArea. Catches the
+    // case where a rider in NY asks to ride to Miami, FL — we shouldn't burn
+    // routing cycles only to surface a vague error.
+    if (!isInServiceArea(destinationLL.lat, destinationLL.lng)) {
+      const destName = ('query' in body.destination ? body.destination.query : null)
+        || `${destinationLL.lat.toFixed(4)}, ${destinationLL.lng.toFixed(4)}`;
+      console.log(`[generate-route] rejecting out-of-area destination: ${destName}`);
+      log.error = `destination_out_of_area:${destName}`;
+      log.total_ms = Date.now() - requestStart;
+      logPipeline(log);
+      return new Response(JSON.stringify({
+        error: 'destination_out_of_area',
+        destination: destName,
+      }), {
+        status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
+    }
 
     // Resolve intermediate waypoints
     const intermediateWPs: LatLng[] = [];
