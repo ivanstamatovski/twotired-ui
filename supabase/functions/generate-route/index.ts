@@ -1,4 +1,14 @@
-// generate-route edge function — v2.77
+// generate-route edge function — v2.78
+// v2.78: counter the in_nyc motorway boost from Molly's profile (× 1.4)
+//        with a request-side × 0.71 at curviness 2/3. The profile boost
+//        was meant to help cross-NYC transit but made Belt Pkwy preferred
+//        over LI parkways for Long Island riders — sending them west to
+//        Verrazano → SI → NJ instead of north to Throgs Neck → Bronx →
+//        GWB on rides into the Hudson Valley. Net effect: motorways
+//        inside the NYC polygon now have ~the same effective priority
+//        as motorways outside it on scenic routes, so the LI escape
+//        direction is decided by distance, not by the NYC boost.
+//        Curviness 1 (transit) keeps the full boost.
 // v2.77: reject destinations outside the service-area bounding box early.
 //        Previously a NY rider asking for a route to Miami got a confusing
 //        routing error / no-route surfaced. Now we return a structured
@@ -782,6 +792,15 @@ function buildCurvinessModel(curviness: 1 | 2 | 3): any {
       { if: 'road_class == TRUNK',    multiply_by: '0.2'  },
       { if: 'road_class == PRIMARY',  multiply_by: '0.7'  },
       { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
+      // v2.78: counter the in_nyc motorway boost from Molly's profile. The
+      // profile rule (in_nyc && MOTORWAY × 1.4) is meant to help cross-NYC
+      // transit, but for scenic routes it makes Belt Pkwy preferred over
+      // LI parkways for Long Island riders — sending them west to Verrazano
+      // → SI → NJ instead of north to Throgs Neck → Bronx → GWB. Multiplying
+      // by 0.71 here brings the compound back to ~0.10 (same as motorway
+      // outside NYC), so the LI escape direction is decided by distance,
+      // not by the NYC boost. Curviness 1 (transit) keeps the boost.
+      { if: 'in_nyc && road_class == MOTORWAY', multiply_by: '0.71' },
       // tier_c only penalizes SURFACE streets (the actual urban grid problem).
       // motorway/trunk/primary already have their own class penalty above —
       // compounding tier_c on them creates the "wall around NYC" effect that
@@ -808,6 +827,8 @@ function buildCurvinessModel(curviness: 1 | 2 | 3): any {
     { if: 'road_class == TRUNK',    multiply_by: '0.1'  },
     { if: 'road_class == PRIMARY',  multiply_by: '0.5'  },
     { if: 'in_palisades_pkwy && road_class == MOTORWAY', multiply_by: '0.1' },
+    // v2.78: counter the in_nyc motorway boost — see curviness 2 for context.
+    { if: 'in_nyc && road_class == MOTORWAY', multiply_by: '0.71' },
     ...(_joyAreas ? [{ if: 'in_joy_tier_c', multiply_by: '0.4' }] : []),
   ];
   const areaFeatures = [
