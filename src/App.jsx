@@ -339,31 +339,37 @@ function buildNavUrl(waypoints) {
   return `https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}${wps?`&waypoints=${wps}`:''}&travelmode=driving`;
 }
 
-// Boost road-name labels on the basemap. OpenFreeMap's Liberty style ships
-// with low-contrast text + a thin halo, which gets hard to read against the
-// blue route polyline (even after we moved the polyline below the label
-// layer). Bump halo width / opacity + darken text fill. Skips non-road labels
-// so place names, POIs, etc keep their original styling.
+// Boost road-name labels on the basemap. OpenFreeMap Liberty ships with
+// low-contrast text + a thin halo — gets hard to read against the route
+// polyline. Bump halo width / opacity + darken text fill. Match loosely so
+// different OpenMapTiles forks all benefit.
 function boostRoadLabels(map) {
   if (!map?.getStyle) return;
   let layers;
   try { layers = map.getStyle()?.layers || []; }
   catch { return; }
+  const matched = [];
+  const allSymbols = [];
   for (const l of layers) {
     if (l?.type !== 'symbol') continue;
-    // OpenMapTiles convention: road-name labels live in layers whose id
-    // begins with "transportation_name" (Liberty/Maputnik) or "road_label"
-    // (some forks). Match loosely.
     const id = l.id || '';
-    if (!/transportation[_-]?name|road[_-]?label|road[_-]?name/i.test(id)) continue;
+    allSymbols.push(id);
+    if (!/transportation[_-]?name|road[_-]?label|road[_-]?name|highway[_-]?name|street[_-]?name|bridge_label/i.test(id)) continue;
     try {
       map.setPaintProperty(id, 'text-color', '#111');
       map.setPaintProperty(id, 'text-halo-color', '#fff');
-      map.setPaintProperty(id, 'text-halo-width', 2.0);
+      map.setPaintProperty(id, 'text-halo-width', 3.5);
       map.setPaintProperty(id, 'text-halo-blur', 0);
+      matched.push(id);
     } catch (e) {
       console.warn('[boostRoadLabels] could not boost', id, e?.message || e);
     }
+  }
+  if (matched.length === 0) {
+    // Diagnostic: dump every symbol layer so we can extend the regex.
+    console.warn('[boostRoadLabels] NO road-label layers matched. Symbol layers in style:', allSymbols);
+  } else {
+    console.log('[boostRoadLabels] boosted', matched.length, 'layer(s):', matched.join(', '));
   }
 }
 
@@ -2938,16 +2944,24 @@ export default function App() {
     if (!route?.geometry) return;
 
     map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:route.geometry } });
-    // Find the first symbol (label) layer in the basemap style. We insert our
-    // route polyline BEFORE it so road names, route shields, place names, etc
-    // render ON TOP of the blue ribbon — otherwise the line covers them when
-    // it crosses major streets. Falls back to top of stack if no symbol layer
-    // is found (style without labels), which preserves the old behaviour.
+    // Pick the layer to insert our route polyline BEFORE so labels stay
+    // legible. Priority: a road-name symbol layer (so "Long Beach Road" and
+    // similar render on top of the route ribbon, not under). Falls back to
+    // any symbol layer; falls back to undefined which lets MapLibre stack
+    // the route at the top (the legacy behaviour).
     const firstLabelLayer = (() => {
       try {
         const layers = map.getStyle()?.layers || [];
-        const first = layers.find(l => l.type === 'symbol');
-        return first?.id;
+        const isRoadLabel = (id='') =>
+          /transportation[_-]?name|road[_-]?label|road[_-]?name|highway[_-]?name|street[_-]?name|bridge_label/i.test(id);
+        const roadLabel = layers.find(l => l.type === 'symbol' && isRoadLabel(l.id));
+        if (roadLabel) {
+          console.log('[map] inserting route before road-label layer:', roadLabel.id);
+          return roadLabel.id;
+        }
+        const anySymbol = layers.find(l => l.type === 'symbol');
+        if (anySymbol) console.log('[map] no road-label match; inserting before first symbol:', anySymbol.id);
+        return anySymbol?.id;
       } catch { return undefined; }
     })();
     // Zoom-aware width: thin at preview zoom (~10) where the whole route fits on
