@@ -2944,6 +2944,7 @@ async function deleteAnnouncement(id) {
 let _knownRoads      = [];
 let _roadsFilter     = 'pending';     // pending | approved | rejected | all
 let _roadsStateFilter = '';            // '' | NY | NJ | CT | MA | PA
+let _editingRoadId   = null;           // uuid of row whose coords are being edited
 
 async function loadKnownRoads() {
   const list = document.getElementById('roads-list');
@@ -3004,6 +3005,7 @@ function renderKnownRoads() {
 
   list.innerHTML = rows.map((r, i) => {
     const idx = _knownRoads.findIndex(x => x.id === r.id);
+    const isEditing = _editingRoadId === r.id;
     const startTxt = `${r.start_lat?.toFixed(5)}, ${r.start_lng?.toFixed(5)}`;
     const endTxt   = `${r.end_lat?.toFixed(5)}, ${r.end_lng?.toFixed(5)}`;
     const tags = (r.vibe_tags || []).map(t => `<span class="badge badge-gray" style="margin-right:4px">${escHtml(t)}</span>`).join('');
@@ -3039,13 +3041,34 @@ function renderKnownRoads() {
               ${statusBadge}
               ${reviewBadge}
             </div>
-            <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">
-              ${escHtml(startTxt)} → ${escHtml(endTxt)}
-              ${r.length_km ? ` &nbsp;·&nbsp; <strong>${r.length_km} km</strong>` : ''}
-              ${r.difficulty ? ` &nbsp;·&nbsp; difficulty <strong>${r.difficulty}/5</strong>` : ''}
-              ${r.curviness_tier ? ` &nbsp;·&nbsp; curviness <strong>${r.curviness_tier}</strong>` : ''}
-              &nbsp;·&nbsp; <a href="${mapSearch}" target="_blank" rel="noopener" style="color:var(--accent)">open in Maps ↗</a>
-            </div>
+            ${isEditing ? `
+              <div style="background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:10px;margin:6px 0">
+                <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+                  Edit coords (paste lat,lng from Google Maps — right-click any point → "What's here?")
+                </div>
+                <div style="display:grid;grid-template-columns:60px 1fr 1fr;gap:6px;align-items:center;font-size:12px">
+                  <span>Start</span>
+                  <input id="road-edit-start-lat-${idx}" type="number" step="0.000001" value="${r.start_lat}" placeholder="lat" style="padding:6px;background:#0f0f0f;border:1px solid #333;border-radius:4px;color:#f0f0f0"/>
+                  <input id="road-edit-start-lng-${idx}" type="number" step="0.000001" value="${r.start_lng}" placeholder="lng" style="padding:6px;background:#0f0f0f;border:1px solid #333;border-radius:4px;color:#f0f0f0"/>
+                  <span>End</span>
+                  <input id="road-edit-end-lat-${idx}" type="number" step="0.000001" value="${r.end_lat}" placeholder="lat" style="padding:6px;background:#0f0f0f;border:1px solid #333;border-radius:4px;color:#f0f0f0"/>
+                  <input id="road-edit-end-lng-${idx}" type="number" step="0.000001" value="${r.end_lng}" placeholder="lng" style="padding:6px;background:#0f0f0f;border:1px solid #333;border-radius:4px;color:#f0f0f0"/>
+                </div>
+                <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+                  <button class="lesson-btn lesson-btn-approve" style="padding:6px 12px" onclick="saveRoadCoords(${idx}, false)">Save</button>
+                  <button class="lesson-btn lesson-btn-approve" style="padding:6px 12px" onclick="saveRoadCoords(${idx}, true)">Save &amp; re-validate</button>
+                  <button class="lesson-btn" style="padding:6px 12px;opacity:.7" onclick="cancelEditRoadCoords()">Cancel</button>
+                </div>
+              </div>
+            ` : `
+              <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">
+                ${escHtml(startTxt)} → ${escHtml(endTxt)}
+                ${r.length_km ? ` &nbsp;·&nbsp; <strong>${r.length_km} km</strong>` : ''}
+                ${r.difficulty ? ` &nbsp;·&nbsp; difficulty <strong>${r.difficulty}/5</strong>` : ''}
+                ${r.curviness_tier ? ` &nbsp;·&nbsp; curviness <strong>${r.curviness_tier}</strong>` : ''}
+                &nbsp;·&nbsp; <a href="${mapSearch}" target="_blank" rel="noopener" style="color:var(--accent)">open in Maps ↗</a>
+              </div>
+            `}
             ${snapInfo}
             ${tags ? `<div style="margin-bottom:4px">${tags}</div>` : ''}
             ${bestFor ? `<div style="margin-bottom:4px;font-size:11px;color:var(--text-dim)">Best for: ${bestFor}</div>` : ''}
@@ -3058,6 +3081,7 @@ function renderKnownRoads() {
             ${r.approved !== true  ? `<button class="lesson-btn lesson-btn-approve" onclick="approveRoad(${idx})">✓ Approve</button>` : ''}
             ${r.approved !== false ? `<button class="lesson-btn lesson-btn-reject"  onclick="rejectRoad(${idx})">✗ Reject</button>` : ''}
             ${r.approved !== null  ? `<button class="lesson-btn"                  onclick="markRoadPending(${idx})">↺ Mark pending</button>` : ''}
+            ${!isEditing ? `<button class="lesson-btn" onclick="editRoadCoords('${r.id}')">✏️ Edit coords</button>` : ''}
             <button class="lesson-btn lesson-btn-reject" style="opacity:.6" onclick="deleteRoad(${idx})">🗑 Delete</button>
           </div>
         </div>
@@ -3149,6 +3173,63 @@ async function markRoadPending(i) {
     renderKnownRoadsStats();
     renderKnownRoads();
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+// ── Edit-coords flow ────────────────────────────────────────────────────────
+// Lets the admin paste corrected coords from Google Maps when Claude's
+// estimate landed off the road. Single-row edit at a time. Save updates
+// coords + resets snap/needs-review flags; Save & re-validate also fires
+// the validator (auto-approves if it passes).
+function editRoadCoords(roadId) {
+  _editingRoadId = roadId;
+  renderKnownRoads();
+  // Focus the start-lat field so the admin can immediately paste/type.
+  setTimeout(() => {
+    const inputs = document.querySelectorAll('[id^="road-edit-start-lat-"]');
+    inputs.forEach(el => el.focus());
+  }, 50);
+}
+
+function cancelEditRoadCoords() {
+  _editingRoadId = null;
+  renderKnownRoads();
+}
+
+async function saveRoadCoords(i, alsoValidate) {
+  const r = _knownRoads[i];
+  if (!r || !r.id) return;
+  const startLat = parseFloat(document.getElementById(`road-edit-start-lat-${i}`).value);
+  const startLng = parseFloat(document.getElementById(`road-edit-start-lng-${i}`).value);
+  const endLat   = parseFloat(document.getElementById(`road-edit-end-lat-${i}`).value);
+  const endLng   = parseFloat(document.getElementById(`road-edit-end-lng-${i}`).value);
+  if ([startLat, startLng, endLat, endLng].some(n => !Number.isFinite(n))) {
+    alert('All four coords must be valid numbers.');
+    return;
+  }
+  // Reset snap/review fields since the coords are user-edited and unsnapped.
+  const patch = {
+    start_lat: startLat,
+    start_lng: startLng,
+    end_lat:   endLat,
+    end_lng:   endLng,
+    needs_coord_review: false,
+    coord_review_reason: null,
+    snap_distance_m_start: null,
+    snap_distance_m_end:   null,
+    route_validated_km:    null,
+  };
+  try {
+    await sbPatch(`/rest/v1/known_roads?id=eq.${r.id}`, patch);
+    _knownRoads[i] = { ..._knownRoads[i], ...patch };
+    _editingRoadId = null;
+    renderKnownRoads();
+    if (alsoValidate) {
+      // Trigger the same flow as the Approve button on the row.
+      await approveRoad(i);
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
 }
 
 async function deleteRoad(i) {
