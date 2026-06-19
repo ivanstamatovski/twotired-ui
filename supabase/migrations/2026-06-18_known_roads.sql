@@ -65,6 +65,18 @@ create table if not exists public.known_roads (
   updated_at      timestamptz not null default now()
 );
 
+-- ── 2026-06-18 follow-up: quality columns from snap-on-insert + validate-on-approval ──
+-- Claude's coords are approximate. We snap them to GH's nearest edge and
+-- flag entries whose snap distance was too high for review. We also store
+-- the GH-validated route length so the admin can spot Claude's length_km
+-- estimates that are way off.
+alter table public.known_roads
+  add column if not exists needs_coord_review    boolean   not null default false,
+  add column if not exists snap_distance_m_start numeric,
+  add column if not exists snap_distance_m_end   numeric,
+  add column if not exists coord_review_reason   text,
+  add column if not exists route_validated_km    numeric;
+
 create index if not exists known_roads_state_idx       on public.known_roads (state);
 create index if not exists known_roads_approved_idx    on public.known_roads (approved);
 create index if not exists known_roads_vibe_tags_idx   on public.known_roads using gin (vibe_tags);

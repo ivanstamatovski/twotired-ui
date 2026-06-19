@@ -36,16 +36,29 @@ Deno.serve(async (req) => {
     return json({ error: 'POST only' }, 405);
   }
 
-  // Require the service-role bearer (the admin portal sends it). Reject
-  // anything else — we don't want random authenticated riders to use this
-  // to spam other riders.
+  // Require the caller's JWT to have role=service_role. The original cheap
+  // substring check against SUPABASE_SERVICE_ROLE_KEY broke when Supabase's
+  // new asymmetric key system shipped — the auto-injected env var no longer
+  // always equals the legacy JWT the admin portal sends. Decoding the JWT's
+  // role claim is the proper check: Supabase's default JWT verification
+  // already validates the signature for us before this code runs; we just
+  // need to confirm the principal is the admin (service_role), not a
+  // regular rider (authenticated).
   const auth = req.headers.get('authorization') || '';
-  if (!auth.includes(SUPABASE_SERVICE_ROLE_KEY.slice(-12))) {
-    // Cheap signature check on the tail of the key. Cheap enough that we
-    // catch the most obvious "user JWT instead of service" mistakes.
-    // Anyone with the real service key could of course bypass; we trust
-    // that the admin portal is the only thing with it.
-    return json({ error: 'forbidden — service role required' }, 403);
+  const token = auth.replace(/^Bearer\s+/i, '');
+  let role = '';
+  try {
+    const parts = token.split('.');
+    if (parts.length >= 2) {
+      // base64url → base64 padding so atob can decode it
+      let p = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (p.length % 4) p += '=';
+      const payload = JSON.parse(atob(p));
+      role = payload?.role || '';
+    }
+  } catch {}
+  if (role !== 'service_role') {
+    return json({ error: 'forbidden — service role required', got_role: role || '(none)' }, 403);
   }
 
   let body: ComposeBody;

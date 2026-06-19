@@ -30,6 +30,17 @@
 const SUPABASE_URL              = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const ANTHROPIC_API_KEY         = Deno.env.get('ANTHROPIC_API_KEY')!;
+const GRAPHHOPPER_URL           = Deno.env.get('GRAPHHOPPER_URL')
+                                  || 'https://molly.tail71232f.ts.net/gh';
+
+// Coord-quality thresholds:
+//   - SNAP_OK_M: under this, Claude's coord is "close enough" to a real road
+//                — we silently use the snapped position (more accurate).
+//   - SNAP_REVIEW_M: over this, the coord is likely wrong (in water, wrong
+//                town); flag for human review and keep Claude's original
+//                so the admin can see how far off it was.
+const SNAP_OK_M     = 200;
+const SNAP_REVIEW_M = 500;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -44,6 +55,55 @@ interface SeedBody {
   regions?: string[];
   max_roads?: number;
   extra_prompt?: string;
+}
+
+// Snap a single lat/lng to its nearest routable edge via GH's /nearest
+// endpoint. Profile-less — ignores curviness/avoidance, returns the absolute
+// closest edge. Mirrors snapPointToRoad in generate-route.
+async function snapPoint(lat: number, lng: number): Promise<{ lat: number; lng: number; distM: number } | null> {
+  try {
+    const r = await fetch(`${GRAPHHOPPER_URL}/nearest?point=${lat},${lng}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const sLng = d?.coordinates?.[0];
+    const sLat = d?.coordinates?.[1];
+    const distM = d?.distance;
+    if (sLat == null || sLng == null || distM == null) return null;
+    return { lat: sLat, lng: sLng, distM };
+  } catch {
+    return null;
+  }
+}
+
+// Try to route between two points using the motorcycle profile, curviness 2.
+// Returns the route distance in km if successful, null if GH can't route
+// between them at all (broken pair). We accept any sensible distance —
+// length validation against Claude's length_km is done at admin approval.
+async function validateRoute(start: { lat: number; lng: number }, end: { lat: number; lng: number }): Promise<number | null> {
+  try {
+    const body = {
+      points: [[start.lng, start.lat], [end.lng, end.lat]],
+      profile: 'motorcycle',
+      'ch.disable': true,
+      instructions: false,
+      calc_points: false,
+    };
+    const r = await fetch(`${GRAPHHOPPER_URL}/route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const dist = d?.paths?.[0]?.distance;
+    if (typeof dist !== 'number') return null;
+    return dist / 1000;
+  } catch {
+    return null;
+  }
 }
 
 interface ClaudeRoad {
@@ -212,6 +272,7 @@ endpoint lat/lng.
 
   const rowsToInsert: any[] = [];
   let skipped = 0;
+  let flagged = 0;
   for (const r of roads) {
     if (!r?.name || !r?.state) { skipped++; continue; }
     if (typeof r.start_lat !== 'number' || typeof r.start_lng !== 'number'
@@ -222,15 +283,52 @@ endpoint lat/lng.
     if (existingKey.has(key)) { skipped++; continue; }
     existingKey.add(key);
 
+    // Snap each endpoint to the nearest routable edge. Under SNAP_OK_M we
+    // use the snapped coord (more accurate). Between OK and REVIEW we use
+    // the snapped coord but record the distance. Over SNAP_REVIEW_M we keep
+    // Claude's coord untouched and flag for human review.
+    const startSnap = await snapPoint(r.start_lat, r.start_lng);
+    const endSnap   = await snapPoint(r.end_lat,   r.end_lng);
+
+    let useStart = { lat: r.start_lat, lng: r.start_lng };
+    let useEnd   = { lat: r.end_lat,   lng: r.end_lng   };
+    const reasons: string[] = [];
+
+    if (startSnap === null) {
+      reasons.push('start: snap call failed (GH unreachable?)');
+    } else if (startSnap.distM > SNAP_REVIEW_M) {
+      reasons.push(`start: ${startSnap.distM.toFixed(0)}m from nearest road`);
+    } else {
+      useStart = { lat: startSnap.lat, lng: startSnap.lng };
+    }
+    if (endSnap === null) {
+      reasons.push('end: snap call failed');
+    } else if (endSnap.distM > SNAP_REVIEW_M) {
+      reasons.push(`end: ${endSnap.distM.toFixed(0)}m from nearest road`);
+    } else {
+      useEnd = { lat: endSnap.lat, lng: endSnap.lng };
+    }
+
+    // Validate that GH can actually route between the (snapped) endpoints.
+    // If it can't, the pair is broken (disconnected graphs, wrong continent,
+    // etc.) — definitely needs review.
+    const validatedKm = await validateRoute(useStart, useEnd);
+    if (validatedKm === null) {
+      reasons.push('GH cannot route between start and end');
+    }
+
+    const needsReview = reasons.length > 0;
+    if (needsReview) flagged++;
+
     rowsToInsert.push({
       name:           r.name,
       route_number:   r.route_number || null,
       state:          r.state.toUpperCase(),
       region:         r.region || null,
-      start_lat:      r.start_lat,
-      start_lng:      r.start_lng,
-      end_lat:        r.end_lat,
-      end_lng:        r.end_lng,
+      start_lat:      useStart.lat,
+      start_lng:      useStart.lng,
+      end_lat:        useEnd.lat,
+      end_lng:        useEnd.lng,
       length_km:      r.length_km ?? null,
       vibe_tags:      Array.isArray(r.vibe_tags) ? r.vibe_tags : [],
       difficulty:     r.difficulty ?? null,
@@ -240,6 +338,11 @@ endpoint lat/lng.
       must_see:       r.must_see || null,
       source:         'claude_seed',
       approved:       null,
+      needs_coord_review:    needsReview,
+      snap_distance_m_start: startSnap?.distM ?? null,
+      snap_distance_m_end:   endSnap?.distM   ?? null,
+      coord_review_reason:   needsReview ? reasons.join('; ') : null,
+      route_validated_km:    validatedKm,
     });
   }
 
@@ -266,6 +369,7 @@ endpoint lat/lng.
   return json({
     inserted,
     skipped_duplicates: skipped,
+    flagged_for_review: flagged,
     raw_count: roads.length,
     model: 'claude-sonnet-4-6',
     input_tokens: inputTokens,

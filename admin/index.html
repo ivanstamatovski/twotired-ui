@@ -3013,9 +3013,22 @@ function renderKnownRoads() {
       : r.approved === false
         ? '<span class="badge badge-red">✗ rejected</span>'
         : '<span class="badge badge-amber">pending</span>';
+    const reviewBadge = r.needs_coord_review
+      ? `<span class="badge badge-red" title="${escAttr(r.coord_review_reason || '')}">⚠ needs coord review</span>`
+      : '';
     const mapSearch = `https://www.google.com/maps/dir/${r.start_lat},${r.start_lng}/${r.end_lat},${r.end_lng}`;
+    const snapInfo = (r.snap_distance_m_start != null || r.snap_distance_m_end != null) ? `
+      <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+        Snap dist: start ${r.snap_distance_m_start == null ? '—' : Math.round(r.snap_distance_m_start) + 'm'},
+        end ${r.snap_distance_m_end == null ? '—' : Math.round(r.snap_distance_m_end) + 'm'}
+        ${r.route_validated_km != null ? ` &nbsp;·&nbsp; GH route: ${r.route_validated_km.toFixed(1)} km` : ''}
+      </div>` : '';
+    const reviewReason = r.coord_review_reason ? `
+      <div style="font-size:12px;color:#f87171;margin-top:6px">
+        <strong>Review needed:</strong> ${escHtml(r.coord_review_reason)}
+      </div>` : '';
     return `
-      <div class="rulebook-card" style="margin-bottom:14px;padding:16px">
+      <div class="rulebook-card" style="margin-bottom:14px;padding:16px${r.needs_coord_review ? ';border-left:3px solid #f87171' : ''}">
         <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
           <div style="flex:1;min-width:240px">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
@@ -3024,6 +3037,7 @@ function renderKnownRoads() {
               <span class="badge badge-gray">${escHtml(r.state)}</span>
               ${r.region ? `<span class="badge badge-gray">${escHtml(r.region)}</span>` : ''}
               ${statusBadge}
+              ${reviewBadge}
             </div>
             <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">
               ${escHtml(startTxt)} → ${escHtml(endTxt)}
@@ -3032,15 +3046,18 @@ function renderKnownRoads() {
               ${r.curviness_tier ? ` &nbsp;·&nbsp; curviness <strong>${r.curviness_tier}</strong>` : ''}
               &nbsp;·&nbsp; <a href="${mapSearch}" target="_blank" rel="noopener" style="color:var(--accent)">open in Maps ↗</a>
             </div>
+            ${snapInfo}
             ${tags ? `<div style="margin-bottom:4px">${tags}</div>` : ''}
             ${bestFor ? `<div style="margin-bottom:4px;font-size:11px;color:var(--text-dim)">Best for: ${bestFor}</div>` : ''}
             ${r.must_see ? `<div style="font-size:12px;margin-top:6px"><strong>Must see:</strong> ${escHtml(r.must_see)}</div>` : ''}
             ${r.caveats ? `<div style="font-size:12px;margin-top:6px;color:var(--text-dim)"><strong>Caveats:</strong> ${escHtml(r.caveats)}</div>` : ''}
+            ${reviewReason}
+            <div id="road-validate-status-${idx}" style="font-size:12px;margin-top:8px;display:none"></div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:6px;min-width:120px">
-            ${r.approved !== true  ? `<button class="lesson-btn lesson-btn-approve" onclick="approveRoad(${idx}, true)">✓ Approve</button>` : ''}
-            ${r.approved !== false ? `<button class="lesson-btn lesson-btn-reject"  onclick="approveRoad(${idx}, false)">✗ Reject</button>` : ''}
-            ${r.approved !== null  ? `<button class="lesson-btn"                  onclick="approveRoad(${idx}, null)">↺ Mark pending</button>` : ''}
+          <div style="display:flex;flex-direction:column;gap:6px;min-width:140px">
+            ${r.approved !== true  ? `<button class="lesson-btn lesson-btn-approve" onclick="approveRoad(${idx})">✓ Approve</button>` : ''}
+            ${r.approved !== false ? `<button class="lesson-btn lesson-btn-reject"  onclick="rejectRoad(${idx})">✗ Reject</button>` : ''}
+            ${r.approved !== null  ? `<button class="lesson-btn"                  onclick="markRoadPending(${idx})">↺ Mark pending</button>` : ''}
             <button class="lesson-btn lesson-btn-reject" style="opacity:.6" onclick="deleteRoad(${idx})">🗑 Delete</button>
           </div>
         </div>
@@ -3049,20 +3066,89 @@ function renderKnownRoads() {
   }).join('');
 }
 
-async function approveRoad(i, approved) {
+// Approve runs through validate-known-road. If GH validates the road
+// (snap distances ok + GH can route start→end + length matches Claude's
+// estimate within 0.5×–2×), the function flips approved=true server-side
+// and we just refresh the row. If it fails, we show the reason and offer
+// a one-click "Approve anyway" override.
+async function approveRoad(i) {
+  const r = _knownRoads[i];
+  if (!r || !r.id) return;
+  const status = document.getElementById(`road-validate-status-${i}`);
+  if (status) { status.style.display = 'block'; status.innerHTML = '<span style="color:var(--text-dim)">Validating via GH…</span>'; }
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/validate-known-road`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SERVICE_KEY },
+      body: JSON.stringify({ road_id: r.id }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (status) status.innerHTML = `<span style="color:#f87171">Error ${res.status}: ${escHtml(data?.error || JSON.stringify(data))}</span>`;
+      return;
+    }
+    if (data.ok) {
+      const ratioTxt = data.ratio ? ` (route ${data.validated_km?.toFixed(1)}km vs expected ${data.expected_km}km, ratio ${data.ratio.toFixed(2)})` : '';
+      if (status) status.innerHTML = `<span style="color:#4ade80">✓ Approved${ratioTxt}</span>`;
+      await loadKnownRoads();
+    } else {
+      // Validation failed — show reason + Approve anyway button.
+      if (status) {
+        status.innerHTML = `
+          <div style="color:#f87171;margin-bottom:6px">✗ ${escHtml(data.reason || 'unknown')}: ${escHtml(data.detail || '')}</div>
+          <button class="lesson-btn lesson-btn-approve" style="padding:6px 12px" onclick="approveRoadOverride(${i})">Approve anyway</button>
+        `;
+      }
+    }
+  } catch (e) {
+    if (status) status.innerHTML = `<span style="color:#f87171">Error: ${escHtml(e.message)}</span>`;
+  }
+}
+
+async function approveRoadOverride(i) {
+  const r = _knownRoads[i];
+  if (!r || !r.id) return;
+  if (!confirm(`Approve "${r.name}" without GH validation? Only do this if you've manually verified the coords.`)) return;
+  const status = document.getElementById(`road-validate-status-${i}`);
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/validate-known-road`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SERVICE_KEY },
+      body: JSON.stringify({ road_id: r.id, override: true }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      await loadKnownRoads();
+    } else {
+      if (status) status.innerHTML = `<span style="color:#f87171">Error: ${escHtml(data.error || JSON.stringify(data))}</span>`;
+    }
+  } catch (e) {
+    if (status) status.innerHTML = `<span style="color:#f87171">Error: ${escHtml(e.message)}</span>`;
+  }
+}
+
+async function rejectRoad(i) {
   const r = _knownRoads[i];
   if (!r || !r.id) return;
   try {
-    const patch = approved === null
-      ? { approved: null, approved_at: null }
-      : { approved, approved_at: new Date().toISOString() };
+    const patch = { approved: false, approved_at: new Date().toISOString() };
     await sbPatch(`/rest/v1/known_roads?id=eq.${r.id}`, patch);
     _knownRoads[i] = { ..._knownRoads[i], ...patch };
     renderKnownRoadsStats();
     renderKnownRoads();
-  } catch (e) {
-    alert('Error: ' + e.message);
-  }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function markRoadPending(i) {
+  const r = _knownRoads[i];
+  if (!r || !r.id) return;
+  try {
+    const patch = { approved: null, approved_at: null };
+    await sbPatch(`/rest/v1/known_roads?id=eq.${r.id}`, patch);
+    _knownRoads[i] = { ..._knownRoads[i], ...patch };
+    renderKnownRoadsStats();
+    renderKnownRoads();
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 async function deleteRoad(i) {
@@ -3106,7 +3192,10 @@ async function runSeedKnownRoads() {
     if (!res.ok) {
       status.innerHTML = `<span style="color:var(--danger)">Error ${res.status}: ${escHtml(data?.error || JSON.stringify(data))}</span>`;
     } else {
-      status.innerHTML = `<span style="color:var(--success,#4ade80)">✓ Inserted ${data.inserted} · skipped ${data.skipped_duplicates} duplicates · ${data.raw_count} raw from Claude · ${data.input_tokens}+${data.output_tokens} tokens</span>`;
+      const flagTxt = data.flagged_for_review > 0
+        ? ` · <strong style="color:#fbbf24">${data.flagged_for_review} flagged for coord review</strong>`
+        : '';
+      status.innerHTML = `<span style="color:var(--success,#4ade80)">✓ Inserted ${data.inserted} · skipped ${data.skipped_duplicates} duplicates${flagTxt} · ${data.raw_count} raw from Claude · ${data.input_tokens}+${data.output_tokens} tokens</span>`;
       await loadKnownRoads();
       setRoadsFilter('pending');
     }
