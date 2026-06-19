@@ -2315,16 +2315,63 @@ function initRideMap(s, linkedLogs, initialLog) {
         allBounds.push(...lls);
       });
     } else {
-      // Single-call route — one color from the palette
+      // Single-call route — one color from the palette by default.
+      // Phase 2B (v2.80): if the route was anchor-mode (scenic_anchors_resolved
+      // populated), slice the polyline at each anchor's entry/exit and color
+      // the catalog-road segments distinctly from the connector legs.
       const geom = rlog.route_geometry;
       if (geom?.coordinates?.length > 1) {
         const lls = geom.coordinates.map(c => [c[1], c[0]]);
-        L.polyline(lls, {
-          color: ROUTE_PALETTE[idx % ROUTE_PALETTE.length],
-          weight: 3.5,
-          opacity: 0.85,
-        }).bindPopup(`<b>Route #${idx + 1}</b><br>${routeLabel}`).addTo(map);
-        allBounds.push(...lls);
+        const anchors = Array.isArray(rlog.scenic_anchors_resolved) ? rlog.scenic_anchors_resolved : [];
+
+        if (anchors.length > 0) {
+          // For each anchor, find the index in the polyline closest to its
+          // entry and exit lat/lng. Then split lls into alternating connector
+          // and anchor segments.
+          const findIdx = (lat, lng) => {
+            let best = 0, bestD = Infinity;
+            for (let i = 0; i < lls.length; i++) {
+              const d = (lls[i][0] - lat) ** 2 + (lls[i][1] - lng) ** 2;
+              if (d < bestD) { bestD = d; best = i; }
+            }
+            return best;
+          };
+          const splits = []; // [{label, start, end, name?}]
+          let cursor = 0;
+          anchors.forEach((a, ai) => {
+            const entryIdx = findIdx(a.entry?.lat, a.entry?.lng);
+            const exitIdx  = findIdx(a.exit?.lat,  a.exit?.lng);
+            // Defensive: if heuristic mis-ordered, swap.
+            const lo = Math.min(entryIdx, exitIdx);
+            const hi = Math.max(entryIdx, exitIdx);
+            if (lo > cursor) splits.push({ label: 'connector', start: cursor, end: lo });
+            splits.push({ label: 'anchor', name: a.name, start: lo, end: hi });
+            cursor = hi;
+          });
+          if (cursor < lls.length - 1) {
+            splits.push({ label: 'connector', start: cursor, end: lls.length - 1 });
+          }
+          splits.forEach(seg => {
+            const segLls = lls.slice(seg.start, seg.end + 1);
+            if (segLls.length < 2) return;
+            const color = seg.label === 'anchor' ? '#f97316' : '#3b82f6';
+            const weight = seg.label === 'anchor' ? 5 : 3.5;
+            const opacity = seg.label === 'anchor' ? 0.95 : 0.7;
+            const popup = seg.label === 'anchor'
+              ? `<b>${escHtml(seg.name || 'Anchor')}</b><br>catalog road segment`
+              : `<b>Connector</b><br>${routeLabel}`;
+            L.polyline(segLls, { color, weight, opacity })
+              .bindPopup(popup).addTo(map);
+          });
+          allBounds.push(...lls);
+        } else {
+          L.polyline(lls, {
+            color: ROUTE_PALETTE[idx % ROUTE_PALETTE.length],
+            weight: 3.5,
+            opacity: 0.85,
+          }).bindPopup(`<b>Route #${idx + 1}</b><br>${routeLabel}`).addTo(map);
+          allBounds.push(...lls);
+        }
       }
     }
   });
