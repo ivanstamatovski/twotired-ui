@@ -1,4 +1,13 @@
-// generate-route edge function — v2.79
+// generate-route edge function — v2.80
+// v2.80: Phase 2B of corridor planner — when Claude emits scenic_anchors,
+//        resolve each UUID → catalog endpoints, run direction heuristic
+//        (closer endpoint = entry), inject the (entry, exit) pairs into the
+//        GH waypoint sequence between origin and destination. GH routes
+//        through them in order, naturally following the named scenic road
+//        between each anchor's endpoints. Mutually exclusive with road_corridor
+//        (corridor wins if both somehow set). Falls back to default routing
+//        when no anchors resolve. Per-anchor resolved metadata persisted to
+//        route_logs.scenic_anchors_resolved for trace observability.
 // v2.79: Phase 2A of corridor planner — inject the admin-approved known_roads
 //        catalog into Claude's system prompt as iconic scenic anchors. Claude
 //        may emit scenic_anchors (UUIDs) ordered from origin → destination.
@@ -1654,6 +1663,85 @@ ${lines.join('\n')}
 `;
 }
 
+// ── Phase 2B anchor resolution (v2.80) ──────────────────────────────────────
+// Fetches catalog rows for the UUIDs Claude picked, preserving Claude's order.
+// Supabase ?id=in.(...) doesn't preserve order, so we sort client-side. Silently
+// drops UUIDs that don't resolve — Claude occasionally references an entry the
+// admin has since rejected or that got deleted; we don't want one stale UUID
+// to break the whole route.
+async function fetchAnchorsByIds(ids: string[]): Promise<any[]> {
+  if (!ids.length) return [];
+  try {
+    const idsParam = ids.map(i => `"${i}"`).join(',');
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/known_roads?id=in.(${idsParam})&approved=eq.true&select=id,name,route_number,start_lat,start_lng,end_lat,end_lng,length_km`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+        signal: AbortSignal.timeout(3000),
+      },
+    );
+    if (!r.ok) {
+      console.warn('[anchors] fetch returned', r.status);
+      return [];
+    }
+    const rows = await r.json();
+    if (!Array.isArray(rows)) return [];
+    // Re-order to match Claude's sequence; drop any IDs that didn't come back.
+    const byId = new Map(rows.map((row: any) => [row.id, row]));
+    const ordered: any[] = [];
+    for (const id of ids) {
+      const row = byId.get(id);
+      if (row) ordered.push(row);
+      else console.warn('[anchors] UUID', id, 'not found / not approved — skipping');
+    }
+    return ordered;
+  } catch (e: any) {
+    console.warn('[anchors] fetch failed:', e?.message);
+    return [];
+  }
+}
+
+// Direction-inference heuristic: for each anchor in sequence, pick the
+// endpoint closest to the previous waypoint as the ENTRY, the other as the
+// EXIT. This gets the rider onto the road from the natural side without
+// requiring Claude to reason about geometry. Side-effect-free — returns the
+// resolved sequence plus per-anchor metadata for logging/tracing.
+function resolveAnchorSequence(
+  origin: LatLng,
+  anchors: any[],
+): {
+  waypoints: LatLng[];
+  meta: Array<{ road_id: string; name: string; route_number: string | null; direction: 'forward' | 'reverse'; entry: LatLng; exit: LatLng; length_km: number | null }>;
+} {
+  const waypoints: LatLng[] = [];
+  const meta: any[] = [];
+  let prev = origin;
+  for (const a of anchors) {
+    const start: LatLng = { lat: a.start_lat, lng: a.start_lng };
+    const end:   LatLng = { lat: a.end_lat,   lng: a.end_lng   };
+    const dStart = haversineKm(prev, start);
+    const dEnd   = haversineKm(prev, end);
+    const forward = dStart <= dEnd;
+    const entry = forward ? start : end;
+    const exit  = forward ? end   : start;
+    waypoints.push(entry, exit);
+    meta.push({
+      road_id: a.id,
+      name: a.name,
+      route_number: a.route_number || null,
+      direction: forward ? 'forward' : 'reverse',
+      entry,
+      exit,
+      length_km: a.length_km ?? null,
+    });
+    prev = exit;
+  }
+  return { waypoints, meta };
+}
+
 // ── Claude intent parser (v2.10) ─────────────────────────────────────────────
 // Claude is the route DIRECTOR. It plans the full journey including city escape.
 // GraphHopper only connects the dots Claude specifies.
@@ -2599,6 +2687,31 @@ Deno.serve(async (req) => {
       route = await getRoundTripRoute(originLL, targetMeters, curviness as 1 | 2 | 3);
       // The point list collapses to just the origin for downstream logging.
       allWaypoints = [originLL];
+    } else if (body.scenic_anchors?.length && !corridor) {
+      // ── Phase 2B (v2.80) anchor-mode routing ───────────────────────────
+      // Resolve Claude's scenic_anchors UUIDs → endpoints → inject each
+      // (entry, exit) pair into the waypoint sequence. GH then routes
+      // through them in order, naturally following the named scenic road
+      // between each anchor's endpoints. Mutually exclusive with the
+      // road_corridor branch — if Claude set both, corridor wins (defensive
+      // — Claude is instructed they're mutually exclusive).
+      const anchorRows = await fetchAnchorsByIds(body.scenic_anchors);
+      if (anchorRows.length === 0) {
+        console.warn('[generate-route] scenic_anchors set but none resolved — falling back to default routing');
+        route = await getRoute(allWaypoints, curviness);
+      } else {
+        const { waypoints: anchorWPs, meta: anchorMeta } = resolveAnchorSequence(originLL, anchorRows);
+        const anchoredPoints = [originLL, ...anchorWPs, ...stopLLs, destinationLL];
+        if (body.round_trip) anchoredPoints.push(originLL);
+        console.log(`[generate-route] anchor mode: ${anchorRows.length} anchors, ${anchoredPoints.length} waypoints`);
+        for (const m of anchorMeta) {
+          console.log(`  · ${m.name} (${m.direction}) entry=${m.entry.lat.toFixed(4)},${m.entry.lng.toFixed(4)} exit=${m.exit.lat.toFixed(4)},${m.exit.lng.toFixed(4)}`);
+        }
+        route = await getRoute(anchoredPoints, curviness);
+        // Expand allWaypoints so downstream marker rendering reflects reality.
+        allWaypoints = anchoredPoints;
+        log.scenic_anchors_resolved = anchorMeta;
+      }
     } else {
     const exitPoint = pickExitPoint();
 

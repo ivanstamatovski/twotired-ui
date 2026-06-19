@@ -1462,6 +1462,9 @@ function renderDebugDetail(r, idx) {
         <div class="phase-row"><span class="phase-key">Curviness</span><span class="phase-val">${intent.curviness||'—'}</span></div>
         <div class="phase-row"><span class="phase-key">Round trip</span><span class="phase-val">${intent.round_trip ? 'yes' : 'no'}</span></div>
         <div class="phase-row"><span class="phase-key">Scenic anchors</span><span class="phase-val">${r.scenic_anchors_chosen?.length ? `<span style="color:var(--accent)">${r.scenic_anchors_chosen.length} picked</span>` : (r.scenic_anchors_offered_count > 0 ? `<span style="color:var(--text-muted)">0 / ${r.scenic_anchors_offered_count} offered</span>` : '—')}</span></div>
+        ${Array.isArray(r.scenic_anchors_resolved) && r.scenic_anchors_resolved.length ? `
+          <div class="phase-row"><span class="phase-key">Anchor route</span><div class="phase-val" style="display:flex;flex-direction:column;gap:4px">${r.scenic_anchors_resolved.map(a => `<div style="font-size:12px"><strong>${escHtml(a.name)}</strong> <span class="badge badge-gray" style="margin-left:6px">${escHtml(a.direction)}</span>${a.length_km ? ` <span style="color:var(--text-dim)">· ${a.length_km}km</span>` : ''}</div>`).join('')}</div></div>
+        ` : ''}
         ${intent.reasoning ? `<div class="phase-row"><span class="phase-key">Reasoning</span><span class="phase-val" style="font-style:italic;color:var(--text-dim)">${escHtml(intent.reasoning)}</span></div>` : ''}
       </div>
 

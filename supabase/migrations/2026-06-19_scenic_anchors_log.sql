@@ -5,4 +5,7 @@
 
 alter table public.route_logs
   add column if not exists scenic_anchors_chosen        jsonb,
-  add column if not exists scenic_anchors_offered_count int;
+  add column if not exists scenic_anchors_offered_count int,
+  -- Phase 2B (v2.80): when anchor-mode fires, we also store the resolved
+  -- metadata so the admin trace can show direction + endpoint coords + name.
+  add column if not exists scenic_anchors_resolved      jsonb;
