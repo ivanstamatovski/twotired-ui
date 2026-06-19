@@ -3206,6 +3206,27 @@ async function saveRoadCoords(i, alsoValidate) {
     alert('All four coords must be valid numbers.');
     return;
   }
+  // Bounds check — a missing decimal point (e.g. "4146123" instead of
+  // "41.46123") puts the point off the planet and causes a silent snap_failed
+  // round-trip. Catch it before the network call.
+  const lats = [startLat, endLat];
+  const lngs = [startLng, endLng];
+  if (lats.some(n => n < -90 || n > 90)) {
+    alert('Latitude must be between -90 and 90. Check for a missing decimal point.');
+    return;
+  }
+  if (lngs.some(n => n < -180 || n > 180)) {
+    alert('Longitude must be between -180 and 180. Check for a missing decimal point.');
+    return;
+  }
+  // Soft check: warn if the coord is outside our service area (NY/NJ/CT/MA/PA).
+  // Just a warning, not a block — Claude might surface a road in NH/VT that's
+  // legit but outside the current bbox.
+  const inService = lats.every(n => n >= 38.8 && n <= 45.1)
+                 && lngs.every(n => n >= -80.6 && n <= -69.8);
+  if (!inService) {
+    if (!confirm('These coords are outside the NY/NJ/CT/MA/PA service area. Save anyway?')) return;
+  }
   // Reset snap/review fields since the coords are user-edited and unsnapped.
   const patch = {
     start_lat: startLat,
