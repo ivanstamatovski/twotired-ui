@@ -423,6 +423,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <span class="nav-icon">📣</span> Announcements
         <span class="nav-badge" id="badge-anns">—</span>
       </button>
+      <button class="nav-item" onclick="showPanel('roads',this)">
+        <span class="nav-icon">🛣️</span> Known Roads
+        <span class="nav-badge" id="badge-roads">—</span>
+      </button>
     </div>
     <div class="content">
 
@@ -779,6 +783,68 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <div id="ann-list"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
       </div>
 
+      <!-- ── Known Roads Panel ── -->
+      <div class="panel" id="panel-roads">
+        <div class="stats-row" id="roads-stats"></div>
+
+        <!-- Seeder card -->
+        <div class="rulebook-add-card">
+          <div class="rulebook-add-title">🌱 Seed catalog from Claude</div>
+          <div class="rulebook-add-hint">
+            Asks Sonnet to enumerate iconic motorcycle roads in the selected states. Results land here as
+            <strong>pending review</strong> — approve the good ones to make them eligible for the corridor planner.
+          </div>
+          <div class="ann-row" style="margin-top:10px">
+            <label class="ann-field">
+              <span class="ann-label">States <span class="ann-hint">comma-separated, e.g. NY, NJ</span></span>
+              <input id="roads-seed-states" type="text" value="NY" placeholder="NY, NJ, CT, MA, PA"/>
+            </label>
+            <label class="ann-field">
+              <span class="ann-label">Max roads <span class="ann-hint">5–150</span></span>
+              <input id="roads-seed-max" type="number" min="5" max="150" value="20"/>
+            </label>
+          </div>
+          <label class="ann-field" style="margin-top:8px">
+            <span class="ann-label">Regions <span class="ann-hint">optional, comma-separated</span></span>
+            <input id="roads-seed-regions" type="text" placeholder="Catskills, Hudson Valley"/>
+          </label>
+          <label class="ann-field" style="margin-top:8px">
+            <span class="ann-label">Extra guidance <span class="ann-hint">optional</span></span>
+            <input id="roads-seed-extra" type="text" placeholder="focus on twisty primaries, skip generic scenic drives"/>
+          </label>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+            <button id="roads-seed-btn" class="lesson-btn lesson-btn-approve" style="white-space:nowrap;padding:8px 18px" onclick="runSeedKnownRoads()">Seed now</button>
+            <span id="roads-seed-status" style="font-size:12px"></span>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top:24px">
+          <div class="section-title">Catalog</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="refresh-btn" onclick="loadKnownRoads()">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="tasks-filters">
+          <div class="tasks-filter-group">
+            <span class="tasks-filter-label">Status</span>
+            <button class="task-chip task-chip--active" data-roadfilter="pending" onclick="setRoadsFilter('pending')">Pending</button>
+            <button class="task-chip" data-roadfilter="approved" onclick="setRoadsFilter('approved')">Approved</button>
+            <button class="task-chip" data-roadfilter="rejected" onclick="setRoadsFilter('rejected')">Rejected</button>
+            <button class="task-chip" data-roadfilter="all" onclick="setRoadsFilter('all')">All</button>
+          </div>
+          <div class="tasks-filter-group">
+            <span class="tasks-filter-label">State</span>
+            <button class="task-chip task-chip--active" data-roadstate="" onclick="setRoadsState('')">All</button>
+            <button class="task-chip" data-roadstate="NY" onclick="setRoadsState('NY')">NY</button>
+            <button class="task-chip" data-roadstate="NJ" onclick="setRoadsState('NJ')">NJ</button>
+            <button class="task-chip" data-roadstate="CT" onclick="setRoadsState('CT')">CT</button>
+            <button class="task-chip" data-roadstate="MA" onclick="setRoadsState('MA')">MA</button>
+            <button class="task-chip" data-roadstate="PA" onclick="setRoadsState('PA')">PA</button>
+          </div>
+        </div>
+        <div id="roads-list"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -894,7 +960,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadTasks(); loadStopRatings(); loadAnnouncements(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadTasks(); loadStopRatings(); loadAnnouncements(); loadKnownRoads(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -2870,6 +2936,186 @@ async function deleteAnnouncement(id) {
     });
     loadAnnouncements();
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+// ── Known Roads (corridor planner catalog) ─────────────────────────────────
+// Seeded one-shot from Claude Sonnet; admin reviews each entry before it
+// becomes eligible for the corridor planner. See project_corridor_planner_priority memory.
+let _knownRoads      = [];
+let _roadsFilter     = 'pending';     // pending | approved | rejected | all
+let _roadsStateFilter = '';            // '' | NY | NJ | CT | MA | PA
+
+async function loadKnownRoads() {
+  const list = document.getElementById('roads-list');
+  if (!list) return;
+  list.innerHTML = '<div class="loading-row"><span class="spinner"></span>Loading…</div>';
+  try {
+    const rows = await sb('/rest/v1/known_roads?select=*&order=created_at.desc&limit=500');
+    _knownRoads = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    list.innerHTML = `<div class="loading-row">Error: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  renderKnownRoadsStats();
+  renderKnownRoads();
+}
+
+function renderKnownRoadsStats() {
+  const total    = _knownRoads.length;
+  const pending  = _knownRoads.filter(r => r.approved === null).length;
+  const approved = _knownRoads.filter(r => r.approved === true).length;
+  const rejected = _knownRoads.filter(r => r.approved === false).length;
+  document.getElementById('badge-roads').textContent = String(pending || total);
+  document.getElementById('roads-stats').innerHTML =
+    statCard(total,    'Total roads') +
+    statCard(pending,  'Pending review', pending > 0) +
+    statCard(approved, 'Approved') +
+    statCard(rejected, 'Rejected');
+}
+
+function setRoadsFilter(f) {
+  _roadsFilter = f;
+  document.querySelectorAll('[data-roadfilter]').forEach(b => {
+    b.classList.toggle('task-chip--active', b.dataset.roadfilter === f);
+  });
+  renderKnownRoads();
+}
+function setRoadsState(s) {
+  _roadsStateFilter = s;
+  document.querySelectorAll('[data-roadstate]').forEach(b => {
+    b.classList.toggle('task-chip--active', b.dataset.roadstate === s);
+  });
+  renderKnownRoads();
+}
+
+function renderKnownRoads() {
+  const list = document.getElementById('roads-list');
+  if (!list) return;
+  let rows = _knownRoads;
+  if (_roadsFilter === 'pending')  rows = rows.filter(r => r.approved === null);
+  if (_roadsFilter === 'approved') rows = rows.filter(r => r.approved === true);
+  if (_roadsFilter === 'rejected') rows = rows.filter(r => r.approved === false);
+  if (_roadsStateFilter) rows = rows.filter(r => r.state === _roadsStateFilter);
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="loading-row" style="color:var(--text-muted)">No roads match this filter. Try seeding the catalog.</div>';
+    return;
+  }
+
+  list.innerHTML = rows.map((r, i) => {
+    const idx = _knownRoads.findIndex(x => x.id === r.id);
+    const startTxt = `${r.start_lat?.toFixed(5)}, ${r.start_lng?.toFixed(5)}`;
+    const endTxt   = `${r.end_lat?.toFixed(5)}, ${r.end_lng?.toFixed(5)}`;
+    const tags = (r.vibe_tags || []).map(t => `<span class="badge badge-gray" style="margin-right:4px">${escHtml(t)}</span>`).join('');
+    const bestFor = (r.best_for || []).map(t => `<span class="badge badge-gray" style="margin-right:4px">${escHtml(t)}</span>`).join('');
+    const statusBadge = r.approved === true
+      ? '<span class="badge badge-green">✓ approved</span>'
+      : r.approved === false
+        ? '<span class="badge badge-red">✗ rejected</span>'
+        : '<span class="badge badge-amber">pending</span>';
+    const mapSearch = `https://www.google.com/maps/dir/${r.start_lat},${r.start_lng}/${r.end_lat},${r.end_lng}`;
+    return `
+      <div class="rulebook-card" style="margin-bottom:14px;padding:16px">
+        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:240px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+              <span style="font-weight:600;font-size:15px">${escHtml(r.name)}</span>
+              ${r.route_number ? `<span class="badge badge-gray">${escHtml(r.route_number)}</span>` : ''}
+              <span class="badge badge-gray">${escHtml(r.state)}</span>
+              ${r.region ? `<span class="badge badge-gray">${escHtml(r.region)}</span>` : ''}
+              ${statusBadge}
+            </div>
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">
+              ${escHtml(startTxt)} → ${escHtml(endTxt)}
+              ${r.length_km ? ` &nbsp;·&nbsp; <strong>${r.length_km} km</strong>` : ''}
+              ${r.difficulty ? ` &nbsp;·&nbsp; difficulty <strong>${r.difficulty}/5</strong>` : ''}
+              ${r.curviness_tier ? ` &nbsp;·&nbsp; curviness <strong>${r.curviness_tier}</strong>` : ''}
+              &nbsp;·&nbsp; <a href="${mapSearch}" target="_blank" rel="noopener" style="color:var(--accent)">open in Maps ↗</a>
+            </div>
+            ${tags ? `<div style="margin-bottom:4px">${tags}</div>` : ''}
+            ${bestFor ? `<div style="margin-bottom:4px;font-size:11px;color:var(--text-dim)">Best for: ${bestFor}</div>` : ''}
+            ${r.must_see ? `<div style="font-size:12px;margin-top:6px"><strong>Must see:</strong> ${escHtml(r.must_see)}</div>` : ''}
+            ${r.caveats ? `<div style="font-size:12px;margin-top:6px;color:var(--text-dim)"><strong>Caveats:</strong> ${escHtml(r.caveats)}</div>` : ''}
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;min-width:120px">
+            ${r.approved !== true  ? `<button class="lesson-btn lesson-btn-approve" onclick="approveRoad(${idx}, true)">✓ Approve</button>` : ''}
+            ${r.approved !== false ? `<button class="lesson-btn lesson-btn-reject"  onclick="approveRoad(${idx}, false)">✗ Reject</button>` : ''}
+            ${r.approved !== null  ? `<button class="lesson-btn"                  onclick="approveRoad(${idx}, null)">↺ Mark pending</button>` : ''}
+            <button class="lesson-btn lesson-btn-reject" style="opacity:.6" onclick="deleteRoad(${idx})">🗑 Delete</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function approveRoad(i, approved) {
+  const r = _knownRoads[i];
+  if (!r || !r.id) return;
+  try {
+    const patch = approved === null
+      ? { approved: null, approved_at: null }
+      : { approved, approved_at: new Date().toISOString() };
+    await sbPatch(`/rest/v1/known_roads?id=eq.${r.id}`, patch);
+    _knownRoads[i] = { ..._knownRoads[i], ...patch };
+    renderKnownRoadsStats();
+    renderKnownRoads();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function deleteRoad(i) {
+  const r = _knownRoads[i];
+  if (!r || !r.id) return;
+  if (!confirm(`Delete "${r.name}" (${r.state})? This cannot be undone.`)) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/known_roads?id=eq.${r.id}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SERVICE_KEY, 'Authorization': 'Bearer ' + SERVICE_KEY },
+    });
+    _knownRoads.splice(i, 1);
+    renderKnownRoadsStats();
+    renderKnownRoads();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function runSeedKnownRoads() {
+  const btn = document.getElementById('roads-seed-btn');
+  const status = document.getElementById('roads-seed-status');
+  const states = (document.getElementById('roads-seed-states').value || '')
+    .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  const max = parseInt(document.getElementById('roads-seed-max').value || '20', 10);
+  const regions = (document.getElementById('roads-seed-regions').value || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const extra = (document.getElementById('roads-seed-extra').value || '').trim();
+  if (!states.length) { status.innerHTML = '<span style="color:var(--danger)">Need at least one state.</span>'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Seeding…';
+  status.innerHTML = '<span style="color:var(--text-dim)">Calling Claude — this can take 30–60 seconds…</span>';
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/seed-known-roads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SERVICE_KEY },
+      body: JSON.stringify({ states, max_roads: max, regions, extra_prompt: extra }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.innerHTML = `<span style="color:var(--danger)">Error ${res.status}: ${escHtml(data?.error || JSON.stringify(data))}</span>`;
+    } else {
+      status.innerHTML = `<span style="color:var(--success,#4ade80)">✓ Inserted ${data.inserted} · skipped ${data.skipped_duplicates} duplicates · ${data.raw_count} raw from Claude · ${data.input_tokens}+${data.output_tokens} tokens</span>`;
+      await loadKnownRoads();
+      setRoadsFilter('pending');
+    }
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Seed now';
+  }
 }
 
 // Minimal HTML / attribute escaping for content from the DB.
