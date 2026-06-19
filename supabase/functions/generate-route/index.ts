@@ -1,4 +1,11 @@
-// generate-route edge function — v2.78
+// generate-route edge function — v2.79
+// v2.79: Phase 2A of corridor planner — inject the admin-approved known_roads
+//        catalog into Claude's system prompt as iconic scenic anchors. Claude
+//        may emit scenic_anchors (UUIDs) ordered from origin → destination.
+//        Currently observability-only: we log scenic_anchors_chosen +
+//        scenic_anchors_offered_count to route_logs but routing still proceeds
+//        as before. Phase 2B will route leg-by-leg through chosen anchors.
+//        Mutually exclusive with road_corridor at the Claude prompt level.
 // v2.78: counter the in_nyc motorway boost from Molly's profile (× 1.4)
 //        with a request-side × 0.71 at curviness 2/3. The profile boost
 //        was meant to help cross-NYC transit but made Belt Pkwy preferred
@@ -280,6 +287,10 @@ interface RouteRequest {
   road_corridor?: string;            // Named road to follow (e.g. "9W", "NY-97", "NY-28").
                                      // When set: corridor model biases GH onto that road via
                                      // the data-driven corridors table.
+  scenic_anchors?: string[];         // Phase 2 (v2.79+): ordered list of known_roads UUIDs Claude
+                                     // chose to anchor the ride through. Currently observability-only
+                                     // — routing still ignores these. Phase 2B will N-phase-route
+                                     // through the anchors. Mutually exclusive with road_corridor.
 }
 
 // ── Palisades Pkwy avoidance zone ─────────────────────────────────────────────
@@ -1573,12 +1584,82 @@ async function fetchRouteScores(geometry: any): Promise<RouteScores | null> {
   }
 }
 
+// ── Catalog of known scenic roads (Phase 2A, v2.79) ─────────────────────────
+// Pulls all admin-approved entries from known_roads and renders them as a
+// compact block we inject into Claude's system prompt. Claude then optionally
+// emits scenic_anchors (UUIDs) for rides where catalog roads add value.
+// Phase 2A: we observe Claude's picks but don't route through them yet —
+// that's Phase 2B. The catalog grows incrementally so this fetch must be
+// resilient (return empty on failure rather than break route generation).
+async function fetchApprovedCatalog(): Promise<any[]> {
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/known_roads?approved=eq.true&select=id,name,route_number,state,region,start_lat,start_lng,end_lat,end_lng,length_km,vibe_tags,best_for,must_see,caveats,pairs_with`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+        signal: AbortSignal.timeout(3000),
+      },
+    );
+    if (!r.ok) {
+      console.warn('[catalog] fetch returned', r.status);
+      return [];
+    }
+    const rows = await r.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch (e: any) {
+    console.warn('[catalog] fetch failed:', e?.message);
+    return [];
+  }
+}
+
+function formatCatalogForPrompt(roads: any[]): string {
+  if (!roads.length) return '';
+  // Compact one-line-per-road format. Token budget: ~80 tokens per road, so
+  // 50 roads ≈ 4k tokens. When catalog grows past ~80 entries we'll need to
+  // bbox-filter against the rider's likely route.
+  const lines = roads.map(r => {
+    const startStr = `${r.start_lat.toFixed(4)},${r.start_lng.toFixed(4)}`;
+    const endStr   = `${r.end_lat.toFixed(4)},${r.end_lng.toFixed(4)}`;
+    const tags     = (r.vibe_tags || []).join(',') || '—';
+    const km       = r.length_km ? `${r.length_km}km` : '?km';
+    const rn       = r.route_number ? ` (${r.route_number})` : '';
+    const region   = r.region ? ` · ${r.region}` : '';
+    return `  ${r.id} | ${r.name}${rn}, ${r.state}${region} | ${startStr} → ${endStr} | ${km} | ${tags}`;
+  });
+  return `
+━━ ICONIC ROADS CATALOG (admin-approved scenic anchors) ━━
+You have access to ${roads.length} curated motorcycle-iconic road segments. Each has a stable UUID. When a ride genuinely benefits from anchoring through one or more catalog roads, emit their UUIDs in scenic_anchors as an ordered list (origin → destination order). The pipeline will route through them leg-by-leg.
+
+USE scenic_anchors when:
+  • The rider asks for a scenic ride and one or more catalog roads sit naturally near the origin→destination line
+  • The rider mentions a vibe matching catalog entries ("twisty", "panoramic", "iconic", "river road")
+  • Multiple catalog roads chain together (use pairs_with hints when present)
+  • The rider asks for a loop and catalog roads form one
+
+DO NOT use scenic_anchors when:
+  • The rider explicitly named a specific road already — use road_corridor instead (existing field)
+  • Direct transit / curviness 1
+  • No catalog road is close to the natural route — don't force a big detour for marginal scenic benefit
+  • The rider named explicit stops that already shape the ride
+
+scenic_anchors and road_corridor are MUTUALLY EXCLUSIVE. Pick one approach per route, or neither.
+
+Format: uuid | name (route#), state · region | start_lat,lng → end_lat,lng | length | tags
+
+Catalog:
+${lines.join('\n')}
+`;
+}
+
 // ── Claude intent parser (v2.10) ─────────────────────────────────────────────
 // Claude is the route DIRECTOR. It plans the full journey including city escape.
 // GraphHopper only connects the dots Claude specifies.
 // Claude produces ONLY text (JSON). It never produces coordinates.
 // Returns both the RouteRequest (for routing) and rawIntent (for conversational refinement).
-async function parseIntent(query: string, lessons = ''): Promise<{ routeRequest: RouteRequest; rawIntent: any }> {
+async function parseIntent(query: string, lessons = '', catalogContext = ''): Promise<{ routeRequest: RouteRequest; rawIntent: any }> {
   const systemPrompt = `You are the route director for TwoTired, a motorcycle ride planning app.
 You plan the complete journey — GraphHopper just connects your waypoints.
 
@@ -1873,10 +1954,12 @@ Keep clarifications short. Max 2–3 options. No over-explaining.
 
 ${lessons}
 
+${catalogContext}
+
 ━━ OUTPUT FORMAT ━━
 Respond ONLY with valid JSON, no markdown, no explanation.
 
-Route response — standard (no corridor):
+Route response — standard (no corridor, no anchors):
 {
   "origin": "Rider GPS location or named place if no GPS provided",
   "intermediate_waypoints": [],
@@ -1884,7 +1967,20 @@ Route response — standard (no corridor):
   "destination": "Town or Park Name, State",
   "curviness": 2,
   "round_trip": false,
+  "scenic_anchors": [],
   "reasoning": "one sentence: why this route"
+}
+
+Route response — with scenic anchors (Phase 2A, when catalog roads add value):
+{
+  "origin": "...",
+  "intermediate_waypoints": [],
+  "stops": [],
+  "destination": "...",
+  "curviness": 2,
+  "round_trip": false,
+  "scenic_anchors": ["uuid-of-catalog-road-1", "uuid-of-catalog-road-2"],
+  "reasoning": "anchored on Hawk's Nest + Bashakill for the twisty river-road sequence rider asked for"
 }
 
 round_trip RULE: Set to true ONLY if the rider explicitly says "round trip", "loop", "there and back",
@@ -1957,6 +2053,15 @@ Ambiguous place names (Hawks Nest, Liberty, Chester, Monroe, etc.) exist in many
 
   console.log('[parseIntent] reasoning:', intent.reasoning);
 
+  // v2.79: pull scenic_anchors (UUIDs) from intent. Sanity-check that each
+  // is a plausible UUID — Claude occasionally fabricates IDs if it forgets
+  // the rule about only picking from the catalog. We don't validate against
+  // the DB here (that's the routing leg's job) but we filter junk.
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const scenicAnchors: string[] = Array.isArray(intent.scenic_anchors)
+    ? intent.scenic_anchors.filter((x: any) => typeof x === 'string' && uuidRe.test(x))
+    : [];
+
   const routeRequest: RouteRequest = {
     origin: { query: intent.origin || 'Astoria, Queens, NY' },
     destination: { query: intent.destination },
@@ -1969,6 +2074,7 @@ Ambiguous place names (Hawks Nest, Liberty, Chester, Monroe, etc.) exist in many
     round_trip: intent.round_trip || false,
     intermediate_waypoints: intent.intermediate_waypoints || [],
     road_corridor: intent.road_corridor || undefined,
+    scenic_anchors: scenicAnchors,
   };
 
   return { routeRequest, rawIntent: intent };
@@ -2254,12 +2360,20 @@ Deno.serve(async (req) => {
     let body: RouteRequest;
     let rawIntent: any = null;
 
+    // v2.79 (Phase 2A): fetch the approved scenic-roads catalog and inject
+    // it into Claude's prompt. Claude may emit scenic_anchors (UUIDs) we
+    // observe in route_logs. Phase 2B will route through them.
+    const catalogPromise = fetchApprovedCatalog();
+
     const parseStart = Date.now();
     if (rawBody.refine === true && rawBody.intent && typeof rawBody.feedback === 'string') {
       console.log('[generate-route] refine mode, feedback:', rawBody.feedback);
       log.query = `[refine] ${rawBody.feedback}`;
       const refineQuery = await buildRefineQuery(rawBody.feedback, rawBody.intent);
-      const parsed = await parseIntent(refineQuery + gpsTag, await lessonsPromise);
+      const [lessons, catalog] = await Promise.all([lessonsPromise, catalogPromise]);
+      const catalogContext = formatCatalogForPrompt(catalog);
+      log.scenic_anchors_offered_count = catalog.length;
+      const parsed = await parseIntent(refineQuery + gpsTag, lessons, catalogContext);
       if ('clarify' in parsed) {
         return new Response(JSON.stringify({ success: true, clarify: true, question: parsed.question, options: parsed.options }), {
           status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
@@ -2269,7 +2383,10 @@ Deno.serve(async (req) => {
       rawIntent = parsed.rawIntent;
     } else if (typeof rawBody.query === 'string' && rawBody.query.trim()) {
       console.log('[generate-route] natural language query:', rawBody.query);
-      const parsed = await parseIntent(rawBody.query + gpsTag, await lessonsPromise);
+      const [lessons, catalog] = await Promise.all([lessonsPromise, catalogPromise]);
+      const catalogContext = formatCatalogForPrompt(catalog);
+      log.scenic_anchors_offered_count = catalog.length;
+      const parsed = await parseIntent(rawBody.query + gpsTag, lessons, catalogContext);
       if ('clarify' in parsed) {
         return new Response(JSON.stringify({ success: true, clarify: true, question: parsed.question, options: parsed.options }), {
           status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
@@ -2283,6 +2400,12 @@ Deno.serve(async (req) => {
     }
     log.parse_ms = Date.now() - parseStart;
     log.raw_intent = rawIntent;
+    log.scenic_anchors_chosen = body.scenic_anchors && body.scenic_anchors.length
+      ? body.scenic_anchors
+      : null;
+    if (body.scenic_anchors?.length) {
+      console.log('[generate-route] scenic_anchors:', JSON.stringify(body.scenic_anchors));
+    }
 
     // Override origin with actual GPS coords. Pre-snap to the closest routable
     // edge via /nearest — this bypasses the snap_prevention + custom_model

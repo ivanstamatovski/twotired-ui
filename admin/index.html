@@ -1461,6 +1461,7 @@ function renderDebugDetail(r, idx) {
         <div class="phase-row"><span class="phase-key">Corridor</span><span class="phase-val code">${escHtml(intent.road_corridor||'none')}</span></div>
         <div class="phase-row"><span class="phase-key">Curviness</span><span class="phase-val">${intent.curviness||'—'}</span></div>
         <div class="phase-row"><span class="phase-key">Round trip</span><span class="phase-val">${intent.round_trip ? 'yes' : 'no'}</span></div>
+        <div class="phase-row"><span class="phase-key">Scenic anchors</span><span class="phase-val">${r.scenic_anchors_chosen?.length ? `<span style="color:var(--accent)">${r.scenic_anchors_chosen.length} picked</span>` : (r.scenic_anchors_offered_count > 0 ? `<span style="color:var(--text-muted)">0 / ${r.scenic_anchors_offered_count} offered</span>` : '—')}</span></div>
         ${intent.reasoning ? `<div class="phase-row"><span class="phase-key">Reasoning</span><span class="phase-val" style="font-style:italic;color:var(--text-dim)">${escHtml(intent.reasoning)}</span></div>` : ''}
       </div>
 
