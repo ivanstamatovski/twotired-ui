@@ -1,4 +1,14 @@
-// generate-route edge function — v2.82
+// generate-route edge function — v2.83
+// v2.83: anchor detour-ratio gate. Before committing to Phase 2B anchor-mode,
+//        approximate detour distance through all anchor endpoints via great
+//        circle, compare to direct origin→destination distance. If the ratio
+//        exceeds 1.5×, drop the anchors and fall back to default routing
+//        (two-phase escape included). Catches cases like Queens→Bear Mountain
+//        where the anchor's south entry forces a 30+ mile NJ backtrack via
+//        Staten Island. Logs anchor_detour_check {direct_km, detour_km, ratio,
+//        limit} on every Phase 2B request and anchor_detour_dropped=true when
+//        the gate fires so the admin trace can show why a catalog ride
+//        unexpectedly fell back.
 // v2.82: generate ONE-sentence brief per scenic anchor via Haiku in parallel
 //        with route fetch. Weaves length + highlight + caveats into a single
 //        sentence so the rider's peek card can show just a sentence — no
@@ -2759,7 +2769,7 @@ Deno.serve(async (req) => {
       // The point list collapses to just the origin for downstream logging.
       allWaypoints = [originLL];
     } else if (body.scenic_anchors?.length && !corridor) {
-      // ── Phase 2B (v2.80) anchor-mode routing ───────────────────────────
+      // ── Phase 2B (v2.80+) anchor-mode routing ──────────────────────────
       // Resolve Claude's scenic_anchors UUIDs → endpoints → inject each
       // (entry, exit) pair into the waypoint sequence. GH then routes
       // through them in order, naturally following the named scenic road
@@ -2772,27 +2782,118 @@ Deno.serve(async (req) => {
         route = await getRoute(allWaypoints, curviness);
       } else {
         const { waypoints: anchorWPs, meta: anchorMeta } = resolveAnchorSequence(originLL, anchorRows);
-        const anchoredPoints = [originLL, ...anchorWPs, ...stopLLs, destinationLL];
-        if (body.round_trip) anchoredPoints.push(originLL);
-        console.log(`[generate-route] anchor mode: ${anchorRows.length} anchors, ${anchoredPoints.length} waypoints`);
-        for (const m of anchorMeta) {
-          console.log(`  · ${m.name} (${m.direction}) entry=${m.entry.lat.toFixed(4)},${m.entry.lng.toFixed(4)} exit=${m.exit.lat.toFixed(4)},${m.exit.lng.toFixed(4)}`);
+
+        // ── v2.83 detour gate ───────────────────────────────────────────
+        // Before committing to anchor-mode routing, sanity-check that the
+        // forced detour through these endpoints doesn't bloat the route.
+        // Approximate detour via great-circle through all waypoints; compare
+        // to direct origin→destination. If ratio > 1.5×, the anchor's south
+        // end (or whichever endpoint heuristic picked) is sending the rider
+        // way out of the way — drop the anchors and use the default routing
+        // tree so the rider gets a sane route instead of a 30-mile NJ
+        // backtrack via Staten Island. Logged so we can see it firing.
+        const directKm = haversineKm(originLL, destinationLL);
+        let detourKm = 0;
+        let cursor = originLL;
+        for (const wp of [...anchorWPs, destinationLL]) {
+          detourKm += haversineKm(cursor, wp);
+          cursor = wp;
         }
-        // Kick off per-anchor brief generation in parallel with the route
-        // fetch. Each anchor gets ONE Haiku-written sentence weaving length +
-        // highlight + caveats. Awaited later, before we send the response.
-        const briefsPromise = Promise.all(
-          anchorMeta.map(a => generateAnchorBrief(a))
-        );
-        route = await getRoute(anchoredPoints, curviness);
-        // Expand allWaypoints so downstream marker rendering reflects reality.
-        allWaypoints = anchoredPoints;
-        // Attach briefs to anchor metadata before logging and responding.
-        const briefs = await briefsPromise;
-        for (let i = 0; i < anchorMeta.length; i++) {
-          (anchorMeta[i] as any).brief = briefs[i] || null;
+        const detourRatio = directKm > 0.5 ? detourKm / directKm : 1;
+        const DETOUR_LIMIT = 1.5;
+        log.anchor_detour_check = {
+          direct_km: Math.round(directKm * 10) / 10,
+          detour_km: Math.round(detourKm * 10) / 10,
+          ratio: Math.round(detourRatio * 100) / 100,
+          limit: DETOUR_LIMIT,
+        };
+
+        if (detourRatio > DETOUR_LIMIT) {
+          console.warn(`[generate-route] anchor detour ratio ${detourRatio.toFixed(2)}× exceeds ${DETOUR_LIMIT}× — dropping anchors, fallback to default routing`);
+          (log as any).anchor_detour_dropped = true;
+          // Fall through to default routing with original allWaypoints.
+          // Two-phase escape may still fire for NYC origins as normal.
+          const exitPoint = pickExitPoint();
+          if (exitPoint) {
+            const remainingIntermediates = intermediateWPs.length > 0 ? intermediateWPs.slice(1) : [];
+            const scenicPoints = [exitPoint, ...remainingIntermediates, ...stopLLs, destinationLL];
+            if (body.round_trip) scenicPoints.push(originLL);
+            const escapeLegPromise = getRoute([originLL, exitPoint], 0, [-1, -1]);
+            const scenicLegPromise = getRoute(scenicPoints, curviness);
+            const [escapeLeg, scenicLeg] = await Promise.all([escapeLegPromise, scenicLegPromise]);
+            route = mergeRoutes(escapeLeg, scenicLeg);
+          } else {
+            route = await getRoute(allWaypoints, curviness);
+          }
+        } else {
+          const anchoredPoints = [originLL, ...anchorWPs, ...stopLLs, destinationLL];
+          if (body.round_trip) anchoredPoints.push(originLL);
+          console.log(`[generate-route] anchor mode: ${anchorRows.length} anchors, ${anchoredPoints.length} waypoints, haversine ratio ${detourRatio.toFixed(2)}×`);
+          for (const m of anchorMeta) {
+            console.log(`  · ${m.name} (${m.direction}) entry=${m.entry.lat.toFixed(4)},${m.entry.lng.toFixed(4)} exit=${m.exit.lat.toFixed(4)},${m.exit.lng.toFixed(4)}`);
+          }
+          // Kick off per-anchor brief generation in parallel with the route
+          // fetch. Each anchor gets ONE Haiku-written sentence weaving length +
+          // highlight + caveats. Awaited later, before we send the response.
+          const briefsPromise = Promise.all(
+            anchorMeta.map(a => generateAnchorBrief(a))
+          );
+          route = await getRoute(anchoredPoints, curviness);
+
+          // ── v2.83 post-route check ─────────────────────────────────
+          // Haversine through waypoints is generous — it can't see the
+          // Hudson River, so an anchor that LOOKS on-route in straight-line
+          // can still force GH into a 30-mile detour via Staten Island.
+          // Catch that here: if the actual driven distance blew past the
+          // direct point-to-point distance by > 1.8×, the anchor isn't
+          // pulling its weight. Re-run without anchors and use the cleaner
+          // route. One extra GH call only when the gate fires.
+          //
+          // Skipped for round-trip rides: direct distance is ~0 (start≈end)
+          // so any reasonable loop blows up the ratio. Loops by definition
+          // are "long for fun" — the user's asking for distance, not the
+          // shortest path. We trust Claude's anchor pick in that case.
+          const directMi = directKm * 0.621371;
+          const actualMi = route.distance_miles;
+          const actualRatio = directMi > 0.5 ? actualMi / directMi : 1;
+          const ACTUAL_LIMIT = 1.8;
+          log.anchor_actual_check = {
+            direct_mi: Math.round(directMi * 10) / 10,
+            actual_mi: actualMi,
+            ratio: Math.round(actualRatio * 100) / 100,
+            limit: ACTUAL_LIMIT,
+            skipped_for_round_trip: !!body.round_trip,
+          };
+
+          if (!body.round_trip && actualRatio > ACTUAL_LIMIT) {
+            console.warn(`[generate-route] anchor actual-distance ratio ${actualRatio.toFixed(2)}× exceeds ${ACTUAL_LIMIT}× — re-routing without anchors`);
+            (log as any).anchor_detour_dropped = true;
+            (log as any).anchor_detour_dropped_reason = 'actual_distance';
+            const exitPoint = pickExitPoint();
+            if (exitPoint) {
+              const remainingIntermediates = intermediateWPs.length > 0 ? intermediateWPs.slice(1) : [];
+              const scenicPoints = [exitPoint, ...remainingIntermediates, ...stopLLs, destinationLL];
+              if (body.round_trip) scenicPoints.push(originLL);
+              const escapeLegPromise = getRoute([originLL, exitPoint], 0, [-1, -1]);
+              const scenicLegPromise = getRoute(scenicPoints, curviness);
+              const [escapeLeg, scenicLeg] = await Promise.all([escapeLegPromise, scenicLegPromise]);
+              route = mergeRoutes(escapeLeg, scenicLeg);
+            } else {
+              route = await getRoute(allWaypoints, curviness);
+            }
+            // Don't attach the briefs / anchor metadata — the route doesn't
+            // actually go through them anymore.
+          } else {
+            // Expand allWaypoints so downstream marker rendering reflects reality.
+            allWaypoints = anchoredPoints;
+            // Attach briefs to anchor metadata before logging and responding.
+            const briefs = await briefsPromise;
+            for (let i = 0; i < anchorMeta.length; i++) {
+              (anchorMeta[i] as any).brief = briefs[i] || null;
+            }
+            log.scenic_anchors_resolved = anchorMeta;
+          }
         }
-        log.scenic_anchors_resolved = anchorMeta;
       }
     } else {
     const exitPoint = pickExitPoint();
