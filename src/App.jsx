@@ -4209,7 +4209,7 @@ export default function App() {
                           {a.route_number && <span className="anchor-entry-routenum">{a.route_number}</span>}
                         </div>
                         <div className="anchor-entry-meta">
-                          {a.length_km != null && <span>{Math.round(a.length_km)} km</span>}
+                          {a.length_km != null && <span>{Math.round(a.length_km * 0.621371)} mi</span>}
                           {Array.isArray(a.vibe_tags) && a.vibe_tags.slice(0, 3).map(t => (
                             <span key={t} className="anchor-vibe-chip">{t}</span>
                           ))}
@@ -4231,7 +4231,7 @@ export default function App() {
           }
 
           // Peek
-          const shortLen = first.length_km != null ? `${Math.round(first.length_km)}km` : '';
+          const shortLen = first.length_km != null ? `${Math.round(first.length_km * 0.621371)}mi` : '';
           const topTag = Array.isArray(first.vibe_tags) && first.vibe_tags[0] ? first.vibe_tags[0] : 'scenic';
           return (
             <button className="anchor-card-peek"
