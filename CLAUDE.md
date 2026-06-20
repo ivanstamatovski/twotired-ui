@@ -117,17 +117,36 @@ This is the Trans-Manhattan Expy GWB on-ramp. Forces Queens traffic via Triborou
 
 ---
 
-## Deploy Rules (CRITICAL — read before touching edge functions)
+## Deploy Rules (UPDATED 2026-06-19 — Claude has push + deploy authority)
 
-**Ivan always deploys edge functions himself via Monaco editor in Supabase dashboard. Never tell Claude to click Deploy — provide the file path and stop.**
+Claude can deploy directly. Three layers, three mechanisms:
 
-Previous deploy methods used (for reference):
-- Monaco editor: paste code → click Deploy Updates
-- Management API PATCH from browser JS (faster, scriptable) — but JWT in localStorage expires
+| Layer | Mechanism | Trigger |
+|---|---|---|
+| Vercel (frontend + admin) | `git push origin main` from Bash | auto-deploys on push |
+| Supabase Edge Functions | Management API via `~/.supabase_pat` | curl POST `/v1/projects/{ref}/functions/{slug}` |
+| Supabase SQL migrations | Management API `/database/query` | curl POST with SQL body |
 
-**Never run git commands from the sandbox.** macOS mount rejects `unlink()`, leaves stale lock files. Edit files only; give Ivan paste-able git commands to run himself.
+**Rules Claude must follow:**
+
+1. **Narrate before pushing.** State in chat what's about to land BEFORE the push/deploy fires. Ivan can intercept.
+2. **Ask before destructive ops.** `drop table`, `truncate`, `alter` losing data, force-push to main, deleting edge functions, anything irreversible.
+3. **One-deploy-at-a-time.** Don't bundle unrelated changes into one push.
+4. **Pause on red flags.** If `git status` shows files Ivan didn't expect (e.g. iOS, secrets, untracked things), ask before committing.
+5. **Edge-fn rollback is one click** in the Supabase dashboard if a deploy breaks production. Mention this when relevant.
+
+**What still requires Ivan's explicit action:**
+- iOS / Xcode / TestFlight / App Store
+- Apple Developer / billing / vendor accounts
+- New Supabase secrets / env vars
+- Domain / DNS changes
+- Anything where Claude isn't sure → ask first
 
 **Git remote:** `git@github.com:ivanstamatovski/twotired-ui.git` (SSH, not HTTPS — Ivan uses Google OAuth, no password)
+
+**Historical context:**
+- Pre-2026-06-19: Ivan deployed manually via Monaco + paste-into-SQL-editor. Restriction lifted after generating a Supabase Personal Access Token (stored at `~/.supabase_pat`).
+- "Never run git from sandbox" was a sandbox-mode artifact (macOS mount unlink issue). Claude Code with direct Bash isn't affected.
 
 ---
 
@@ -312,8 +331,8 @@ Position above idle sheet: `bottom: 228px` (mobile). `bottom: 48px` (desktop via
 
 ## Feedback Rules (behavioral guidelines for Claude)
 
-- **Never run git from sandbox** — macOS mount rejects unlink(), leaves stale lock files. Edit files, hand git commands to Ivan.
-- **Never click Deploy** on Supabase edge functions. Provide the file; Ivan deploys.
+- **Narrate before deploys** — state what's landing in chat before each `git push` or edge fn deploy so Ivan can intercept.
+- **Ask before destructive SQL** — drop/truncate/alter losing data, force-push, deleting edge functions.
 - **`finally` always runs** even after `return` in `try` — use a flag variable pattern, never assert otherwise.
 - **Verify the right file before editing** — real App.jsx is `twotired-ui/src/App.jsx`. Confirm it's in the git repo before editing.
 - **Google Maps Embed API** does not support `via:` waypoints. Silently shows world map. `buildMapSrc` must use `origin` + `destination` only.
