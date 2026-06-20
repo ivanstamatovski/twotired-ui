@@ -366,6 +366,95 @@ tr:hover td{background:rgba(255,255,255,.02)}
   .bug-table-time{font-size:11px}
   .phase-grid{grid-template-columns:1fr}
 }
+
+/* ─── Costs panel ─────────────────────────────────────────────── */
+.cost-group {
+  background: var(--card, #1a1a1a);
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+  border-radius: 10px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.cost-group-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.06));
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.cost-group-total {
+  font-weight: 700;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.cost-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.04));
+  transition: background 0.1s;
+}
+.cost-row:last-child { border-bottom: none; }
+.cost-row:hover { background: rgba(255,255,255,0.03); }
+.cost-row-main { flex: 1; min-width: 0; }
+.cost-row-name {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 14px;
+}
+.cost-row-name strong { color: var(--text); }
+.cost-row-plan {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 7px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 999px;
+}
+.cost-row-notes {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 460px;
+}
+.cost-row-prices {
+  text-align: right;
+  min-width: 110px;
+}
+.cost-row-monthly {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  display: flex; align-items: center; gap: 4px; justify-content: flex-end;
+}
+.cost-row-monthly.is-free { color: var(--text-dim); font-weight: 500; }
+.cost-row-annual {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+.cost-cycle-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-dim);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.cost-row-url {
+  color: var(--text-muted);
+  font-size: 16px;
+  text-decoration: none;
+  padding: 4px 6px;
+}
+.cost-row-url:hover { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -426,6 +515,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <button class="nav-item" onclick="showPanel('roads',this)">
         <span class="nav-icon">🛣️</span> Known Roads
         <span class="nav-badge" id="badge-roads">—</span>
+      </button>
+      <button class="nav-item" onclick="showPanel('costs',this)">
+        <span class="nav-icon">💸</span> Costs
+        <span class="nav-badge" id="badge-costs">—</span>
       </button>
     </div>
     <div class="content">
@@ -845,6 +938,110 @@ tr:hover td{background:rgba(255,255,255,.02)}
         <div id="roads-list"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
       </div>
 
+      <!-- ── Costs Panel ── -->
+      <div class="panel" id="panel-costs">
+        <div class="stats-row" id="costs-stats"></div>
+        <div class="section-header">
+          <div class="section-title">Monthly burn</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="refresh-btn" onclick="openCostAdd()">+ Add service</button>
+            <button class="refresh-btn" onclick="loadCosts()">↻ Refresh</button>
+          </div>
+        </div>
+        <div class="tasks-filters">
+          <div class="tasks-filter-group">
+            <span class="tasks-filter-label">Status</span>
+            <button class="task-chip task-chip--active" data-costfilter="active" onclick="setCostFilter('active')">Active</button>
+            <button class="task-chip" data-costfilter="all" onclick="setCostFilter('all')">All</button>
+            <button class="task-chip" data-costfilter="paid" onclick="setCostFilter('paid')">Paid only</button>
+            <button class="task-chip" data-costfilter="free" onclick="setCostFilter('free')">Free only</button>
+          </div>
+        </div>
+        <div id="costs-list"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
+      </div>
+
+      <!-- ── Cost Add/Edit Modal ── -->
+      <div id="cost-modal" class="task-modal" style="display:none">
+        <div class="task-modal-card" onclick="event.stopPropagation()" style="max-width:520px">
+          <div class="task-modal-header">
+            <span id="cost-modal-title">Add service</span>
+            <button class="task-modal-close" onclick="closeCostModal()">✕</button>
+          </div>
+          <div class="task-modal-body">
+            <label class="task-field">
+              <span class="task-field-label">Service name <span class="task-field-required">*</span></span>
+              <input id="cost-form-name" type="text" maxlength="120" placeholder="e.g. Hetzner Cloud" autocomplete="off"/>
+            </label>
+            <label class="task-field">
+              <span class="task-field-label">Plan <span class="task-field-hint">e.g. Pro, Hobby, $200 tier</span></span>
+              <input id="cost-form-plan" type="text" maxlength="120"/>
+            </label>
+            <div class="task-field-row">
+              <label class="task-field">
+                <span class="task-field-label">Monthly $ <span class="task-field-required">*</span></span>
+                <input id="cost-form-monthly" type="number" step="0.01" min="0"/>
+              </label>
+              <label class="task-field">
+                <span class="task-field-label">Annual $ <span class="task-field-hint">for yearly plans</span></span>
+                <input id="cost-form-annual" type="number" step="0.01" min="0"/>
+              </label>
+            </div>
+            <div class="task-field-row">
+              <label class="task-field">
+                <span class="task-field-label">Billing cycle</span>
+                <select id="cost-form-cycle">
+                  <option value="monthly">monthly</option>
+                  <option value="annual">annual</option>
+                  <option value="usage">usage (variable)</option>
+                  <option value="one_time">one-time</option>
+                </select>
+              </label>
+              <label class="task-field">
+                <span class="task-field-label">Category</span>
+                <select id="cost-form-category">
+                  <option value="infra">infra</option>
+                  <option value="ai">ai</option>
+                  <option value="email">email</option>
+                  <option value="dev_tools">dev_tools</option>
+                  <option value="platform">platform</option>
+                  <option value="domain">domain</option>
+                  <option value="observability">observability</option>
+                  <option value="other">other</option>
+                </select>
+              </label>
+              <label class="task-field">
+                <span class="task-field-label">Status</span>
+                <select id="cost-form-status">
+                  <option value="active">active</option>
+                  <option value="trial">trial</option>
+                  <option value="paused">paused</option>
+                  <option value="canceled">canceled</option>
+                </select>
+              </label>
+            </div>
+            <label class="task-field">
+              <span class="task-field-label">URL <span class="task-field-hint">billing or dashboard link</span></span>
+              <input id="cost-form-url" type="text" placeholder="https://..."/>
+            </label>
+            <label class="task-field">
+              <span class="task-field-label">Notes</span>
+              <textarea id="cost-form-notes" rows="2"></textarea>
+            </label>
+            <label class="task-field" style="flex-direction:row;align-items:center;gap:8px">
+              <input id="cost-form-variable" type="checkbox"/>
+              <span class="task-field-label" style="margin:0">Variable / usage-based estimate</span>
+            </label>
+            <div id="cost-form-error" class="task-form-error"></div>
+          </div>
+          <div class="task-modal-footer">
+            <button id="cost-modal-delete" class="task-modal-delete" onclick="confirmDeleteCost()" style="display:none">Delete</button>
+            <div style="flex:1"></div>
+            <button class="task-modal-cancel" onclick="closeCostModal()">Cancel</button>
+            <button id="cost-modal-save" class="task-modal-save" onclick="saveCost()">Save</button>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -960,7 +1157,7 @@ async function sbPatch(path, body) {
 }
 
 // ── Load all ─────────────────────────────────────────────────────────────────
-function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadTasks(); loadStopRatings(); loadAnnouncements(); loadKnownRoads(); }
+function loadAll() { loadBugs(); loadUsers(); loadRoutes(); loadRulebook(); loadDebugLogs(); loadRideSessions(); loadTasks(); loadStopRatings(); loadAnnouncements(); loadKnownRoads(); loadCosts(); }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtDate(iso) {
@@ -3357,6 +3554,225 @@ async function runSeedKnownRoads() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Seed now';
+  }
+}
+
+// ── Service costs (monthly burn tracking) ─────────────────────────────────
+let _costs = [];
+let _costsFilter = 'active';          // active | all | paid | free
+let _editingCostId = null;             // null = adding, uuid = editing
+
+const COST_CATEGORY_ICON = {
+  infra: '🧱', ai: '🤖', email: '✉️', dev_tools: '🛠', platform: '📱',
+  domain: '🌐', observability: '📊', other: '•',
+};
+const COST_CATEGORY_ORDER = ['ai','infra','dev_tools','platform','email','domain','observability','other'];
+
+async function loadCosts() {
+  const list = document.getElementById('costs-list');
+  if (!list) return;
+  list.innerHTML = '<div class="loading-row"><span class="spinner"></span>Loading…</div>';
+  try {
+    const rows = await sb('/rest/v1/service_costs?select=*&order=monthly_usd.desc');
+    _costs = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    list.innerHTML = `<div class="loading-row">Error: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  renderCostsStats();
+  renderCosts();
+}
+
+function renderCostsStats() {
+  const active = _costs.filter(c => c.status === 'active');
+  const totalMonthly = active.reduce((s, c) => s + (Number(c.monthly_usd) || 0), 0);
+  const totalAnnual  = totalMonthly * 12;
+  const paidCount    = active.filter(c => (Number(c.monthly_usd) || 0) > 0).length;
+  const freeCount    = active.filter(c => (Number(c.monthly_usd) || 0) === 0).length;
+  document.getElementById('badge-costs').textContent = '$' + totalMonthly.toFixed(0);
+  document.getElementById('costs-stats').innerHTML =
+    statCard('$' + totalMonthly.toFixed(2), 'Monthly burn', totalMonthly > 0) +
+    statCard('$' + Math.round(totalAnnual).toLocaleString(), 'Annualized') +
+    statCard(paidCount, 'Paid services') +
+    statCard(freeCount, 'Free (still tracked)');
+}
+
+function setCostFilter(f) {
+  _costsFilter = f;
+  document.querySelectorAll('[data-costfilter]').forEach(b => {
+    b.classList.toggle('task-chip--active', b.dataset.costfilter === f);
+  });
+  renderCosts();
+}
+
+function renderCosts() {
+  const list = document.getElementById('costs-list');
+  if (!list) return;
+  let rows = _costs;
+  if (_costsFilter === 'active') rows = rows.filter(r => r.status === 'active');
+  if (_costsFilter === 'paid')   rows = rows.filter(r => r.status === 'active' && (Number(r.monthly_usd) || 0) > 0);
+  if (_costsFilter === 'free')   rows = rows.filter(r => r.status === 'active' && (Number(r.monthly_usd) || 0) === 0);
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="loading-row" style="color:var(--text-muted)">No services match this filter.</div>';
+    return;
+  }
+
+  // Group by category in a stable order
+  const groups = {};
+  for (const r of rows) {
+    const cat = r.category || 'other';
+    (groups[cat] = groups[cat] || []).push(r);
+  }
+  const groupHtml = COST_CATEGORY_ORDER
+    .filter(cat => groups[cat]?.length)
+    .map(cat => {
+      const items = groups[cat];
+      const catTotal = items.reduce((s, r) => s + (Number(r.monthly_usd) || 0), 0);
+      const icon = COST_CATEGORY_ICON[cat] || '•';
+      return `
+        <div class="cost-group">
+          <div class="cost-group-header">
+            <span>${icon} ${escHtml(cat.replace('_',' '))}</span>
+            <span class="cost-group-total">$${catTotal.toFixed(2)}/mo</span>
+          </div>
+          <div class="cost-group-body">
+            ${items.map(r => renderCostRow(r)).join('')}
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  list.innerHTML = groupHtml;
+}
+
+function renderCostRow(r) {
+  const monthly = Number(r.monthly_usd) || 0;
+  const annual  = r.annual_usd != null ? Number(r.annual_usd) : monthly * 12;
+  const isFree  = monthly === 0;
+  const isVar   = r.is_variable;
+  const cycleTag = r.billing_cycle === 'annual' ? 'annual'
+                 : r.billing_cycle === 'usage'  ? 'usage'
+                 : r.billing_cycle === 'one_time' ? 'one-time'
+                 : null;
+  const statusTag = r.status !== 'active'
+    ? `<span class="badge badge-gray" style="margin-left:6px">${escHtml(r.status)}</span>`
+    : '';
+  const url = r.url ? `<a href="${escHtml(r.url)}" target="_blank" rel="noopener" class="cost-row-url" title="Open">↗</a>` : '';
+  return `
+    <div class="cost-row" onclick="openCostEdit('${r.id}')">
+      <div class="cost-row-main">
+        <div class="cost-row-name">
+          <strong>${escHtml(r.service_name)}</strong>
+          ${r.plan_name ? `<span class="cost-row-plan">${escHtml(r.plan_name)}</span>` : ''}
+          ${statusTag}
+        </div>
+        ${r.notes ? `<div class="cost-row-notes">${escHtml(r.notes)}</div>` : ''}
+      </div>
+      <div class="cost-row-prices">
+        <div class="cost-row-monthly ${isFree ? 'is-free' : ''}">
+          ${isFree ? 'Free' : '$' + monthly.toFixed(2)}
+          ${cycleTag ? `<span class="cost-cycle-tag">${cycleTag}</span>` : ''}
+          ${isVar ? `<span class="cost-cycle-tag">est</span>` : ''}
+        </div>
+        ${!isFree ? `<div class="cost-row-annual">$${Math.round(annual).toLocaleString()}/yr</div>` : ''}
+      </div>
+      ${url}
+    </div>
+  `;
+}
+
+function openCostAdd() {
+  _editingCostId = null;
+  document.getElementById('cost-modal-title').textContent = 'Add service';
+  document.getElementById('cost-modal-delete').style.display = 'none';
+  document.getElementById('cost-form-name').value = '';
+  document.getElementById('cost-form-plan').value = '';
+  document.getElementById('cost-form-monthly').value = '';
+  document.getElementById('cost-form-annual').value = '';
+  document.getElementById('cost-form-cycle').value = 'monthly';
+  document.getElementById('cost-form-category').value = 'infra';
+  document.getElementById('cost-form-status').value = 'active';
+  document.getElementById('cost-form-url').value = '';
+  document.getElementById('cost-form-notes').value = '';
+  document.getElementById('cost-form-variable').checked = false;
+  document.getElementById('cost-form-error').textContent = '';
+  document.getElementById('cost-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('cost-form-name').focus(), 50);
+}
+
+function openCostEdit(id) {
+  const r = _costs.find(c => c.id === id);
+  if (!r) return;
+  _editingCostId = id;
+  document.getElementById('cost-modal-title').textContent = 'Edit service';
+  document.getElementById('cost-modal-delete').style.display = '';
+  document.getElementById('cost-form-name').value = r.service_name || '';
+  document.getElementById('cost-form-plan').value = r.plan_name || '';
+  document.getElementById('cost-form-monthly').value = r.monthly_usd != null ? r.monthly_usd : '';
+  document.getElementById('cost-form-annual').value = r.annual_usd != null ? r.annual_usd : '';
+  document.getElementById('cost-form-cycle').value = r.billing_cycle || 'monthly';
+  document.getElementById('cost-form-category').value = r.category || 'infra';
+  document.getElementById('cost-form-status').value = r.status || 'active';
+  document.getElementById('cost-form-url').value = r.url || '';
+  document.getElementById('cost-form-notes').value = r.notes || '';
+  document.getElementById('cost-form-variable').checked = !!r.is_variable;
+  document.getElementById('cost-form-error').textContent = '';
+  document.getElementById('cost-modal').style.display = 'flex';
+}
+
+function closeCostModal() {
+  document.getElementById('cost-modal').style.display = 'none';
+  _editingCostId = null;
+}
+
+async function saveCost() {
+  const err = document.getElementById('cost-form-error');
+  err.textContent = '';
+  const name = document.getElementById('cost-form-name').value.trim();
+  const monthly = parseFloat(document.getElementById('cost-form-monthly').value);
+  if (!name) { err.textContent = 'Service name is required.'; return; }
+  if (!Number.isFinite(monthly) || monthly < 0) { err.textContent = 'Monthly $ must be a non-negative number.'; return; }
+  const annual = document.getElementById('cost-form-annual').value;
+  const body = {
+    service_name: name,
+    plan_name: document.getElementById('cost-form-plan').value.trim() || null,
+    monthly_usd: monthly,
+    annual_usd: annual === '' ? null : parseFloat(annual),
+    billing_cycle: document.getElementById('cost-form-cycle').value,
+    category: document.getElementById('cost-form-category').value,
+    status: document.getElementById('cost-form-status').value,
+    url: document.getElementById('cost-form-url').value.trim() || null,
+    notes: document.getElementById('cost-form-notes').value.trim() || null,
+    is_variable: document.getElementById('cost-form-variable').checked,
+  };
+  try {
+    if (_editingCostId) {
+      await sbPatch(`/rest/v1/service_costs?id=eq.${_editingCostId}`, body);
+    } else {
+      await sb('/rest/v1/service_costs', { method: 'POST', body: JSON.stringify(body) });
+    }
+    closeCostModal();
+    await loadCosts();
+  } catch (e) {
+    err.textContent = 'Save failed: ' + e.message;
+  }
+}
+
+async function confirmDeleteCost() {
+  if (!_editingCostId) return;
+  const r = _costs.find(c => c.id === _editingCostId);
+  if (!confirm(`Delete "${r?.service_name || 'this service'}"? This can't be undone.`)) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/service_costs?id=eq.${_editingCostId}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SERVICE_KEY, 'Authorization': 'Bearer ' + SERVICE_KEY },
+    });
+    closeCostModal();
+    await loadCosts();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
   }
 }
 
