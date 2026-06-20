@@ -1388,6 +1388,12 @@ export default function App() {
   const [bugComment, setBugComment] = useState('');
   const [bugSubmitting, setBugSubmitting] = useState(false);
   const [bugReportOpen, setBugReportOpen] = useState(false);          // dedicated report sheet
+  // Peek/expanded card showing the catalog road(s) the route anchors on.
+  // Three rendered states derived from routeData?.scenic_anchors + navMode:
+  //   peek (top-left card) — pre-nav, when anchorCardExpanded === false
+  //   expanded (large card) — pre-nav, when anchorCardExpanded === true
+  //   nav-circle (small FAB) — during nav, expandable on tap
+  const [anchorCardExpanded, setAnchorCardExpanded] = useState(false);
   const [bugScreenshot, setBugScreenshot] = useState(null);           // base64 captured at tap-time
   const [bugScreenshotZoom, setBugScreenshotZoom] = useState(false);  // tap-to-enlarge preview
 
@@ -1565,6 +1571,12 @@ export default function App() {
 
   useEffect(() => { routeDataRef.current = routeData; }, [routeData]);
   useEffect(() => { navModeRef.current = navMode; }, [navMode]);
+  // Auto-collapse the scenic-anchor card when navigation starts so it doesn't
+  // blanket the screen while riding. The rider can re-tap the small circle
+  // (anchor-fab) at a stoplight to peek again.
+  useEffect(() => { if (navMode) setAnchorCardExpanded(false); }, [navMode]);
+  // Reset the expanded state when a new route lands so we always start in peek.
+  useEffect(() => { setAnchorCardExpanded(false); }, [routeData?.scenic_anchors]);
   useEffect(() => { sessionRef.current = session; }, [session]);
 
   // Fetch the native app version + build number once on mount. On web we
@@ -4150,6 +4162,92 @@ export default function App() {
             </svg>
           </button>
         )}
+
+        {/* ── Scenic-anchor card (top-left) ──────────────────────────
+            Renders when the current route used Phase 2B anchor-mode
+            (routeData.scenic_anchors is a non-empty array). Three states:
+              • !navMode + !anchorCardExpanded → small peek
+              • !navMode + anchorCardExpanded  → full card with must_see/caveats
+              • navMode                         → small circle, tap to re-peek
+            Stays hidden entirely for routes without catalog anchors. */}
+        {Array.isArray(routeData?.scenic_anchors) && routeData.scenic_anchors.length > 0 && (() => {
+          const anchors = routeData.scenic_anchors;
+          const first = anchors[0];
+          const RoadIcon = () => (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 21 L8 3"/><path d="M21 21 L16 3"/><line x1="12" y1="5" x2="12" y2="7"/><line x1="12" y1="11" x2="12" y2="13"/><line x1="12" y1="17" x2="12" y2="19"/>
+            </svg>
+          );
+
+          if (navMode) {
+            return (
+              <button className="anchor-fab"
+                onClick={() => setAnchorCardExpanded(true)}
+                aria-label={`This ride includes ${first.name}`}>
+                <RoadIcon />
+              </button>
+            );
+          }
+
+          if (anchorCardExpanded) {
+            return (
+              <>
+                <div className="anchor-card-backdrop" onClick={() => setAnchorCardExpanded(false)} />
+                <div className="anchor-card-full" onClick={e => e.stopPropagation()}>
+                  <div className="anchor-card-full-header">
+                    <span className="anchor-card-full-title">Your ride includes</span>
+                    <button className="anchor-card-close"
+                      onClick={() => setAnchorCardExpanded(false)}
+                      aria-label="Close">✕</button>
+                  </div>
+                  <div className="anchor-card-full-body">
+                    {anchors.map((a, i) => (
+                      <div key={a.road_id || i} className="anchor-entry">
+                        <div className="anchor-entry-name">
+                          <RoadIcon />
+                          <span>{a.name}</span>
+                          {a.route_number && <span className="anchor-entry-routenum">{a.route_number}</span>}
+                        </div>
+                        <div className="anchor-entry-meta">
+                          {a.length_km != null && <span>{Math.round(a.length_km)} km</span>}
+                          {Array.isArray(a.vibe_tags) && a.vibe_tags.slice(0, 3).map(t => (
+                            <span key={t} className="anchor-vibe-chip">{t}</span>
+                          ))}
+                        </div>
+                        {a.must_see && (
+                          <div className="anchor-entry-mustsee">{a.must_see}</div>
+                        )}
+                        {a.caveats && (
+                          <div className="anchor-entry-caveats">
+                            <span aria-hidden="true">⚠</span> {a.caveats}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            );
+          }
+
+          // Peek
+          const shortLen = first.length_km != null ? `${Math.round(first.length_km)}km` : '';
+          const topTag = Array.isArray(first.vibe_tags) && first.vibe_tags[0] ? first.vibe_tags[0] : 'scenic';
+          return (
+            <button className="anchor-card-peek"
+              onClick={() => setAnchorCardExpanded(true)}
+              aria-label={`This ride includes ${first.name}. Tap for details.`}>
+              <div className="anchor-card-peek-icon"><RoadIcon /></div>
+              <div className="anchor-card-peek-text">
+                <span className="anchor-card-peek-name">{first.name}</span>
+                <span className="anchor-card-peek-sub">
+                  {[shortLen, topTag].filter(Boolean).join(' · ')}
+                  {anchors.length > 1 ? ` · +${anchors.length - 1} more` : ''}
+                </span>
+              </div>
+            </button>
+          );
+        })()}
       </div>
 
       {/* ── Navigation overlay ── */}

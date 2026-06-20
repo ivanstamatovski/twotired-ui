@@ -1,4 +1,8 @@
-// generate-route edge function — v2.80
+// generate-route edge function — v2.81
+// v2.81: enrich scenic_anchors_resolved with vibe_tags, must_see, caveats, region
+//        and surface it on the route response (not just route_logs) so the
+//        frontend's peek/expand card can render the catalog metadata. No
+//        behaviour change for non-anchor routes.
 // v2.80: Phase 2B of corridor planner — when Claude emits scenic_anchors,
 //        resolve each UUID → catalog endpoints, run direction heuristic
 //        (closer endpoint = entry), inject the (entry, exit) pairs into the
@@ -1674,7 +1678,7 @@ async function fetchAnchorsByIds(ids: string[]): Promise<any[]> {
   try {
     const idsParam = ids.map(i => `"${i}"`).join(',');
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/known_roads?id=in.(${idsParam})&approved=eq.true&select=id,name,route_number,start_lat,start_lng,end_lat,end_lng,length_km`,
+      `${SUPABASE_URL}/rest/v1/known_roads?id=in.(${idsParam})&approved=eq.true&select=id,name,route_number,start_lat,start_lng,end_lat,end_lng,length_km,vibe_tags,must_see,caveats,region`,
       {
         headers: {
           apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -1736,6 +1740,10 @@ function resolveAnchorSequence(
       entry,
       exit,
       length_km: a.length_km ?? null,
+      vibe_tags: a.vibe_tags || [],
+      must_see: a.must_see || null,
+      caveats: a.caveats || null,
+      region: a.region || null,
     });
     prev = exit;
   }
@@ -2880,6 +2888,10 @@ Deno.serve(async (req) => {
       intent: rawIntent,
       narrative,
       road_scores: scores ?? undefined,
+      // v2.81: surface catalog metadata to the frontend so the peek card can
+      // render the catalog road name + must_see + caveats. Only set when
+      // Phase 2B anchor-mode fired (else undefined, frontend skips the card).
+      scenic_anchors: log.scenic_anchors_resolved ?? undefined,
     } }), {
       status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
     });
