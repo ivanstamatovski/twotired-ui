@@ -1,4 +1,8 @@
-// generate-route edge function — v2.81
+// generate-route edge function — v2.82
+// v2.82: generate ONE-sentence brief per scenic anchor via Haiku in parallel
+//        with route fetch. Weaves length + highlight + caveats into a single
+//        sentence so the rider's peek card can show just a sentence — no
+//        structured fields. Template fallback if Haiku errors.
 // v2.81: enrich scenic_anchors_resolved with vibe_tags, must_see, caveats, region
 //        and surface it on the route response (not just route_logs) so the
 //        frontend's peek/expand card can render the catalog metadata. No
@@ -1667,6 +1671,65 @@ ${lines.join('\n')}
 `;
 }
 
+// ── One-sentence anchor brief (v2.82) ───────────────────────────────────────
+// For each resolved scenic anchor, generates a single tight sentence that
+// weaves length + highlight + caveats together — what shows up in the rider's
+// minimal peek card. Haiku is cheap (~$0.001 per anchor) and parallel-safe.
+// Falls back to a template if Haiku errors so the card always has something.
+async function generateAnchorBrief(anchor: any): Promise<string> {
+  const lengthMi = anchor.length_km ? Math.round(anchor.length_km * 0.621371) : null;
+  const tags = Array.isArray(anchor.vibe_tags) ? anchor.vibe_tags.join(', ') : '';
+
+  // Template fallback used if Haiku fails or is too slow.
+  const tmpl = () => {
+    const parts: string[] = [];
+    if (lengthMi) parts.push(`${lengthMi} miles of`);
+    if (anchor.vibe_tags?.[0]) parts.push(anchor.vibe_tags[0]);
+    parts.push(anchor.name);
+    let s = parts.join(' ');
+    if (anchor.must_see) s += ` — ${anchor.must_see.replace(/\.$/, '')}.`;
+    if (anchor.caveats) s += ` Heads up: ${anchor.caveats.split(';')[0].trim().replace(/\.$/, '')}.`;
+    return s.length > 240 ? s.slice(0, 237) + '…' : s;
+  };
+
+  try {
+    const r = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 200,
+        system: `You write one-sentence briefs for motorcycle riders about scenic roads on their route. Given a road's highlight and caveats, write ONE sentence (under 180 characters) that helps the rider know what to expect — what makes it special AND what to watch out for if relevant. Conversational rider voice. No headers, no lists. Skip generic praise ("scenic", "beautiful"). Be specific. Don't repeat the road name unless natural.`,
+        messages: [{
+          role: 'user',
+          content: `Road: ${anchor.name}${anchor.route_number ? ' (' + anchor.route_number + ')' : ''}
+Length: ${lengthMi || '?'} miles
+Character: ${tags || 'scenic'}
+Highlight: ${anchor.must_see || '(none provided)'}
+Heads up: ${anchor.caveats || '(none)'}
+
+Write the brief now. Just the sentence, no prefix.`,
+        }],
+      }),
+    });
+    if (!r.ok) {
+      console.warn('[anchor-brief] Haiku non-200, falling back to template');
+      return tmpl();
+    }
+    const data = await r.json();
+    const text = (data?.content?.[0]?.text || '').trim();
+    if (!text) return tmpl();
+    return text.length > 240 ? text.slice(0, 237) + '…' : text;
+  } catch (e: any) {
+    console.warn('[anchor-brief] Haiku exception, falling back to template:', e?.message);
+    return tmpl();
+  }
+}
+
 // ── Phase 2B anchor resolution (v2.80) ──────────────────────────────────────
 // Fetches catalog rows for the UUIDs Claude picked, preserving Claude's order.
 // Supabase ?id=in.(...) doesn't preserve order, so we sort client-side. Silently
@@ -2715,9 +2778,20 @@ Deno.serve(async (req) => {
         for (const m of anchorMeta) {
           console.log(`  · ${m.name} (${m.direction}) entry=${m.entry.lat.toFixed(4)},${m.entry.lng.toFixed(4)} exit=${m.exit.lat.toFixed(4)},${m.exit.lng.toFixed(4)}`);
         }
+        // Kick off per-anchor brief generation in parallel with the route
+        // fetch. Each anchor gets ONE Haiku-written sentence weaving length +
+        // highlight + caveats. Awaited later, before we send the response.
+        const briefsPromise = Promise.all(
+          anchorMeta.map(a => generateAnchorBrief(a))
+        );
         route = await getRoute(anchoredPoints, curviness);
         // Expand allWaypoints so downstream marker rendering reflects reality.
         allWaypoints = anchoredPoints;
+        // Attach briefs to anchor metadata before logging and responding.
+        const briefs = await briefsPromise;
+        for (let i = 0; i < anchorMeta.length; i++) {
+          (anchorMeta[i] as any).brief = briefs[i] || null;
+        }
         log.scenic_anchors_resolved = anchorMeta;
       }
     } else {

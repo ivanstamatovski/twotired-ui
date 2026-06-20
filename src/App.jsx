@@ -4173,18 +4173,22 @@ export default function App() {
         {Array.isArray(routeData?.scenic_anchors) && routeData.scenic_anchors.length > 0 && (() => {
           const anchors = routeData.scenic_anchors;
           const first = anchors[0];
-          const RoadIcon = () => (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 21 L8 3"/><path d="M21 21 L16 3"/><line x1="12" y1="5" x2="12" y2="7"/><line x1="12" y1="11" x2="12" y2="13"/><line x1="12" y1="17" x2="12" y2="19"/>
-            </svg>
-          );
+          // First few words of the first anchor's brief for the peek preview.
+          // Fallback to first vibe tag if brief is missing (older edge fn).
+          const firstBrief = first.brief
+            || (first.vibe_tags?.[0] ? `${first.vibe_tags[0]} road…` : 'Tap for details');
+          const peekPreview = firstBrief.split(' ').slice(0, 4).join(' ') + '…';
 
           if (navMode) {
             return (
               <button className="anchor-fab"
                 onClick={() => setAnchorCardExpanded(true)}
-                aria-label={`This ride includes ${first.name}`}>
-                <RoadIcon />
+                aria-label="Show ride briefing">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9.5"/>
+                  <line x1="12" y1="10.5" x2="12" y2="17"/>
+                  <circle cx="12" cy="7.5" r="0.6" fill="currentColor"/>
+                </svg>
               </button>
             );
           }
@@ -4194,35 +4198,14 @@ export default function App() {
               <>
                 <div className="anchor-card-backdrop" onClick={() => setAnchorCardExpanded(false)} />
                 <div className="anchor-card-full" onClick={e => e.stopPropagation()}>
-                  <div className="anchor-card-full-header">
-                    <span className="anchor-card-full-title">Your ride includes</span>
-                    <button className="anchor-card-close"
-                      onClick={() => setAnchorCardExpanded(false)}
-                      aria-label="Close">✕</button>
-                  </div>
+                  <button className="anchor-card-close"
+                    onClick={() => setAnchorCardExpanded(false)}
+                    aria-label="Close">✕</button>
                   <div className="anchor-card-full-body">
                     {anchors.map((a, i) => (
-                      <div key={a.road_id || i} className="anchor-entry">
-                        <div className="anchor-entry-name">
-                          <RoadIcon />
-                          <span>{a.name}</span>
-                          {a.route_number && <span className="anchor-entry-routenum">{a.route_number}</span>}
-                        </div>
-                        <div className="anchor-entry-meta">
-                          {a.length_km != null && <span>{Math.round(a.length_km * 0.621371)} mi</span>}
-                          {Array.isArray(a.vibe_tags) && a.vibe_tags.slice(0, 3).map(t => (
-                            <span key={t} className="anchor-vibe-chip">{t}</span>
-                          ))}
-                        </div>
-                        {a.must_see && (
-                          <div className="anchor-entry-mustsee">{a.must_see}</div>
-                        )}
-                        {a.caveats && (
-                          <div className="anchor-entry-caveats">
-                            <span aria-hidden="true">⚠</span> {a.caveats}
-                          </div>
-                        )}
-                      </div>
+                      <p key={a.road_id || i} className="anchor-brief">
+                        {a.brief || `${a.length_km ? Math.round(a.length_km * 0.621371) + ' miles of ' : ''}${a.vibe_tags?.[0] || 'scenic'} road on this route.`}
+                      </p>
                     ))}
                   </div>
                 </div>
@@ -4230,21 +4213,17 @@ export default function App() {
             );
           }
 
-          // Peek
-          const shortLen = first.length_km != null ? `${Math.round(first.length_km * 0.621371)}mi` : '';
-          const topTag = Array.isArray(first.vibe_tags) && first.vibe_tags[0] ? first.vibe_tags[0] : 'scenic';
+          // Peek — info dot + 3-4 word preview
           return (
             <button className="anchor-card-peek"
               onClick={() => setAnchorCardExpanded(true)}
-              aria-label={`This ride includes ${first.name}. Tap for details.`}>
-              <div className="anchor-card-peek-icon"><RoadIcon /></div>
-              <div className="anchor-card-peek-text">
-                <span className="anchor-card-peek-name">{first.name}</span>
-                <span className="anchor-card-peek-sub">
-                  {[shortLen, topTag].filter(Boolean).join(' · ')}
-                  {anchors.length > 1 ? ` · +${anchors.length - 1} more` : ''}
-                </span>
-              </div>
+              aria-label="Show ride briefing">
+              <svg className="anchor-card-peek-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9.5"/>
+                <line x1="12" y1="10.5" x2="12" y2="17"/>
+                <circle cx="12" cy="7.5" r="0.6" fill="currentColor"/>
+              </svg>
+              <span className="anchor-card-peek-preview">{peekPreview}</span>
             </button>
           );
         })()}
