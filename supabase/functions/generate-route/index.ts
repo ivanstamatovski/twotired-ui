@@ -1,4 +1,9 @@
-// generate-route edge function — v2.83
+// generate-route edge function — v2.84
+// v2.84: reformat the route narrative from a 2–3 paragraph essay (which
+//        riders never read) into a single tight sentence in the same style
+//        as the anchor brief. Frontend renders it in the same peek/expand
+//        card; falls back to it when no scenic_anchors fired so EVERY ride
+//        gets a brief, not just catalog rides.
 // v2.83: anchor detour-ratio gate. Before committing to Phase 2B anchor-mode,
 //        approximate detour distance through all anchor endpoints via great
 //        circle, compare to direct origin→destination distance. If the ratio
@@ -2273,10 +2278,13 @@ async function buildRefineQuery(feedback: string, rawIntent: any): Promise<strin
   return `[Refining existing route — ${parts.join(' | ')}] Rider feedback: "${feedback}". Identify whether this is a CORRIDOR REPLACEMENT, STOP ADDITION, or STYLE CHANGE per the REFINEMENT INTERPRETATION rules, then apply only that change.`;
 }
 
-// ── Claude Haiku 4.5 ride narrative (v2.3) ───────────────────────────────────
-// Generates a 2–3 paragraph human-readable ride description from GraphHopper
-// turn-by-turn instructions. Haiku keeps latency low (~1s). Claude produces
-// ONLY text — never coordinates or structured data.
+// ── Claude Haiku 4.5 ride narrative (v2.84 — one-sentence brief) ───────────
+// Used to be a 2–3 paragraph essay; riders never read it. v2.84 reformats to
+// match the anchor-brief style: one tight sentence (≤220 chars) calling out
+// what's specific about THIS ride — a named road, a notable region, a
+// signature character. Skip generic praise. Returned as `narrative` on the
+// route response; frontend renders it in the same peek/expanded card the
+// anchor brief uses, falling back to this when no scenic_anchors fired.
 async function generateNarrative(
   instructions: any[],
   stops: any[],
@@ -2319,17 +2327,15 @@ ${roadSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
-      system: `You are a motorcycle ride storyteller for TwoTired, a ride planning app focused on the Hudson Valley and Northeast US.
-Given a ride's turn-by-turn directions and metadata, write a vivid 2–3 paragraph description of the route as if briefing a rider before they leave.
+      max_tokens: 200,
+      system: `You write ONE-sentence briefs for motorcycle riders before they head out. Given a ride's turn-by-turn directions and metadata, produce a single sentence (under 220 characters) that captures what's most specific about THIS ride — a named road, a region's character, a notable crossing, a stop. Conversational rider voice. Skip generic praise ("scenic", "beautiful", "great ride"). No headers, no lists, no markdown. Just the sentence.
 
-Rules:
-- Write in second person ("You'll", "The route takes you")
-- Mention specific road names and towns from the directions — but NEVER any coordinates or GPS numbers
-- Describe the character of the riding: twisty river roads, ridge views, open farmland, etc.
-- If there are stops, weave them naturally into the narrative
-- Keep it under 200 words — evocative but tight
-- No lists, no headers — flowing prose only`,
+Examples:
+- "You'll cross the GWB and pick up 9W north — open river views all the way past Bear Mountain Bridge."
+- "Quick blast up the Garden State to the Catskill foothills, with a coffee stop in Phoenicia at the diner."
+- "Hudson Valley loop through Cold Spring and Beacon — expect twisty climbs and ridge-top farm stands."
+
+If the route uses a famous corridor (9W, NY-97, NY-28, Storm King), mention it by name. If stops exist, mention one in passing. Don't list everything.`,
       messages: [{ role: 'user', content: userMessage }],
     }),
   });

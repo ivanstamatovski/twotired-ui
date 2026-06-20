@@ -4170,14 +4170,19 @@ export default function App() {
               • !navMode + anchorCardExpanded  → full card with must_see/caveats
               • navMode                         → small circle, tap to re-peek
             Stays hidden entirely for routes without catalog anchors. */}
-        {Array.isArray(routeData?.scenic_anchors) && routeData.scenic_anchors.length > 0 && (() => {
-          const anchors = routeData.scenic_anchors;
-          const first = anchors[0];
-          // First few words of the first anchor's brief for the peek preview.
-          // Fallback to first vibe tag if brief is missing (older edge fn).
-          const firstBrief = first.brief
-            || (first.vibe_tags?.[0] ? `${first.vibe_tags[0]} road…` : 'Tap for details');
+        {(routeData && (
+          (Array.isArray(routeData.scenic_anchors) && routeData.scenic_anchors.length > 0) ||
+          (typeof routeData.narrative === 'string' && routeData.narrative.trim())
+        )) && (() => {
+          // Anchor briefs win when present (they're more specific). Otherwise
+          // fall back to the route-level narrative so every ride has a brief.
+          const anchors = Array.isArray(routeData.scenic_anchors) ? routeData.scenic_anchors : [];
+          const briefs = anchors.length > 0
+            ? anchors.map(a => a.brief).filter(Boolean)
+            : [routeData.narrative.trim()];
+          const firstBrief = briefs[0] || 'Tap for details';
           const peekPreview = firstBrief.split(' ').slice(0, 4).join(' ') + '…';
+          const first = anchors[0];
 
           if (navMode) {
             return (
@@ -4202,10 +4207,8 @@ export default function App() {
                     onClick={() => setAnchorCardExpanded(false)}
                     aria-label="Close">✕</button>
                   <div className="anchor-card-full-body">
-                    {anchors.map((a, i) => (
-                      <p key={a.road_id || i} className="anchor-brief">
-                        {a.brief || `${a.length_km ? Math.round(a.length_km * 0.621371) + ' miles of ' : ''}${a.vibe_tags?.[0] || 'scenic'} road on this route.`}
-                      </p>
+                    {briefs.map((text, i) => (
+                      <p key={i} className="anchor-brief">{text}</p>
                     ))}
                   </div>
                 </div>
