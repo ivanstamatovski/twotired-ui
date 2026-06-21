@@ -1394,6 +1394,17 @@ export default function App() {
   //   expanded (large card) — pre-nav, when anchorCardExpanded === true
   //   nav-circle (small FAB) — during nav, expandable on tap
   const [anchorCardExpanded, setAnchorCardExpanded] = useState(false);
+
+  // Catalog-road picker mode: rider taps the 🛣 FAB to see nearby
+  // approved catalog roads on the map, taps individual roads to add them
+  // to a loop, then taps "Plan loop" to generate a round-trip ride that
+  // anchors through all of them. Auto-orders by distance from origin.
+  // Capped at 4 anchors to keep rides reasonable.
+  const [pickerMode, setPickerMode] = useState(false);
+  const [pickerCatalog, setPickerCatalog] = useState([]);      // approved roads near rider
+  const [pickerSelected, setPickerSelected] = useState([]);    // ordered array of road IDs
+  const PICKER_MAX = 4;
+  const PICKER_RADIUS_MI = 75;
   const [bugScreenshot, setBugScreenshot] = useState(null);           // base64 captured at tap-time
   const [bugScreenshotZoom, setBugScreenshotZoom] = useState(false);  // tap-to-enlarge preview
 
@@ -1577,6 +1588,198 @@ export default function App() {
   useEffect(() => { if (navMode) setAnchorCardExpanded(false); }, [navMode]);
   // Reset the expanded state when a new route lands so we always start in peek.
   useEffect(() => { setAnchorCardExpanded(false); }, [routeData?.scenic_anchors]);
+
+  // ── Catalog road picker (visual loop-builder) ─────────────────────────
+  // Haversine in miles — used to filter catalog roads near rider's GPS and
+  // to auto-order selected anchors by proximity for the optimized loop.
+  function haversineMi(a, b) {
+    const R = 3958.8;
+    const toRad = d => d * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+    const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  // Fetch approved catalog roads when picker opens; client-side filter to a
+  // ~75mi bbox around the rider so the map doesn't get hammered with
+  // distant polylines.
+  useEffect(() => {
+    if (!pickerMode) return;
+    if (!userLocation) {
+      console.warn('[picker] no userLocation yet — waiting');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('known_roads')
+          .select('id,name,route_number,length_km,vibe_tags,must_see,start_lat,start_lng,end_lat,end_lng,geometry')
+          .eq('approved', true);
+        if (cancelled) return;
+        if (error) { console.error('[picker] catalog fetch failed', error); return; }
+        const filtered = (data || []).filter(r => {
+          const dS = haversineMi(userLocation, { lat: r.start_lat, lng: r.start_lng });
+          const dE = haversineMi(userLocation, { lat: r.end_lat,   lng: r.end_lng });
+          return Math.min(dS, dE) <= PICKER_RADIUS_MI;
+        });
+        setPickerCatalog(filtered);
+      } catch (e) {
+        console.error('[picker] fetch exception', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pickerMode, userLocation]);
+
+  // Render catalog roads on the map when picker is active. Clean up sources
+  // and layers when picker turns off or selection changes.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+
+    // Clear any previous picker layers
+    const layersToRemove = ['picker-line', 'picker-line-selected', 'picker-line-hit'];
+    layersToRemove.forEach(id => {
+      if (map.getLayer(id)) map.removeLayer(id);
+    });
+    if (map.getSource('picker-roads')) map.removeSource('picker-roads');
+
+    if (!pickerMode || !pickerCatalog.length) return;
+
+    // Build a FeatureCollection of all catalog roads with their selection state.
+    const features = pickerCatalog.map(r => {
+      const isSelected = pickerSelected.includes(r.id);
+      const coords = (Array.isArray(r.geometry?.coordinates) && r.geometry.coordinates.length >= 2)
+        ? r.geometry.coordinates
+        : [[r.start_lng, r.start_lat], [r.end_lng, r.end_lat]];
+      return {
+        type: 'Feature',
+        properties: {
+          road_id: r.id,
+          name: r.name,
+          selected: isSelected ? 1 : 0,
+          must_see: r.must_see || '',
+          length_mi: r.length_km ? Math.round(r.length_km * 0.621371) : null,
+        },
+        geometry: { type: 'LineString', coordinates: coords },
+      };
+    });
+
+    map.addSource('picker-roads', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features },
+    });
+
+    // Wide invisible hit layer for easier tapping
+    map.addLayer({
+      id: 'picker-line-hit',
+      type: 'line',
+      source: 'picker-roads',
+      paint: { 'line-color': 'transparent', 'line-width': 18 },
+    });
+    // Unselected — orange
+    map.addLayer({
+      id: 'picker-line',
+      type: 'line',
+      source: 'picker-roads',
+      filter: ['==', ['get', 'selected'], 0],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#f97316', 'line-width': 4, 'line-opacity': 0.85 },
+    });
+    // Selected — bright green, thicker
+    map.addLayer({
+      id: 'picker-line-selected',
+      type: 'line',
+      source: 'picker-roads',
+      filter: ['==', ['get', 'selected'], 1],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#22c55e', 'line-width': 6, 'line-opacity': 0.95 },
+    });
+
+    // Tap handler — toggle selection, capped at PICKER_MAX
+    const onPickerClick = (e) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const id = f.properties?.road_id;
+      if (!id) return;
+      setPickerSelected(prev => {
+        if (prev.includes(id)) return prev.filter(x => x !== id);
+        if (prev.length >= PICKER_MAX) {
+          // Soft alert via toast-style flash — for now console + ignore
+          console.log(`[picker] selection cap of ${PICKER_MAX} reached`);
+          return prev;
+        }
+        return [...prev, id];
+      });
+    };
+    map.on('click', 'picker-line-hit', onPickerClick);
+    map.getCanvas().style.cursor = pickerMode ? 'crosshair' : '';
+    return () => {
+      map.off('click', 'picker-line-hit', onPickerClick);
+      map.getCanvas().style.cursor = '';
+    };
+  }, [pickerMode, pickerCatalog, pickerSelected]);
+
+  // Compute the total loop distance estimate (origin → anchors in order → origin)
+  // for the selection counter. Greedy nearest-neighbor order from origin.
+  function computeOrderedLoop() {
+    if (!userLocation || !pickerSelected.length) return { ordered: [], totalMi: 0 };
+    const anchorsById = new Map(pickerCatalog.map(r => [r.id, r]));
+    const remaining = pickerSelected.map(id => anchorsById.get(id)).filter(Boolean);
+    const ordered = [];
+    let cursor = userLocation;
+    let total = 0;
+    while (remaining.length) {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      let bestEntry = null;
+      for (let i = 0; i < remaining.length; i++) {
+        const r = remaining[i];
+        const start = { lat: r.start_lat, lng: r.start_lng };
+        const end   = { lat: r.end_lat,   lng: r.end_lng };
+        const dS = haversineMi(cursor, start);
+        const dE = haversineMi(cursor, end);
+        const closer = dS <= dE ? { entry: start, exit: end, d: dS } : { entry: end, exit: start, d: dE };
+        if (closer.d < bestDist) {
+          bestDist = closer.d;
+          bestIdx = i;
+          bestEntry = closer;
+        }
+      }
+      const r = remaining.splice(bestIdx, 1)[0];
+      const roadMi = r.length_km ? r.length_km * 0.621371 : 0;
+      total += bestDist + roadMi;
+      ordered.push(r);
+      cursor = bestEntry.exit;
+    }
+    total += haversineMi(cursor, userLocation); // return home leg
+    return { ordered, totalMi: Math.round(total) };
+  }
+
+  async function planPickedLoop() {
+    if (!pickerSelected.length || !userLocation) return;
+    const { ordered } = computeOrderedLoop();
+    if (!ordered.length) return;
+    setPickerMode(false);  // exit picker, will trigger cleanup
+    setPickerSelected([]);
+    // Submit structured request to generate-route, skipping Claude intent.
+    const payload = {
+      origin: { lat: userLocation.lat, lng: userLocation.lng },
+      destination: { lat: userLocation.lat, lng: userLocation.lng },
+      round_trip: true,
+      curviness: 2,
+      scenic_anchors: ordered.map(r => r.id),
+      user_id: session?.user?.id || null,
+    };
+    await generateRoute(payload);
+  }
+
+  function cancelPicker() {
+    setPickerMode(false);
+    setPickerSelected([]);
+  }
   useEffect(() => { sessionRef.current = session; }, [session]);
 
   // Fetch the native app version + build number once on mount. On web we
@@ -4162,6 +4365,50 @@ export default function App() {
             </svg>
           </button>
         )}
+
+        {/* Picker mode FAB — toggle catalog overlay on the map for visual
+            loop-building. Lives below the report-fab on the right side. Only
+            shows when not navigating and no route is currently displayed. */}
+        {!navMode && !routeData && (
+          <button className={`picker-fab${pickerMode ? ' picker-fab--active' : ''}`}
+            onClick={() => setPickerMode(m => !m)}
+            aria-label={pickerMode ? 'Exit road picker' : 'Browse and pick scenic roads'}>
+            {pickerMode ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 21 L8 3"/><path d="M21 21 L16 3"/><line x1="12" y1="5" x2="12" y2="7"/><line x1="12" y1="11" x2="12" y2="13"/><line x1="12" y1="17" x2="12" y2="19"/>
+              </svg>
+            )}
+          </button>
+        )}
+
+        {/* Picker overlay UI — selection counter at top-center, Plan loop
+            button at bottom-center. Visible only when picker mode is active.
+            Stays out of the way of the report and recenter FABs. */}
+        {pickerMode && !navMode && (() => {
+          const { totalMi } = computeOrderedLoop();
+          const sel = pickerSelected.length;
+          return (
+            <>
+              <div className="picker-counter">
+                {sel === 0 ? (
+                  <>Tap roads on the map to build a loop · {pickerCatalog.length} nearby</>
+                ) : (
+                  <><strong>{sel}</strong> road{sel !== 1 ? 's' : ''} · est <strong>{totalMi} mi</strong> loop{sel >= PICKER_MAX ? ' · max reached' : ''}</>
+                )}
+              </div>
+              <div className="picker-actions">
+                <button className="picker-cancel" onClick={cancelPicker}>Cancel</button>
+                <button className="picker-plan" disabled={sel === 0} onClick={planPickedLoop}>
+                  {sel === 0 ? 'Pick roads first' : `Plan ${sel}-road loop`}
+                </button>
+              </div>
+            </>
+          );
+        })()}
 
         {/* ── Scenic-anchor card (top-left) ──────────────────────────
             Renders when the current route used Phase 2B anchor-mode

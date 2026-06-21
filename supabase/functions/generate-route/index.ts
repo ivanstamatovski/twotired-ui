@@ -2762,11 +2762,17 @@ Deno.serve(async (req) => {
     // rider wants a CIRCULAR loop, not an out-and-back. Use GH's round_trip
     // algorithm with a target distance. Default 40 km (~25 mi, fits "1 hour
     // twisty" at curviness 3); override via body.loop_distance_km.
+    // Circular-loop branch (GH round_trip algorithm) only applies when there
+    // are NO scenic_anchors. The picker-mode flow sends round_trip=true with
+    // origin≈destination AND scenic_anchors=[...] — that case should fall
+    // through to Phase 2B anchor-mode routing, which handles the loop
+    // naturally by routing origin → anchors → origin.
     const isCircularLoop = body.round_trip
       && haversineKm(originLL, destinationLL) < 1.0
       && intermediateWPs.length === 0
       && stopLLs.length === 0
-      && !corridor;
+      && !corridor
+      && !(body.scenic_anchors && body.scenic_anchors.length > 0);
     if (isCircularLoop) {
       const targetKm = (body as any).loop_distance_km ?? 40;
       const targetMeters = Math.max(5000, Math.min(targetKm * 1000, 200000));
