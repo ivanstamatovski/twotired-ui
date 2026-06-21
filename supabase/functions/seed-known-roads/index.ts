@@ -55,6 +55,20 @@ interface SeedBody {
   regions?: string[];
   max_roads?: number;
   extra_prompt?: string;
+  center_lat?: number;     // optional radius filter — drop roads farther than radius_mi
+  center_lng?: number;
+  radius_mi?: number;
+}
+
+function haversineMi(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 3958.8; // earth radius in miles
+  const toRad = (d: number) => d * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
 
 // Snap a single lat/lng to its nearest routable edge via GH's /nearest
@@ -157,6 +171,10 @@ Deno.serve(async (req) => {
   const regions   = body.regions || [];
   const maxRoads  = Math.min(Math.max(body.max_roads ?? DEFAULT_MAX, 5), 150);
   const extra     = (body.extra_prompt || '').trim();
+  const center    = (typeof body.center_lat === 'number' && typeof body.center_lng === 'number')
+                      ? { lat: body.center_lat, lng: body.center_lng }
+                      : null;
+  const radiusMi  = typeof body.radius_mi === 'number' && body.radius_mi > 0 ? body.radius_mi : null;
 
   if (states.length === 0) return json({ error: 'no valid states' }, 400);
 
@@ -200,10 +218,14 @@ Output STRICT JSON: { "roads": [ {...}, ... ] }. No prose, no markdown,
 no preamble. Start the response with '{'.
 `.trim();
 
+  const radiusHint = (center && radiusMi)
+    ? `\n\nIMPORTANT geographic filter: only include roads where BOTH endpoints are within ${radiusMi} miles of (${center.lat.toFixed(4)}, ${center.lng.toFixed(4)}). This is the rider's day-ride radius. Skip anything farther.`
+    : '';
+
   const userPrompt = `
 Enumerate up to ${maxRoads} iconic motorcycle roads in: ${states.join(', ')}.
 ${regions.length ? `Focus regions: ${regions.join(', ')}.` : ''}
-${extra ? `Additional guidance: ${extra}` : ''}
+${extra ? `Additional guidance: ${extra}` : ''}${radiusHint}
 
 Quality over quantity — if you can only confidently list 30 with accurate
 coordinates, list 30. Skip any road where you're unsure of the exact
@@ -273,11 +295,25 @@ endpoint lat/lng.
   const rowsToInsert: any[] = [];
   let skipped = 0;
   let flagged = 0;
+  let radiusFiltered = 0;
   for (const r of roads) {
     if (!r?.name || !r?.state) { skipped++; continue; }
     if (typeof r.start_lat !== 'number' || typeof r.start_lng !== 'number'
         || typeof r.end_lat !== 'number' || typeof r.end_lng !== 'number') {
       skipped++; continue;
+    }
+    // Geographic radius filter — defense in depth even though we asked Claude
+    // in the prompt. Distance to the CLOSER endpoint must be within radius;
+    // a road whose far end is just outside is still rideable.
+    if (center && radiusMi) {
+      const dStart = haversineMi(center, { lat: r.start_lat, lng: r.start_lng });
+      const dEnd   = haversineMi(center, { lat: r.end_lat,   lng: r.end_lng });
+      const dMin = Math.min(dStart, dEnd);
+      if (dMin > radiusMi) {
+        console.log(`[radius] dropped ${r.name} — nearest endpoint ${dMin.toFixed(0)}mi away`);
+        radiusFiltered++;
+        continue;
+      }
     }
     const key = `${r.state.toUpperCase()}::${r.name.toLowerCase()}`;
     if (existingKey.has(key)) { skipped++; continue; }
@@ -370,6 +406,7 @@ endpoint lat/lng.
     inserted,
     skipped_duplicates: skipped,
     flagged_for_review: flagged,
+    radius_filtered: radiusFiltered,
     raw_count: roads.length,
     model: 'claude-sonnet-4-6',
     input_tokens: inputTokens,

@@ -919,6 +919,11 @@ tr:hover td{background:rgba(255,255,255,.02)}
         </div>
         <div class="tasks-filters">
           <div class="tasks-filter-group">
+            <span class="tasks-filter-label">View</span>
+            <button class="task-chip task-chip--active" data-roadview="list" onclick="setRoadsViewMode('list')">List</button>
+            <button class="task-chip" data-roadview="map" onclick="setRoadsViewMode('map')">🗺 Map</button>
+          </div>
+          <div class="tasks-filter-group">
             <span class="tasks-filter-label">Status</span>
             <button class="task-chip task-chip--active" data-roadfilter="pending" onclick="setRoadsFilter('pending')">Pending</button>
             <button class="task-chip" data-roadfilter="approved" onclick="setRoadsFilter('approved')">Approved</button>
@@ -936,6 +941,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
           </div>
         </div>
         <div id="roads-list"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
+        <div id="roads-map" style="display:none;height:70vh;min-height:480px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"></div>
+        <div id="roads-map-hint" style="display:none;font-size:11px;color:var(--text-dim);margin-top:6px">Click any polyline to approve, reject, or open the row in list view.</div>
       </div>
 
       <!-- ── Costs Panel ── -->
@@ -3193,6 +3200,8 @@ let _knownRoads      = [];
 let _roadsFilter     = 'pending';     // pending | approved | rejected | all
 let _roadsStateFilter = '';            // '' | NY | NJ | CT | MA | PA
 let _editingRoadId   = null;           // uuid of row whose coords are being edited
+let _roadsViewMode   = 'list';         // 'list' | 'map'
+let _roadsMapInstance = null;          // active L.Map when in map mode
 
 async function loadKnownRoads() {
   const list = document.getElementById('roads-list');
@@ -3237,14 +3246,159 @@ function setRoadsState(s) {
   renderKnownRoads();
 }
 
-function renderKnownRoads() {
-  const list = document.getElementById('roads-list');
-  if (!list) return;
+function filteredRoads() {
   let rows = _knownRoads;
   if (_roadsFilter === 'pending')  rows = rows.filter(r => r.approved === null);
   if (_roadsFilter === 'approved') rows = rows.filter(r => r.approved === true);
   if (_roadsFilter === 'rejected') rows = rows.filter(r => r.approved === false);
   if (_roadsStateFilter) rows = rows.filter(r => r.state === _roadsStateFilter);
+  return rows;
+}
+
+function setRoadsViewMode(mode) {
+  _roadsViewMode = mode;
+  document.querySelectorAll('[data-roadview]').forEach(b => {
+    b.classList.toggle('task-chip--active', b.dataset.roadview === mode);
+  });
+  const listEl = document.getElementById('roads-list');
+  const mapEl  = document.getElementById('roads-map');
+  const hintEl = document.getElementById('roads-map-hint');
+  if (mode === 'map') {
+    if (listEl) listEl.style.display = 'none';
+    if (mapEl)  mapEl.style.display  = '';
+    if (hintEl) hintEl.style.display = '';
+    renderKnownRoads();
+  } else {
+    if (listEl) listEl.style.display = '';
+    if (mapEl)  mapEl.style.display  = 'none';
+    if (hintEl) hintEl.style.display = 'none';
+    if (_roadsMapInstance) { _roadsMapInstance.remove(); _roadsMapInstance = null; }
+    renderKnownRoads();
+  }
+}
+
+// Visual approve-from-map: a thin wrapper that runs validate-known-road and
+// refreshes the map's coloring after. Same backend flow as approveRoad in
+// list view.
+async function approveRoadFromMap(roadId) {
+  const i = _knownRoads.findIndex(r => r.id === roadId);
+  if (i < 0) return;
+  // Reuse the list-view approveRoad logic. It expects a status div by index;
+  // we don't have one here, so swallow the UI update and just refresh.
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/validate-known-road`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SERVICE_KEY },
+      body: JSON.stringify({ road_id: roadId }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      await loadKnownRoads();
+      if (_roadsViewMode === 'map') renderKnownRoads();
+    } else {
+      alert(`Validation failed (${data.reason}): ${data.detail || ''}\n\nUse list view to override or edit coords.`);
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function rejectRoadFromMap(roadId) {
+  const i = _knownRoads.findIndex(r => r.id === roadId);
+  if (i < 0) return;
+  await rejectRoad(i);
+  if (_roadsViewMode === 'map') renderKnownRoads();
+}
+
+function openInListView(roadId) {
+  setRoadsViewMode('list');
+  // Scroll to the row in list view
+  setTimeout(() => {
+    const el = document.querySelector(`[data-road-id="${roadId}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 100);
+}
+
+function renderKnownRoadsMap() {
+  const container = document.getElementById('roads-map');
+  if (!container) return;
+
+  // Tear down previous map if any (filter switches re-render)
+  if (_roadsMapInstance) { _roadsMapInstance.remove(); _roadsMapInstance = null; }
+  container.innerHTML = '';
+
+  const rows = filteredRoads().filter(r => r.start_lat && r.end_lat);
+  if (rows.length === 0) {
+    container.innerHTML = '<div style="padding:60px;text-align:center;color:var(--text-muted)">No roads match this filter.</div>';
+    return;
+  }
+
+  const map = L.map(container, { zoomControl: true });
+  _roadsMapInstance = map;
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '©OpenStreetMap ©CARTO', maxZoom: 19,
+  }).addTo(map);
+
+  // Color by approval status. needs_coord_review = red dashed border.
+  const COLOR = { approved: '#22c55e', pending: '#f97316', rejected: '#6b7280' };
+  const allBounds = [];
+
+  for (const r of rows) {
+    const status = r.approved === true ? 'approved' : r.approved === false ? 'rejected' : 'pending';
+    const color = COLOR[status];
+    const lls = [[r.start_lat, r.start_lng], [r.end_lat, r.end_lng]];
+    const weight = status === 'approved' ? 5 : status === 'pending' ? 4 : 3;
+    const opacity = status === 'rejected' ? 0.4 : 0.85;
+    const dash = r.needs_coord_review ? '6 4' : null;
+
+    const line = L.polyline(lls, { color, weight, opacity, dashArray: dash }).addTo(map);
+    // Endpoint dots so single-point clicks are easier
+    L.circleMarker(lls[0], { radius: 5, fillColor: color, color: '#000', weight: 1, fillOpacity: 0.95 }).addTo(map);
+    L.circleMarker(lls[1], { radius: 5, fillColor: color, color: '#000', weight: 1, fillOpacity: 0.95 }).addTo(map);
+    allBounds.push(...lls);
+
+    const tags = (r.vibe_tags || []).slice(0, 4).map(t =>
+      `<span style="display:inline-block;background:rgba(255,255,255,0.08);padding:1px 6px;border-radius:999px;font-size:10px;margin-right:3px">${escHtml(t)}</span>`
+    ).join('');
+    const lengthMi = r.length_km ? Math.round(r.length_km * 0.621371) : null;
+    const mapsLink = `https://www.google.com/maps/dir/${r.start_lat},${r.start_lng}/${r.end_lat},${r.end_lng}`;
+    const reviewBadge = r.needs_coord_review
+      ? `<div style="font-size:11px;color:#f87171;margin-top:4px">⚠ needs coord review: ${escHtml(r.coord_review_reason || '')}</div>`
+      : '';
+
+    const popupHtml = `
+      <div style="min-width:240px;max-width:280px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${escHtml(r.name)}</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+          ${r.route_number ? escHtml(r.route_number) + ' · ' : ''}${escHtml(r.state)}${lengthMi ? ' · ' + lengthMi + ' mi' : ''}
+          · <span style="color:${color};font-weight:600">${status}</span>
+        </div>
+        ${tags ? `<div style="margin-bottom:6px">${tags}</div>` : ''}
+        ${r.must_see ? `<div style="font-size:11px;font-style:italic;margin-bottom:4px">${escHtml(r.must_see)}</div>` : ''}
+        ${reviewBadge}
+        <div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap">
+          ${r.approved !== true  ? `<button onclick="approveRoadFromMap('${r.id}')" style="padding:4px 10px;font-size:11px;background:#22c55e;color:#000;border:none;border-radius:4px;cursor:pointer;font-weight:600">✓ Approve</button>` : ''}
+          ${r.approved !== false ? `<button onclick="rejectRoadFromMap('${r.id}')" style="padding:4px 10px;font-size:11px;background:#ef4444;color:#fff;border:none;border-radius:4px;cursor:pointer">✗ Reject</button>` : ''}
+          <button onclick="openInListView('${r.id}')" style="padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.08);color:var(--text);border:none;border-radius:4px;cursor:pointer">✏️ Edit</button>
+          <a href="${mapsLink}" target="_blank" rel="noopener" style="padding:4px 10px;font-size:11px;background:rgba(255,255,255,0.08);color:var(--text);border:none;border-radius:4px;text-decoration:none">Maps ↗</a>
+        </div>
+      </div>
+    `;
+    line.bindPopup(popupHtml);
+  }
+
+  if (allBounds.length) {
+    map.fitBounds(L.latLngBounds(allBounds), { padding: [30, 30] });
+  } else {
+    map.setView([40.9, -74.2], 9);
+  }
+}
+
+function renderKnownRoads() {
+  if (_roadsViewMode === 'map') { renderKnownRoadsMap(); return; }
+  const list = document.getElementById('roads-list');
+  if (!list) return;
+  const rows = filteredRoads();
 
   if (rows.length === 0) {
     list.innerHTML = '<div class="loading-row" style="color:var(--text-muted)">No roads match this filter. Try seeding the catalog.</div>';
@@ -3278,7 +3432,7 @@ function renderKnownRoads() {
         <strong>Review needed:</strong> ${escHtml(r.coord_review_reason)}
       </div>` : '';
     return `
-      <div class="rulebook-card" style="margin-bottom:14px;padding:16px${r.needs_coord_review ? ';border-left:3px solid #f87171' : ''}">
+      <div class="rulebook-card" data-road-id="${r.id}" style="margin-bottom:14px;padding:16px${r.needs_coord_review ? ';border-left:3px solid #f87171' : ''}">
         <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
           <div style="flex:1;min-width:240px">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
