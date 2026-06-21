@@ -3426,7 +3426,7 @@ function renderKnownRoads() {
         ? '<span class="badge badge-red">✗ rejected</span>'
         : '<span class="badge badge-amber">pending</span>';
     const reviewBadge = r.needs_coord_review
-      ? `<span class="badge badge-red" title="${escAttr(r.coord_review_reason || '')}">⚠ needs coord review</span>`
+      ? `<span class="badge badge-red" title="${escHtml(r.coord_review_reason || '')}">⚠ needs coord review</span>`
       : '';
     const mapSearch = `https://www.google.com/maps/dir/${r.start_lat},${r.start_lng}/${r.end_lat},${r.end_lng}`;
     const snapInfo = (r.snap_distance_m_start != null || r.snap_distance_m_end != null) ? `
