@@ -3346,15 +3346,23 @@ function renderKnownRoadsMap() {
   for (const r of rows) {
     const status = r.approved === true ? 'approved' : r.approved === false ? 'rejected' : 'pending';
     const color = COLOR[status];
-    const lls = [[r.start_lat, r.start_lng], [r.end_lat, r.end_lng]];
-    const weight = status === 'approved' ? 5 : status === 'pending' ? 4 : 3;
+    // Real road geometry from validate-known-road when available, else straight
+    // line between the two endpoints. Approved roads should have geometry;
+    // pending will draw straight until they're approved.
+    const endpoints = [[r.start_lat, r.start_lng], [r.end_lat, r.end_lng]];
+    const geomCoords = r.geometry?.coordinates;
+    const lls = (Array.isArray(geomCoords) && geomCoords.length >= 2)
+      ? geomCoords.map(c => [c[1], c[0]])   // GeoJSON [lng,lat] → Leaflet [lat,lng]
+      : endpoints;
+    const weight = status === 'approved' ? 4 : status === 'pending' ? 3.5 : 2.5;
     const opacity = status === 'rejected' ? 0.4 : 0.85;
     const dash = r.needs_coord_review ? '6 4' : null;
 
     const line = L.polyline(lls, { color, weight, opacity, dashArray: dash }).addTo(map);
-    // Endpoint dots so single-point clicks are easier
-    L.circleMarker(lls[0], { radius: 5, fillColor: color, color: '#000', weight: 1, fillOpacity: 0.95 }).addTo(map);
-    L.circleMarker(lls[1], { radius: 5, fillColor: color, color: '#000', weight: 1, fillOpacity: 0.95 }).addTo(map);
+    // Endpoint dots — still drawn from the stored endpoints so the click target
+    // is obvious even on short segments
+    L.circleMarker(endpoints[0], { radius: 5, fillColor: color, color: '#000', weight: 1, fillOpacity: 0.95 }).addTo(map);
+    L.circleMarker(endpoints[1], { radius: 5, fillColor: color, color: '#000', weight: 1, fillOpacity: 0.95 }).addTo(map);
     allBounds.push(...lls);
 
     const tags = (r.vibe_tags || []).slice(0, 4).map(t =>

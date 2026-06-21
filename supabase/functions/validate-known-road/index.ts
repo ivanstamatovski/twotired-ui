@@ -118,11 +118,11 @@ Deno.serve(async (req) => {
   }
 
   // Route between the snapped endpoints.
-  const routeKm = await routeBetween(
+  const routeResult = await routeBetween(
     { lat: startSnap.lat, lng: startSnap.lng },
     { lat: endSnap.lat,   lng: endSnap.lng   },
   );
-  if (routeKm === null) {
+  if (routeResult === null) {
     return json({
       ok: false,
       reason: 'gh_cannot_route',
@@ -131,6 +131,8 @@ Deno.serve(async (req) => {
       snap_distance_m_end: endSnap.distM,
     }, 200);
   }
+  const routeKm = routeResult.km;
+  const routeGeometry = routeResult.geometry;
 
   // Length check (only if Claude gave a length_km estimate).
   let ratio: number | null = null;
@@ -148,7 +150,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  // All checks pass. Persist the snapped coords + approval.
+  // All checks pass. Persist the snapped coords + geometry + approval.
   await patchRow(roadId, {
     approved: true,
     approved_at: new Date().toISOString(),
@@ -161,6 +163,10 @@ Deno.serve(async (req) => {
     route_validated_km:    routeKm,
     needs_coord_review:    false,
     coord_review_reason:   null,
+    // v2026-06-20 cache the actual road geometry for the admin map and any
+    // future rider-facing surface that wants to render the segment shape.
+    geometry:              routeGeometry,
+    geometry_fetched_at:   new Date().toISOString(),
   });
 
   return json({
@@ -170,6 +176,7 @@ Deno.serve(async (req) => {
     ratio,
     snap_distance_m_start: startSnap.distM,
     snap_distance_m_end: endSnap.distM,
+    geometry_saved: !!routeGeometry,
   }, 200);
 });
 
@@ -190,14 +197,15 @@ async function snapPoint(lat: number, lng: number): Promise<{ lat: number; lng: 
   }
 }
 
-async function routeBetween(start: { lat: number; lng: number }, end: { lat: number; lng: number }): Promise<number | null> {
+async function routeBetween(start: { lat: number; lng: number }, end: { lat: number; lng: number }): Promise<{ km: number; geometry: any } | null> {
   try {
     const body = {
       points: [[start.lng, start.lat], [end.lng, end.lat]],
       profile: 'motorcycle',
       'ch.disable': true,
       instructions: false,
-      calc_points: false,
+      calc_points: true,
+      points_encoded: false,   // get raw GeoJSON-compatible coordinates
     };
     const r = await fetch(`${GRAPHHOPPER_URL}/route`, {
       method: 'POST',
@@ -207,9 +215,13 @@ async function routeBetween(start: { lat: number; lng: number }, end: { lat: num
     });
     if (!r.ok) return null;
     const d = await r.json();
-    const dist = d?.paths?.[0]?.distance;
-    if (typeof dist !== 'number') return null;
-    return dist / 1000;
+    const path = d?.paths?.[0];
+    if (!path || typeof path.distance !== 'number') return null;
+    const coords = path.points?.coordinates;
+    const geometry = Array.isArray(coords) && coords.length >= 2
+      ? { type: 'LineString', coordinates: coords }
+      : null;
+    return { km: path.distance / 1000, geometry };
   } catch {
     return null;
   }
