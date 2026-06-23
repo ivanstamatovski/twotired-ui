@@ -1115,6 +1115,15 @@ body {
   border-radius: 20px 20px 0 0;
 }
 
+/* Picker mode owns the screen for tapping catalog roads. Slide the input
+ * sheet fully off-screen so it can't cover the bottom-center "Plan loop"
+ * action bar (both were z-index:100 and the sheet won, hiding the button).
+ * Specificity (0,2,0) + later position beats the mode modifiers above. */
+.sheet.sheet--picker-hidden {
+  transform: translateY(100%);
+  pointer-events: none;
+}
+
 /* The redundant drag bar at the top is hidden in this mode — the ⋯ button
  * alone controls open/close. */
 .sheet--menu-open .sheet-bar    { display: none; }
@@ -2725,7 +2734,7 @@ body {
   bottom: calc(max(20px, env(safe-area-inset-bottom)) + 12px);
   left: 50%;
   transform: translateX(-50%);
-  z-index: 100;
+  z-index: 110;
   display: flex;
   gap: 10px;
   padding: 8px;

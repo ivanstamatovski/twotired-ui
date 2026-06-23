@@ -4604,7 +4604,7 @@ export default function App() {
 
       {/* ════════════════ MOBILE bottom sheet ════════════════ */}
       {isMobile && !navMode ? (
-        <div className={`sheet sheet--${sheetMode}${menuOpen ? ' sheet--menu-open' : ''}`}
+        <div className={`sheet sheet--${sheetMode}${menuOpen ? ' sheet--menu-open' : ''}${pickerMode ? ' sheet--picker-hidden' : ''}`}
              style={{
                ...(sheetMode === 'idle' ? { '--idle-height': idleSheetHeight + 'px' } : {}),
                ...(menuOpen           ? { '--menu-height': menuSheetHeight + 'px' } : {}),
