@@ -1403,6 +1403,11 @@ export default function App() {
   const [pickerMode, setPickerMode] = useState(false);
   const [pickerCatalog, setPickerCatalog] = useState([]);      // approved roads near rider
   const [pickerSelected, setPickerSelected] = useState([]);    // ordered array of road IDs
+  // Picker lifecycle so the overlay can explain itself instead of showing a
+  // blank map: 'locating' (no GPS yet) → 'loading' (fetching catalog) →
+  // 'ready' (roads nearby) | 'empty' (none within PICKER_RADIUS_MI).
+  const [pickerStatus, setPickerStatus] = useState('loading');
+  const [pickerNearest, setPickerNearest] = useState(null);    // {distMi,name,state} of closest road when 'empty'
   const PICKER_MAX = 4;
   const PICKER_RADIUS_MI = 75;
   const [bugScreenshot, setBugScreenshot] = useState(null);           // base64 captured at tap-time
@@ -1606,28 +1611,51 @@ export default function App() {
   // ~75mi bbox around the rider so the map doesn't get hammered with
   // distant polylines.
   useEffect(() => {
-    if (!pickerMode) return;
+    if (!pickerMode) {
+      // Reset so the next open starts clean (no stale "empty" flash).
+      setPickerStatus('loading');
+      setPickerNearest(null);
+      return;
+    }
     if (!userLocation) {
-      console.warn('[picker] no userLocation yet — waiting');
+      // Can't filter roads to "near me" without a fix — tell the rider we're
+      // still locating rather than showing an empty map.
+      setPickerStatus('locating');
       return;
     }
     let cancelled = false;
+    setPickerStatus('loading');
     (async () => {
       try {
         const { data, error } = await supabase
           .from('known_roads')
-          .select('id,name,route_number,length_km,vibe_tags,must_see,start_lat,start_lng,end_lat,end_lng,geometry')
+          .select('id,name,route_number,state,length_km,vibe_tags,must_see,start_lat,start_lng,end_lat,end_lng,geometry')
           .eq('approved', true);
         if (cancelled) return;
-        if (error) { console.error('[picker] catalog fetch failed', error); return; }
+        if (error) { console.error('[picker] catalog fetch failed', error); setPickerStatus('empty'); return; }
+        // Single pass: filter to radius AND track the closest road overall so
+        // the empty state can say *where* the nearest curated roads actually are.
+        let nearestMi = Infinity, nearestRow = null;
         const filtered = (data || []).filter(r => {
           const dS = haversineMi(userLocation, { lat: r.start_lat, lng: r.start_lng });
           const dE = haversineMi(userLocation, { lat: r.end_lat,   lng: r.end_lng });
-          return Math.min(dS, dE) <= PICKER_RADIUS_MI;
+          const d = Math.min(dS, dE);
+          if (d < nearestMi) { nearestMi = d; nearestRow = r; }
+          return d <= PICKER_RADIUS_MI;
         });
         setPickerCatalog(filtered);
+        if (filtered.length > 0) {
+          setPickerStatus('ready');
+          setPickerNearest(null);
+        } else {
+          setPickerStatus('empty');
+          setPickerNearest(nearestRow
+            ? { distMi: Math.round(nearestMi), name: nearestRow.name, state: nearestRow.state || null }
+            : null);
+        }
       } catch (e) {
         console.error('[picker] fetch exception', e);
+        if (!cancelled) setPickerStatus('empty');
       }
     })();
     return () => { cancelled = true; };
@@ -4391,19 +4419,46 @@ export default function App() {
           </button>
         )}
 
-        {/* Picker overlay UI — selection counter at top-center, Plan loop
-            button at bottom-center. Visible only when picker mode is active.
+        {/* Picker overlay UI — explains itself through four states so the
+            rider is never left staring at a blank map: locating (no GPS),
+            loading (fetching), empty (no roads within range), ready (pick + plan).
             Stays out of the way of the report and recenter FABs. */}
         {pickerMode && !navMode && (() => {
+          if (pickerStatus === 'locating') {
+            return <div className="picker-counter picker-counter--status">📍 Finding your location…</div>;
+          }
+          if (pickerStatus === 'loading') {
+            return <div className="picker-counter picker-counter--status">Finding scenic roads near you…</div>;
+          }
+          if (pickerStatus === 'empty') {
+            return (
+              <div className="picker-empty">
+                <div className="picker-empty-icon">🛣️</div>
+                <div className="picker-empty-title">No curated roads near you yet</div>
+                <p className="picker-empty-body">
+                  We hand-pick iconic motorcycle roads and are still expanding where we cover.
+                  {pickerNearest
+                    ? <> The closest is <strong>{pickerNearest.name}</strong>, about {pickerNearest.distMi} mi away{pickerNearest.state ? ` in ${pickerNearest.state}` : ''} — too far to loop from here.</>
+                    : ' There are none in range right now.'}
+                </p>
+                <p className="picker-empty-hint">Tell us where you’d like to ride instead and we’ll plan a scenic route.</p>
+                <div className="picker-empty-actions">
+                  <button className="picker-plan" onClick={() => { cancelPicker(); setSheetMode('idle'); }}>Plan a ride with text</button>
+                  <button className="picker-cancel" onClick={cancelPicker}>Close</button>
+                </div>
+              </div>
+            );
+          }
+          // ready
           const { totalMi } = computeOrderedLoop();
           const sel = pickerSelected.length;
           return (
             <>
               <div className="picker-counter">
                 {sel === 0 ? (
-                  <>Tap roads on the map to build a loop · {pickerCatalog.length} nearby</>
+                  <>Tap an <strong>orange road</strong> to add it · {pickerCatalog.length} nearby</>
                 ) : (
-                  <><strong>{sel}</strong> road{sel !== 1 ? 's' : ''} · est <strong>{totalMi} mi</strong> loop{sel >= PICKER_MAX ? ' · max reached' : ''}</>
+                  <><strong>{sel}</strong> road{sel !== 1 ? 's' : ''} · est <strong>{totalMi} mi</strong> loop · tap again to remove{sel >= PICKER_MAX ? ' · max reached' : ''}</>
                 )}
               </div>
               <div className="picker-actions">

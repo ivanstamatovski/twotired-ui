@@ -2777,6 +2777,56 @@ body {
 .picker-plan:active:not(:disabled),
 .picker-cancel:active { transform: scale(0.97); }
 
+/* Transient status pills (locating / loading) — same pill as the counter but
+ * allowed to wrap and not orange-accented. */
+.picker-counter--status { font-weight: 500; }
+
+/* Empty state — no curated roads within range. Centered card that explains the
+ * feature and routes the rider to text planning instead of a blank map. */
+.picker-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 115;
+  width: min(340px, calc(100% - 40px));
+  box-sizing: border-box;
+  padding: 22px 22px 18px;
+  border-radius: 18px;
+  background: rgba(15,15,15,0.94);
+  color: #f0f0f0;
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  text-align: center;
+  animation: pickerCounterIn 0.22s ease-out;
+}
+.picker-empty-icon { font-size: 30px; line-height: 1; margin-bottom: 8px; }
+.picker-empty-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.picker-empty-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(240,240,240,0.82);
+  margin: 0 0 10px;
+}
+.picker-empty-body strong { color: #f97316; font-weight: 600; }
+.picker-empty-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(240,240,240,0.6);
+  margin: 0 0 16px;
+}
+.picker-empty-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.picker-empty-actions .picker-plan,
+.picker-empty-actions .picker-cancel {
+  width: 100%;
+}
+
 @keyframes pickerCounterIn {
   from { opacity: 0; transform: translate(-50%, -8px); }
   to   { opacity: 1; transform: translate(-50%, 0); }
