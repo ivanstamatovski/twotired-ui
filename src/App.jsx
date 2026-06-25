@@ -1408,8 +1408,11 @@ export default function App() {
   // 'ready' (roads nearby) | 'empty' (none within PICKER_RADIUS_MI).
   const [pickerStatus, setPickerStatus] = useState('loading');
   const [pickerNearest, setPickerNearest] = useState(null);    // {distMi,name,state} of closest road when 'empty'
+  const pickerFittedRef = useRef(false);                       // auto-zoom fires once per picker open
   const PICKER_MAX = 4;
-  const PICKER_RADIUS_MI = 75;
+  const PICKER_RADIUS_MI = 75;   // roads within this range are "near you"
+  const PICKER_MIN_SHOWN = 3;    // always surface at least this many so the map is never empty
+  const PICKER_REACH_MI = 250;   // …but don't reach past this (a loop/ride further out isn't realistic)
   const [bugScreenshot, setBugScreenshot] = useState(null);           // base64 captured at tap-time
   const [bugScreenshotZoom, setBugScreenshotZoom] = useState(false);  // tap-to-enlarge preview
 
@@ -1612,13 +1615,14 @@ export default function App() {
   // distant polylines.
   useEffect(() => {
     if (!pickerMode) {
-      // Reset so the next open starts clean (no stale "empty" flash).
+      // Reset so the next open starts clean (no stale "empty" flash, refit next time).
       setPickerStatus('loading');
       setPickerNearest(null);
+      pickerFittedRef.current = false;
       return;
     }
     if (!userLocation) {
-      // Can't filter roads to "near me" without a fix — tell the rider we're
+      // Can't rank roads by "near me" without a fix — tell the rider we're
       // still locating rather than showing an empty map.
       setPickerStatus('locating');
       return;
@@ -1633,24 +1637,34 @@ export default function App() {
           .eq('approved', true);
         if (cancelled) return;
         if (error) { console.error('[picker] catalog fetch failed', error); setPickerStatus('empty'); return; }
-        // Single pass: filter to radius AND track the closest road overall so
-        // the empty state can say *where* the nearest curated roads actually are.
-        let nearestMi = Infinity, nearestRow = null;
-        const filtered = (data || []).filter(r => {
+        // Tag each road with its distance to the rider (closest endpoint) and
+        // sort nearest-first so we can both filter to the radius and, if that
+        // comes up short, reach further to guarantee a few visible options.
+        const withDist = (data || []).map(r => {
           const dS = haversineMi(userLocation, { lat: r.start_lat, lng: r.start_lng });
           const dE = haversineMi(userLocation, { lat: r.end_lat,   lng: r.end_lng });
-          const d = Math.min(dS, dE);
-          if (d < nearestMi) { nearestMi = d; nearestRow = r; }
-          return d <= PICKER_RADIUS_MI;
-        });
-        setPickerCatalog(filtered);
-        if (filtered.length > 0) {
+          return { ...r, _distMi: Math.round(Math.min(dS, dE)) };
+        }).sort((a, b) => a._distMi - b._distMi);
+
+        const inRange = withDist.filter(r => r._distMi <= PICKER_RADIUS_MI);
+        // Always show at least PICKER_MIN_SHOWN: if the 75mi radius is thin,
+        // extend to the nearest roads within PICKER_REACH_MI so the rider sees
+        // 2–3 options instead of a blank map. The auto-zoom effect frames them.
+        const shown = inRange.length >= PICKER_MIN_SHOWN
+          ? inRange
+          : withDist.filter(r => r._distMi <= PICKER_REACH_MI).slice(0, PICKER_MIN_SHOWN);
+
+        setPickerCatalog(shown);
+        if (shown.length > 0) {
           setPickerStatus('ready');
           setPickerNearest(null);
         } else {
+          // Nothing even within reach (rider well outside our coverage). Name
+          // the single closest road so the empty card can explain how far it is.
+          const nearestRow = withDist[0] || null;
           setPickerStatus('empty');
           setPickerNearest(nearestRow
-            ? { distMi: Math.round(nearestMi), name: nearestRow.name, state: nearestRow.state || null }
+            ? { distMi: nearestRow._distMi, name: nearestRow.name, state: nearestRow.state || null }
             : null);
         }
       } catch (e) {
@@ -1660,6 +1674,28 @@ export default function App() {
     })();
     return () => { cancelled = true; };
   }, [pickerMode, userLocation]);
+
+  // Auto-zoom: when the picker has roads to show, frame the rider + those roads
+  // once so the rider always sees their options (even if the nearest is 90mi
+  // out). Fires once per open via pickerFittedRef — GPS ticks won't re-zoom and
+  // fight the rider panning. Reset when the picker closes.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    if (pickerStatus !== 'ready' || !pickerCatalog.length || !userLocation) return;
+    if (pickerFittedRef.current) return;
+    const pts = [[userLocation.lng, userLocation.lat]];
+    pickerCatalog.forEach(r => {
+      const coords = (Array.isArray(r.geometry?.coordinates) && r.geometry.coordinates.length >= 2)
+        ? r.geometry.coordinates
+        : [[r.start_lng, r.start_lat], [r.end_lng, r.end_lat]];
+      pts.push(coords[0], coords[coords.length - 1]);
+    });
+    const bounds = pts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(pts[0], pts[0]));
+    const padding = isMobile ? { top: 90, right: 30, bottom: 200, left: 30 } : { top: 90, right: 80, bottom: 140, left: 80 };
+    map.fitBounds(bounds, { padding, duration: 700, maxZoom: 12 });
+    pickerFittedRef.current = true;
+  }, [pickerStatus, pickerCatalog, userLocation]);
 
   // Render catalog roads on the map when picker is active. Clean up sources
   // and layers when picker turns off or selection changes.
@@ -1750,10 +1786,13 @@ export default function App() {
     };
   }, [pickerMode, pickerCatalog, pickerSelected]);
 
-  // Compute the total loop distance estimate (origin → anchors in order → origin)
-  // for the selection counter. Greedy nearest-neighbor order from origin.
+  // Compute the ordered anchor sequence + distance estimates for a picked set.
+  // Greedy nearest-neighbor order from origin. Returns:
+  //   totalMi  — round-trip estimate (… → anchors → back home), for "Make loop"
+  //   oneWayMi — estimate ending at the last road's far end, for "Take me there"
+  //   lastExit — that far endpoint, used as the one-way ride's destination
   function computeOrderedLoop() {
-    if (!userLocation || !pickerSelected.length) return { ordered: [], totalMi: 0 };
+    if (!userLocation || !pickerSelected.length) return { ordered: [], totalMi: 0, oneWayMi: 0, lastExit: null };
     const anchorsById = new Map(pickerCatalog.map(r => [r.id, r]));
     const remaining = pickerSelected.map(id => anchorsById.get(id)).filter(Boolean);
     const ordered = [];
@@ -1782,8 +1821,10 @@ export default function App() {
       ordered.push(r);
       cursor = bestEntry.exit;
     }
-    total += haversineMi(cursor, userLocation); // return home leg
-    return { ordered, totalMi: Math.round(total) };
+    const oneWayMi = Math.round(total);       // ends at the last road's far end
+    const lastExit = cursor;                  // that far endpoint
+    total += haversineMi(cursor, userLocation); // + return-home leg
+    return { ordered, totalMi: Math.round(total), oneWayMi, lastExit };
   }
 
   async function planPickedLoop() {
@@ -1805,6 +1846,26 @@ export default function App() {
       curviness: 2,
       scenic_anchors: ordered.map(r => r.id),
       loop_distance_km: totalMi > 0 ? Math.round(totalMi * 1.60934) : undefined,
+      user_id: session?.user?.id || null,
+    };
+    await generateRoute(payload);
+  }
+
+  // "Take me there" — a one-way scenic ride from the rider out to (and through)
+  // the picked road(s), ending at the far end of the last one. Same Phase 2B
+  // anchor routing as the loop, just round_trip=false with a real destination.
+  async function planPickedDestination() {
+    if (!pickerSelected.length || !userLocation) return;
+    const { ordered, lastExit } = computeOrderedLoop();
+    if (!ordered.length || !lastExit) return;
+    setPickerMode(false);
+    setPickerSelected([]);
+    const payload = {
+      origin: { lat: userLocation.lat, lng: userLocation.lng },
+      destination: { lat: lastExit.lat, lng: lastExit.lng },
+      round_trip: false,
+      curviness: 2,
+      scenic_anchors: ordered.map(r => r.id),
       user_id: session?.user?.id || null,
     };
     await generateRoute(payload);
@@ -4450,21 +4511,25 @@ export default function App() {
             );
           }
           // ready
-          const { totalMi } = computeOrderedLoop();
+          const { totalMi, oneWayMi } = computeOrderedLoop();
           const sel = pickerSelected.length;
+          const nearestMi = pickerCatalog[0]?._distMi;
           return (
             <>
               <div className="picker-counter">
                 {sel === 0 ? (
-                  <>Tap an <strong>orange road</strong> to add it · {pickerCatalog.length} nearby</>
+                  <>Tap an <strong>orange road</strong> to add it · {pickerCatalog.length} shown{nearestMi != null ? `, closest ${nearestMi} mi` : ''}</>
                 ) : (
-                  <><strong>{sel}</strong> road{sel !== 1 ? 's' : ''} · est <strong>{totalMi} mi</strong> loop · tap again to remove{sel >= PICKER_MAX ? ' · max reached' : ''}</>
+                  <><strong>{sel}</strong> road{sel !== 1 ? 's' : ''} · <strong>{oneWayMi}</strong> mi there · <strong>{totalMi}</strong> mi loop{sel >= PICKER_MAX ? ' · max' : ''}</>
                 )}
               </div>
               <div className="picker-actions">
                 <button className="picker-cancel" onClick={cancelPicker}>Cancel</button>
+                <button className="picker-plan picker-plan--secondary" disabled={sel === 0} onClick={planPickedDestination}>
+                  Take me there
+                </button>
                 <button className="picker-plan" disabled={sel === 0} onClick={planPickedLoop}>
-                  {sel === 0 ? 'Pick roads first' : `Plan ${sel}-road loop`}
+                  Make loop
                 </button>
               </div>
             </>
