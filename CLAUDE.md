@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-06-24 against `main` (generate-route at **v2.85**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-06-24 against `main` (generate-route at **v2.86**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -43,7 +43,7 @@ twotired-ui/
     main.jsx
   supabase/
     functions/
-      generate-route/        ← main edge function (v2.85)
+      generate-route/        ← main edge function (v2.86)
       analyze-bug-report/    ← Haiku-with-vision lesson extraction from bug reports
       seed-known-roads/      ← Claude bulk-enumerates iconic roads → known_roads (pending)
       validate-known-road/   ← on approval: re-snap, route-verify, cache geometry
@@ -91,7 +91,7 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.85 (picker-loop fixes — loop fallback + loop_distance_km wiring)
+**Current version:** v2.86 (multi-seed round_trip — tamed loop overshoot)
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
@@ -129,7 +129,9 @@ When `round_trip` is set AND origin≈destination (<1km) AND no stops/corridor/a
 
 **Loop target distance (v2.85):** `resolveLoopTargetMeters(body)` is the single source of truth — uses explicit `loop_distance_km` if set, else defaults to 40 km, clamped 5–200 km. Claude maps duration phrases → `loop_distance_km` in the intent prompt ("30 min"→20, "1 hour"→40, "couple hours"→80, "half day"→120, "all day"→240; explicit mileage wins), emitted only when `round_trip`. The visual picker sends its estimated loop mileage (mi→km).
 
-**Picker-loop degenerate fallback (v2.85):** the picker sends `round_trip=true` + origin≈destination + `scenic_anchors=[...]`. If every anchor fails to resolve server-side (admin rejected/deleted since the catalog loaded), `allWaypoints` collapses to `[origin, origin, origin]` and the old fallback `getRoute()` produced a 0-mi / 2-point route. Now, when it's a picker loop, it falls back to `getRoundTripRoute()` (logged as `anchor_loop_fallback`) so the rider still gets a real loop. Caveat: GH's round_trip algorithm overshoots the target distance (a 60 km target returned ~155 km in testing) — separate tuning concern.
+**Picker-loop degenerate fallback (v2.85):** the picker sends `round_trip=true` + origin≈destination + `scenic_anchors=[...]`. If every anchor fails to resolve server-side (admin rejected/deleted since the catalog loaded), `allWaypoints` collapses to `[origin, origin, origin]` and the old fallback `getRoute()` produced a 0-mi / 2-point route. Now, when it's a picker loop, it falls back to `getRoundTripRoute()` (logged as `anchor_loop_fallback`) so the rider still gets a real loop.
+
+**Multi-seed overshoot tuning (v2.86):** GH's `round_trip.distance` is a *target*, not a constraint — it picks a heading + a via point and routes there and back on real roads. With the curviness custom model penalising motorways, a single unlucky seed could send the via point across a barrier (the Hudson, where non-motorway crossings are scarce) and balloon the loop to 4–5× the target (measured: 40 km target → 165–203 km on ~1/3 of random seeds). Fix: `getRoundTripRoute()` fans out `ROUND_TRIP_SEED_SAMPLES` (5) seeds in parallel and keeps the loop whose driven distance is closest to the target; outliers self-eliminate. Post-fix, 40 km loops land 0.93–1.04×. Cost: ~5× GH load + ~10–15s per loop request (parallel, behind a spinner). The per-seed ratios are logged in the edge-fn console for observability.
 
 ### Known KNOWN_WAYPOINTS
 ```typescript
@@ -236,7 +238,7 @@ Rider taps the 🛣 FAB → catalog roads within `PICKER_RADIUS_MI=75` render as
 
 | Function | Purpose |
 |---|---|
-| `generate-route` | Main routing pipeline (v2.85) |
+| `generate-route` | Main routing pipeline (v2.86) |
 | `analyze-bug-report` | Haiku-with-vision lesson extraction |
 | `seed-known-roads` | Claude bulk-enumerate iconic roads → `known_roads` (pending) |
 | `validate-known-road` | Re-snap + route-verify + cache geometry on approval |

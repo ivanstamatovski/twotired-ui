@@ -1,4 +1,10 @@
-// generate-route edge function — v2.85
+// generate-route edge function — v2.86
+// v2.86: tame the GH round_trip overshoot. round_trip.distance is a target,
+//        not a constraint — with the curviness custom model a single unlucky
+//        seed could balloon a loop to 4–5× (Hudson-crossing detours). Now
+//        getRoundTripRoute() fans out ROUND_TRIP_SEED_SAMPLES seeds in parallel
+//        and keeps the loop whose driven distance is closest to the target;
+//        catastrophic outliers self-eliminate. Latency ≈ one GH call.
 // v2.85: picker-loop fixes. (1) Degenerate 0-mile loop: when a round-trip
 //        request with origin≈destination carries scenic_anchors that all fail
 //        to resolve (admin rejected/deleted since the picker loaded), the
@@ -1319,12 +1325,29 @@ function resolveLoopTargetMeters(body: RouteRequest): number {
   return Math.max(5000, Math.min(km * 1000, 200000));
 }
 
-// ── Round-trip loop route (v2.76) ─────────────────────────────────────────────
+// ── Round-trip loop route (v2.76, multi-seed tuning v2.86) ────────────────────
 // Uses GH's round_trip algorithm to generate a real circular loop instead of
 // an out-and-back. Single start point, target distance, GH picks the loop.
 // Combines with the same curviness custom_model so twisty / scenic preferences
 // still apply. Two-phase NYC escape doesn't apply here — by definition the
 // rider starts and ends in the same place.
+//
+// v2.86 — overshoot tuning. GH's round_trip distance is a *target*, not a
+// constraint: it picks a heading + a via point at ~half the target as the
+// crow flies, then routes there and back on real roads. With the curviness-2/3
+// custom model penalising motorways, a single unlucky heading sends the via
+// point across a barrier (e.g. the Hudson, where non-motorway crossings are
+// scarce) and the loop balloons to 4–5× the target. Measured at the Yonkers
+// test origin, curviness 2, 40 km target: ~1/3 of random seeds produced
+// 100–125 mi loops, the rest landed 0.87–0.99×.
+//
+// Fix: fan out ROUND_TRIP_SEED_SAMPLES seeds in parallel and keep the loop
+// whose driven distance is closest to the target. The catastrophic outliers
+// self-eliminate — we only ever ship one if EVERY seed was bad (vanishingly
+// unlikely). Latency is ~one GH call (parallel), at the cost of N× load on
+// Molly for the (infrequent) loop feature.
+const ROUND_TRIP_SEED_SAMPLES = 5;
+
 async function getRoundTripRoute(
   origin: LatLng,
   targetMeters: number,
@@ -1341,34 +1364,58 @@ async function getRoundTripRoute(
     applyEdgePenalties(model, 'twotired', profileLearned);
   }
 
-  const body: any = {
+  const buildBody = (seed: number): any => ({
     points: [[origin.lng, origin.lat]],
     profile: 'twotired',
     custom_model: model,
     'ch.disable': true,
     algorithm: 'round_trip',
     'round_trip.distance': targetMeters,
-    'round_trip.seed': Math.floor(Math.random() * 1_000_000),
+    'round_trip.seed': seed,
     snap_prevention: ['motorway', 'motorway_link'],
     points_encoded: false,
     instructions: true,
     locale: 'en',
     details: ['road_class'],
-  };
+  });
 
-  const res = await fetchGHWithRetry(`${GRAPHHOPPER_URL}/route`, body);
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`GraphHopper round_trip error: ${res.status} ${err}`);
-  }
-  const data = await res.json();
-  const path = data.paths?.[0];
-  if (!path) throw new Error('GraphHopper round_trip returned no paths');
+  // Distinct random seeds → distinct headings → distinct loops. Fan out in
+  // parallel; a seed that errors or returns no path simply drops out.
+  const seeds = Array.from({ length: ROUND_TRIP_SEED_SAMPLES }, () =>
+    Math.floor(Math.random() * 1_000_000),
+  );
+  const settled = await Promise.all(seeds.map(async (seed) => {
+    try {
+      const res = await fetchGHWithRetry(`${GRAPHHOPPER_URL}/route`, buildBody(seed));
+      if (!res.ok) {
+        console.warn(`[getRoundTripRoute] seed ${seed} → ${res.status} ${(await res.text()).slice(0, 120)}`);
+        return null;
+      }
+      const path = (await res.json())?.paths?.[0];
+      if (!path || !(path.distance > 0)) return null;
+      return { seed, path };
+    } catch (e) {
+      console.warn(`[getRoundTripRoute] seed ${seed} failed:`, (e as any)?.message);
+      return null;
+    }
+  }));
+
+  const candidates = settled.filter(Boolean) as { seed: number; path: any }[];
+  if (candidates.length === 0) throw new Error('GraphHopper round_trip returned no paths');
+
+  // Closest driven distance to the target wins. This is what tames the overshoot.
+  candidates.sort((a, b) =>
+    Math.abs(a.path.distance - targetMeters) - Math.abs(b.path.distance - targetMeters));
+  const best = candidates[0];
+  const path = best.path;
+
   const calibratedMs = calibrateDriveTimeMs(path);
   const rawMs = path.time ?? 0;
-  if (rawMs > 0) {
-    console.log(`[getRoundTripRoute] target=${(targetMeters/1000).toFixed(0)}km · result=${(path.distance/1000).toFixed(1)}km · raw=${Math.round(rawMs/60000)}min → calibrated=${Math.round(calibratedMs/60000)}min`);
-  }
+  const ratios = candidates
+    .map(c => (c.path.distance / targetMeters).toFixed(2) + 'x')
+    .join(', ');
+  console.log(`[getRoundTripRoute] target=${(targetMeters / 1000).toFixed(0)}km · ${candidates.length}/${ROUND_TRIP_SEED_SAMPLES} seeds [${ratios}] · picked seed=${best.seed} result=${(path.distance / 1000).toFixed(1)}km (${(path.distance / targetMeters).toFixed(2)}x) · raw=${Math.round(rawMs / 60000)}min → calibrated=${Math.round(calibratedMs / 60000)}min`);
+
   return {
     distance_miles: Math.round((path.distance / 1609.34) * 10) / 10,
     time_minutes: Math.round(calibratedMs / 60000),
@@ -1376,7 +1423,7 @@ async function getRoundTripRoute(
     details: path.details || {},
     geometry: path.points,
     instructions: path.instructions || [],
-    gh_request: summarizeGhBody(body),
+    gh_request: summarizeGhBody(buildBody(best.seed)),
   };
 }
 
