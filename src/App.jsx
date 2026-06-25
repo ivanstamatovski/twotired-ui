@@ -1760,17 +1760,23 @@ export default function App() {
 
   async function planPickedLoop() {
     if (!pickerSelected.length || !userLocation) return;
-    const { ordered } = computeOrderedLoop();
+    const { ordered, totalMi } = computeOrderedLoop();
     if (!ordered.length) return;
     setPickerMode(false);  // exit picker, will trigger cleanup
     setPickerSelected([]);
     // Submit structured request to generate-route, skipping Claude intent.
+    // loop_distance_km carries our estimated loop length so that IF the anchors
+    // fail to resolve server-side (admin rejected/deleted since the catalog
+    // loaded), the round_trip fallback targets a sane distance instead of a
+    // degenerate 0-mile loop (edge fn v2.85). totalMi is the est. picked-road
+    // loop; convert mi → km.
     const payload = {
       origin: { lat: userLocation.lat, lng: userLocation.lng },
       destination: { lat: userLocation.lat, lng: userLocation.lng },
       round_trip: true,
       curviness: 2,
       scenic_anchors: ordered.map(r => r.id),
+      loop_distance_km: totalMi > 0 ? Math.round(totalMi * 1.60934) : undefined,
       user_id: session?.user?.id || null,
     };
     await generateRoute(payload);

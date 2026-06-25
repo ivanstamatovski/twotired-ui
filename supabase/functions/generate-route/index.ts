@@ -1,4 +1,15 @@
-// generate-route edge function — v2.84
+// generate-route edge function — v2.85
+// v2.85: picker-loop fixes. (1) Degenerate 0-mile loop: when a round-trip
+//        request with origin≈destination carries scenic_anchors that all fail
+//        to resolve (admin rejected/deleted since the picker loaded), the
+//        fallback used getRoute([origin,origin,origin]) → 0 mi / 0 min /
+//        2-point geometry. Now falls back to getRoundTripRoute() so the rider
+//        still gets a real circular loop. (2) Loop length control: wire
+//        loop_distance_km end-to-end — resolveLoopTargetMeters() centralizes
+//        explicit km → duration-hint mapping → 40 km default, used by both the
+//        circular-loop branch and the new anchor-fallback. Claude now emits
+//        loop_distance_km from duration phrases ("1 hour", "all day"); the
+//        picker passes its estimated loop mileage.
 // v2.84: reformat the route narrative from a 2–3 paragraph essay (which
 //        riders never read) into a single tight sentence in the same style
 //        as the anchor brief. Frontend renders it in the same peek/expand
@@ -313,6 +324,10 @@ interface RouteRequest {
   stops?: StopRequest[];
   curviness?: 1 | 2 | 3;
   round_trip?: boolean;
+  loop_distance_km?: number;         // Target loop length (km) for circular round-trips. Drives
+                                     // GH's round_trip algorithm. Set by Claude from duration
+                                     // hints ("1 hour" → ~40, "all day" → ~240) or by the visual
+                                     // picker from its estimated loop mileage. Falls back to 40.
   intermediate_waypoints?: string[]; // Forced visit points GH must pass through. Use ONLY for
                                      // explicit rider-named stops, NEVER for corridor anchoring
                                      // (see triangles in route 124).
@@ -1290,6 +1305,20 @@ async function findPOI(type: string, near: LatLng, radius_km = 25): Promise<any 
 //   U-turn excursions into town centers. E.g. northbound 9W → heading ≈ 0 at Nyack
 //   means GraphHopper must pass through Nyack traveling north — it cannot dip south
 //   to reach the town center and backtrack, because that would require a U-turn.
+// ── Loop target distance resolver (v2.85) ─────────────────────────────────────
+// Single source of truth for "how long should a circular loop be?". Precedence:
+//   1. Explicit body.loop_distance_km (Claude maps duration phrases → km in the
+//      intent prompt; the visual picker sends its estimated loop mileage).
+//   2. Default 40 km (~25 mi) — fits a "1 hour twisty" loop at curviness 3.
+// Result is clamped to GH-sane bounds: min 5 km (a real loop, never degenerate),
+// max 200 km (keeps the round_trip search tractable). Returns meters.
+function resolveLoopTargetMeters(body: RouteRequest): number {
+  const km = typeof body.loop_distance_km === 'number' && body.loop_distance_km > 0
+    ? body.loop_distance_km
+    : 40;
+  return Math.max(5000, Math.min(km * 1000, 200000));
+}
+
 // ── Round-trip loop route (v2.76) ─────────────────────────────────────────────
 // Uses GH's round_trip algorithm to generate a real circular loop instead of
 // an out-and-back. Single start point, target distance, GH picks the loop.
@@ -2162,6 +2191,17 @@ round_trip RULE: Set to true ONLY if the rider explicitly says "round trip", "lo
 A scenic ride to a destination is NOT assumed to be a loop. Most riders end at the destination
 and plan their own return. Never infer a round trip from the nature of the destination.
 
+loop_distance_km RULE: ONLY when round_trip is true, set loop_distance_km from any duration or
+distance hint the rider gives, so a short loop and a long loop differ. Mapping (scenic backroads,
+roughly 25 mph saddle time including stops):
+  "quick spin" / "30 min" / "half hour"        → 20
+  "an hour" / "hour-ish" / "1 hour"            → 40
+  "couple hours" / "2 hours" / "morning ride"  → 80
+  "half day" / "few hours" / "afternoon"       → 120
+  "all day" / "full day" / "long ride"         → 240
+Explicit mileage wins: "a 60 mile loop" → 96 (miles × 1.61). If the rider gives no hint, omit
+loop_distance_km (the router defaults to 40 km). NEVER set loop_distance_km when round_trip is false.
+
 Route response — named road corridor:
 {
   "origin": "Rider GPS location or named place if no GPS provided",
@@ -2246,6 +2286,10 @@ Ambiguous place names (Hawks Nest, Liberty, Chester, Monroe, etc.) exist in many
     })),
     curviness: (intent.curviness as 1 | 2 | 3) || 2,
     round_trip: intent.round_trip || false,
+    // v2.85: only meaningful on round_trip loops; resolveLoopTargetMeters clamps.
+    loop_distance_km: typeof intent.loop_distance_km === 'number' && intent.loop_distance_km > 0
+      ? intent.loop_distance_km
+      : undefined,
     intermediate_waypoints: intent.intermediate_waypoints || [],
     road_corridor: intent.road_corridor || undefined,
     scenic_anchors: scenicAnchors,
@@ -2774,9 +2818,8 @@ Deno.serve(async (req) => {
       && !corridor
       && !(body.scenic_anchors && body.scenic_anchors.length > 0);
     if (isCircularLoop) {
-      const targetKm = (body as any).loop_distance_km ?? 40;
-      const targetMeters = Math.max(5000, Math.min(targetKm * 1000, 200000));
-      console.log(`[generate-route] circular loop request: target ${targetKm} km curviness ${curviness}`);
+      const targetMeters = resolveLoopTargetMeters(body);
+      console.log(`[generate-route] circular loop request: target ${(targetMeters / 1000).toFixed(0)} km curviness ${curviness}`);
       route = await getRoundTripRoute(originLL, targetMeters, curviness as 1 | 2 | 3);
       // The point list collapses to just the origin for downstream logging.
       allWaypoints = [originLL];
@@ -2790,8 +2833,27 @@ Deno.serve(async (req) => {
       // — Claude is instructed they're mutually exclusive).
       const anchorRows = await fetchAnchorsByIds(body.scenic_anchors);
       if (anchorRows.length === 0) {
-        console.warn('[generate-route] scenic_anchors set but none resolved — falling back to default routing');
-        route = await getRoute(allWaypoints, curviness);
+        // v2.85: every anchor failed to resolve (admin rejected/deleted them
+        // since the rider's client loaded the catalog). For a round-trip whose
+        // destination ≈ origin — the visual-picker loop flow — allWaypoints is
+        // just [origin, origin, origin], so getRoute() produces a degenerate
+        // 0-mile / 0-minute / 2-point "route". Fall back to a real circular
+        // loop via the round_trip algorithm so the rider still gets a ride.
+        // (log.anchor_loop_fallback lets us see this firing in the Rides tab.)
+        const isPickerLoop = !!body.round_trip
+          && haversineKm(originLL, destinationLL) < 1.0
+          && intermediateWPs.length === 0
+          && stopLLs.length === 0;
+        if (isPickerLoop) {
+          const targetMeters = resolveLoopTargetMeters(body);
+          console.warn(`[generate-route] scenic_anchors set but none resolved on a picker loop — falling back to getRoundTripRoute (target ${(targetMeters / 1000).toFixed(0)} km)`);
+          (log as any).anchor_loop_fallback = true;
+          route = await getRoundTripRoute(originLL, targetMeters, curviness as 1 | 2 | 3);
+          allWaypoints = [originLL];
+        } else {
+          console.warn('[generate-route] scenic_anchors set but none resolved — falling back to default routing');
+          route = await getRoute(allWaypoints, curviness);
+        }
       } else {
         const { waypoints: anchorWPs, meta: anchorMeta } = resolveAnchorSequence(originLL, anchorRows);
 

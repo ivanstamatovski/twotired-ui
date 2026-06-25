@@ -9,17 +9,23 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
+> **Doc currency:** Last refreshed 2026-06-24 against `main` (generate-route at **v2.85**). When you make a structural change, update this file in the same session.
+
+> **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
+
+@.claude/current.md
+
 ---
 
-## Tech Stack (current — v2 architecture, May 2026)
+## Tech Stack (current — v2 architecture)
 
 | Layer | Technology |
 |---|---|
 | Frontend | React 19 + Vite, `src/App.jsx` + `src/App.css` |
 | Maps | MapLibre GL JS (`maplibre-gl`), OpenFreeMap Liberty style |
-| Routing | GraphHopper 11.0 self-hosted on **Molly** (home server) |
+| Routing | GraphHopper 11.0 self-hosted on **Molly** (home server), `twotired` profile |
 | AI — intent | Claude Sonnet 4.6 (`claude-sonnet-4-6`) — NL → RouteRequest JSON |
-| AI — narrative | Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) |
+| AI — narrative & briefs | Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) |
 | Geocoding | Google Places API (New) — `searchText` + haversine post-filter |
 | Backend | Supabase Edge Functions (Deno) + Postgres |
 | Native wrapper | Capacitor 7 (`net.twotired.app`) |
@@ -32,20 +38,27 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 ```
 twotired-ui/
   src/
-    App.jsx          ← entire frontend (auth, map, sheet, routing, nav)
+    App.jsx          ← entire frontend (auth, map, sheet, routing, nav, friends, anchors, picker)
     App.css          ← all styles
     main.jsx
   supabase/
     functions/
-      generate-route/index.ts   ← main edge function (v2.45+)
-      analyze-bug-report/       ← auto-generates routing lessons from bug reports
+      generate-route/        ← main edge function (v2.85)
+      analyze-bug-report/    ← Haiku-with-vision lesson extraction from bug reports
+      seed-known-roads/      ← Claude bulk-enumerates iconic roads → known_roads (pending)
+      validate-known-road/   ← on approval: re-snap, route-verify, cache geometry
+      find-rider/            ← email → user_id lookup for friend requests
+      send-user-message/     ← admin → rider email via Resend
+      notify-signup/         ← emails Ivan when a new user signs up
+      delete-account/        ← App Store 5.1.1(v) account deletion
+    migrations/              ← 21 dated .sql files (see Supabase section)
   ios/
-    App/App/Info.plist          ← iOS permissions (location keys added May 2026)
+    App/App/Info.plist       ← iOS permissions (location keys)
   admin/
-    index.html                  ← self-contained admin portal
+    index.html               ← self-contained admin portal (9 tabs)
   capacitor.config.json
   vite.config.js
-  .env                          ← VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (gitignored)
+  .env                       ← VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (gitignored)
 ```
 
 ---
@@ -53,9 +66,10 @@ twotired-ui/
 ## Infrastructure — Molly (home server)
 
 **Machine:** i7-1165G7, 30GB RAM, Ubuntu 24.04  
-**GraphHopper:** Port 8989, motorcycle + car profiles (CH + LM flexible mode)  
+**GraphHopper:** Port 8989, single `twotired` profile (motorcycle base) + car-style fallback, CH + LM flexible mode  
 **Score server:** `score_server.py` port 8765 — scores road segments by joy/transit/curvature  
-**Road scoring DB:** PostgreSQL `twotired_roads` — 1.64M segments (CT/MA/NJ/NY/PA)
+**Road scoring DB:** PostgreSQL `twotired_roads` — 1.64M segments (CT/MA/NJ/NY/PA)  
+**NYC polygon source of truth:** `/home/ivan/graphhopper/nyc.json` — the same `in_nyc` custom-model area the edge function mirrors verbatim.
 
 **Tailscale Funnel URLs:**
 ```
@@ -77,17 +91,27 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.45+ (Supabase function version ~45)
+**Current version:** v2.85 (picker-loop fixes — loop fallback + loop_distance_km wiring)
 
 ### Pipeline
-1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints)
+1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
 2. Google Places API geocodes stops by name+region, haversine post-filter rejects results >radius_km away
 3. **Two-phase GraphHopper routing:**
-   - **Escape leg:** origin → escape_waypoint, curviness=1 (car profile, direct city exit)
-   - **Scenic leg:** escape → intermediates → stops → destination, requested curviness
-   - Legs merged via `mergeRoutes()`
-4. Claude Haiku writes 2–3 paragraph ride narrative from turn-by-turn instructions
-5. Save to Supabase `routes` table + `route_logs` table
+   - **Escape leg:** origin → escape_waypoint, curviness=1 (direct city exit)
+   - **Scenic leg:** escape → anchors → intermediates → stops → destination, requested curviness
+   - Legs merged via `mergeRoutes()`; per-leg geometries preserved (`route_legs`) so admin colors them distinctly
+4. Claude Haiku writes a **single-sentence** ride brief (anchor-card style). Falls back to this for every ride even when no anchors fired.
+5. Save to Supabase `routes` + `route_logs` (the latter linked to a nav session via `nav_session_id`)
+
+### Routing model — "classic" is the only model now
+**v2.65 (June 10) removed the `scoring` A/B variant entirely.** `buildScoringModel()` and the `body.variant` branch are gone; `variant` is silently ignored for back-compat. The single baked-in custom model includes: road-class priority rules, named corridors, the NYC polygon, Palisades avoidance, two-phase NYC escape, learned corrections, and the joy_tier_c surface-street penalty. **Do not re-introduce a variant toggle** — the lesson was that the scoring-only model stripped out too much hard-won routing knowledge to be worth the cleaner joy bias.
+
+### Curviness Tiers
+| Curviness | Behavior |
+|---|---|
+| 1 (transit) | Direct/efficient, motorways OK |
+| 2 (scenic) | Balanced — avoids motorways, prefers secondary/tertiary |
+| 3 (backroads) | Max twisty — strong motorway penalty |
 
 ### NYC Escape Corridors (in Claude system prompt)
 - North/NW → GWB, Fort Lee NJ: `{ lat: 40.853310, lng: -73.960688 }` (6 decimal places — precision matters)
@@ -95,31 +119,153 @@ https://molly.tail71232f.ts.net:8443
 - South (Jersey Shore) → Goethals Bridge
 - East (Long Island) → no escape needed
 
-### A/B Routing Variant Toggle
-- `variant: 'classic'` (default) — two-phase routing with road-class priority weights
-- `variant: 'scoring'` — single GH call, joy area weights only (`buildScoringModel()`)
-- Sent from frontend as `body.variant`; toggled in mobile menu / desktop sidebar
+### NYC detection & intra-NYC handling (v2.66–v2.68)
+- `isInNYC()` uses a **hand-drawn 5-borough polygon** (`NYC_POLYGON_COORDS`, ray-cast `pointInPolygon`) mirrored from Molly's `nyc.json` — NOT a bounding box. v2.66 fixed false-positives on east-NJ towns (Newark, Jersey City, Paterson).
+- **Skip two-phase escape when destination is ALSO in NYC** (v2.67-hotfix) — the "Wegmans Brooklyn" fix: a 2mi intra-NYC trip was being routed 30mi via Staten Island because the escape leg preferred I-278.
+- **Curviness autotune** (v2.68): trips <5mi with both endpoints in NYC are forced to curviness 1 — grid streets don't need scenic penalties. Logged as `curviness_autotune` in `routing_config`.
 
-### GraphHopper Custom Model / Curviness Tiers
-| Curviness | Behavior |
-|---|---|
-| 1 (transit) | Direct/efficient, motorways OK |
-| 2 (scenic) | Balanced — avoids motorways, prefers secondary/tertiary |
-| 3 (backroads) | Max twisty — strong motorway penalty |
+### Circular loops (v2.76, picker-loop fixes v2.85)
+When `round_trip` is set AND origin≈destination (<1km) AND no stops/corridor/anchors, `getRoundTripRoute()` calls GraphHopper's `algorithm: 'round_trip'` with a target distance and a random seed for variety. Two-phase NYC escape is skipped (start≈end). Claude only sets `round_trip` on explicit "loop / round trip / there and back" language.
 
-**Scoring pivot (May 2026, partially implemented):** Replacing class-based priority weights with joy/transit area polygons (`in_joy_tier_a` multiply_by 1.5, `in_joy_tier_c` multiply_by 0.4). GH config needs `custom_model_files` + graph rebuild on Molly.
+**Loop target distance (v2.85):** `resolveLoopTargetMeters(body)` is the single source of truth — uses explicit `loop_distance_km` if set, else defaults to 40 km, clamped 5–200 km. Claude maps duration phrases → `loop_distance_km` in the intent prompt ("30 min"→20, "1 hour"→40, "couple hours"→80, "half day"→120, "all day"→240; explicit mileage wins), emitted only when `round_trip`. The visual picker sends its estimated loop mileage (mi→km).
+
+**Picker-loop degenerate fallback (v2.85):** the picker sends `round_trip=true` + origin≈destination + `scenic_anchors=[...]`. If every anchor fails to resolve server-side (admin rejected/deleted since the catalog loaded), `allWaypoints` collapses to `[origin, origin, origin]` and the old fallback `getRoute()` produced a 0-mi / 2-point route. Now, when it's a picker loop, it falls back to `getRoundTripRoute()` (logged as `anchor_loop_fallback`) so the rider still gets a real loop. Caveat: GH's round_trip algorithm overshoots the target distance (a 60 km target returned ~155 km in testing) — separate tuning concern.
 
 ### Known KNOWN_WAYPOINTS
 ```typescript
 'gwb ny approach': { lat: 40.853310, lng: -73.960688 }
 ```
-This is the Trans-Manhattan Expy GWB on-ramp. Forces Queens traffic via Triborough, not midtown. Precision is critical — do not round.
+Trans-Manhattan Expy GWB on-ramp. Forces Queens traffic via Triborough, not midtown. Precision is critical — do not round.
 
 ---
 
-## Deploy Rules (UPDATED 2026-06-19 — Claude has push + deploy authority)
+## Known Roads Catalog + Scenic Anchors (v2.78–v2.84 — the current routing frontier)
 
-Claude can deploy directly. Three layers, three mechanisms:
+A curated catalog of iconic motorcycle roads (Hawk's Nest, 9W Palisades, Storm King, etc.) that Claude can route *through*, rather than relying purely on the scoring model to stumble onto good roads.
+
+### `known_roads` table (`2026-06-18_known_roads.sql` + `2026-06-20_known_roads_geometry.sql`)
+Key columns: `name`, `route_number`, `state`, `region`, `start_lat/lng` + `end_lat/lng` (oriented start→end), `length_km`, `vibe_tags text[]`, `difficulty` (1–5), `curviness_tier` (1–3), `best_for text[]`, `caveats`, `must_see`, `pairs_with uuid[]` (roads that chain), `source` (`claude_seed`/`manual`/`telemetry_inferred`), `approved` (null=pending / true / false), plus QA columns: `needs_coord_review`, `snap_distance_m_start/end`, `coord_review_reason`, `route_validated_km`, and a cached GeoJSON LineString geometry (from validate-known-road) for real-shape map rendering.
+
+**RLS:** authenticated users read `approved=true`; pending/rejected are service-role only; all writes are service-role (admin portal).
+
+### Seeding → approval pipeline
+1. **Seed** (`seed-known-roads`): admin triggers Claude Sonnet to enumerate iconic roads for given states/regions. Each endpoint is **snapped** to GH's nearest routable edge (`/nearest`). `SNAP_OK_M=200` (use snap silently), `SNAP_REVIEW_M=500` (flag `needs_coord_review`, keep Claude's coord for admin comparison). GH `/route` validates the pair is actually routable. Optional `center_lat/lng/radius_mi` haversine filter. All rows land `approved=null`.
+2. **Review** (admin Known Roads tab): list or map view, status/state filters, inline coord editor ("Save" / "Save & re-validate"), approve / reject / mark-pending / delete.
+3. **Validate-on-approval** (`validate-known-road`): re-snaps both endpoints (reject if >500m), routes between them with `points_encoded:false` to get raw geometry (reject if GH can't route), length-ratio check against Claude's `length_km` (reject if <0.5× or >2×), then **caches the real GeoJSON geometry** and flips `approved=true`. `override=true` bypasses validation for regions GH lacks OSM coverage for.
+
+### Phase 2A — inject catalog into Claude's intent (v2.79)
+`fetchApprovedCatalog()` → `formatCatalogForPrompt()` injects approved roads (~80 tokens each) into Sonnet's system prompt as an "ICONIC ROADS CATALOG" with usage rules. Claude emits `scenic_anchors: [uuid, ...]` when a scenic request passes naturally near catalog roads. **Mutually exclusive with `road_corridor`** (corridor wins if both set). Phase 2A logs `scenic_anchors_chosen` + `scenic_anchors_offered_count` to `route_logs` (observability).
+
+### Phase 2B — route through the anchors (v2.80–v2.83)
+1. `fetchAnchorsByIds()` resolves Claude's UUIDs (re-orders to Claude's sequence; silently drops any admin rejected/deleted since).
+2. `resolveAnchorSequence()` infers direction per anchor: endpoint **closest to the previous waypoint** = entry, other = exit. Produces `[origin, entry1, exit1, entry2, exit2, ..., stops, destination]`.
+3. **Detour gate (v2.83)** — two checks, both exempt for round-trips:
+   - *Pre-route haversine:* sum of great-circle through anchors vs direct; if >1.5×, drop anchors and route normally (`anchor_detour_dropped=true`).
+   - *Post-route actual:* if driven distance >1.8× direct point-to-point, re-route without anchors (`anchor_detour_dropped_reason='actual_distance'`). Haversine can't see the Hudson, so a "nearby" anchor can still force a Staten Island detour — the actual check catches it.
+4. **Per-anchor brief (v2.82):** Claude Haiku writes one <180-char sentence per anchor in parallel with routing (template fallback so the card always has content).
+5. Response carries `scenic_anchors_resolved` JSONB (name, route#, direction, entry/exit, vibe_tags, must_see, caveats, region, brief).
+
+### Anchor card UI (`src/App.jsx`)
+Three states driven by `scenic_anchors_resolved` + nav mode: **peek** (small top-left card, first anchor name+brief), **expanded** (all anchors with tags/caveats/briefs), **nav-circle** (FAB with anchor count during navigation, auto-collapses off-route).
+
+### Visual picker mode (latest, June 20)
+Rider taps the 🛣 FAB → catalog roads within `PICKER_RADIUS_MI=75` render as tappable MapLibre polylines (orange unselected / green selected, wide invisible hit layer for fat-finger tapping, real cached geometry). Select up to `PICKER_MAX=4`, "Plan loop" → `computeOrderedLoop()` greedy nearest-neighbor orders them → `generateRoute({ origin: here, destination: here, round_trip: true, curviness: 2, scenic_anchors: [...] })`. Phase 2B does the rest.
+
+---
+
+## Navigation & Auto-Reroute (`src/App.jsx`)
+
+- **Off-route detection:** `OFF_ROUTE_THRESHOLD_M=40`, `OFF_ROUTE_GRACE_MS=3000`, `REROUTE_COOLDOWN_MS=10000`. Distance to the route polyline is checked each GPS tick; sustained >40m for 3s (respecting the 10s cooldown) triggers a reroute. (These are tuned-down from the original 60m/4s/30s.)
+- **Reroute bypasses Claude:** `rerouteFromCurrentPosition()` sends a raw `RouteRequest` (current GPS → original destination, `event_origin:'reroute'`) straight to generate-route. Preserves intent without a second LLM round-trip.
+- **Pre-snap GPS origin (v2.61):** snap the start point to the nearest road before routing — fixes reroutes starting from the wrong point.
+- **Calibrated ETA:** raw GraphHopper time is scaled by a calibration ratio so nav ETA matches the pre-nav display (Drive→Ride rename).
+- **Stop dwell survey:** `STOP_RADIUS_M=50`, `STOP_DWELL_MS=2min` continuous → fires `StopRatingSheet` (−1/0/+1) → `stop_ratings` table. One-shot timer, never blocks nav.
+- **Session telemetry:** `nav_session_id` (one UUID per Navigate→Stop arc) spans planning + nav and groups all `nav_events` (nav_start, off_route, reroute_request/complete/failed, nav_arrive, nav_stop). `route_logs` links back via `nav_session_id`.
+- **Background:** keep-awake during nav (`@capacitor-community/keep-awake`), audio background mode, redraw polyline on foreground (`visibilitychange` + Capacitor `appStateChange`).
+
+---
+
+## Friends / Social (May 24–27)
+
+- **`profiles`** — one per auth user; `display_name` + unique 6-char `share_code` (base32, A–Z minus I/O/Q + 2–9) for friend discovery.
+- **`friendships`** — pending/accepted pairs in canonical lexicographic form (`user_id_a < user_id_b`), `initiated_by`.
+- **`mate_positions`** — DB-backed live position sharing (replaced Realtime Presence); rider's position broadcast to accepted friends, rendered as buddy markers (initials + avatar color) on the map.
+- **`shared_routes`** — routes sent between mates; persistent "Shared with me" inbox.
+- Friend requests via email (`find-rider` edge fn) or share-code. **Universal Link:** `https://twotired.net/?add=SHARE_CODE` opens the add-friend flow. Realtime channels on `friendships` and `shared_routes` keep both sides in sync; sharing state persists across restarts via localStorage.
+
+---
+
+## Announcements (June 2)
+
+- **`announcements`** — `kind` (info/warning/maintenance/critical), title, body, url + url_label, `starts_at`/`ends_at` window, `dismissible`. **`announcement_dismissals`** — per-user, syncs dismissal across devices.
+- In-app banner picks the highest-priority active, non-dismissed announcement (critical → maintenance → warning → info, then newest). Realtime subscription on both tables + 10-min poll + visibility-change refresh. Admin composes from the Announcements tab.
+
+---
+
+## Supabase Tables
+
+| Table | Purpose |
+|---|---|
+| `routes` | Saved routes (legacy, pre-migration schema) |
+| `bug_reports` | User bug reports — `comment`, `image_data` (JPEG base64), `route_context` JSONB, `proposed_lesson`, `lesson_approved`, `admin_notes` (legacy schema) |
+| `route_logs` | Full pipeline trace per generation; `gh_request`, `route_legs`, `user_id`, `nav_session_id`, `scenic_anchors_chosen/offered/resolved`, `anchor_detour_*` |
+| `profiles` / `friendships` | Friend identity + relationships |
+| `mate_positions` | Live position sharing |
+| `shared_routes` | Route inbox between mates |
+| `corridors` | Named scenic corridor preferences (9W, NY-97, NY-28) |
+| `learned_corrections` | Human-reviewed routing rules from the bug pipeline (typed, not polygon-only) |
+| `learned_areas` | **Deprecated** — superseded by `learned_corrections` |
+| `announcements` / `announcement_dismissals` | In-app banners + per-user dismissal |
+| `nav_events` | Navigation telemetry, grouped by `session_id` |
+| `tasks` | Admin backlog/Kanban (status, priority p0–p3, category, linked_files/memory) |
+| `stop_ratings` | Rider stop feedback (−1/0/+1), keyed by session_id + stop_index |
+| `sent_messages` | Admin → user email log (channel, status, Resend errors) |
+| `known_roads` | Iconic-road catalog (see Known Roads section) |
+| `service_costs` | Monthly burn tracker (seeded with ~14 services) |
+
+### Bug Report → Routing Lesson Pipeline
+1. User submits bug report (map screenshot + comment + full route_context)
+2. Admin opens report → `analyze-bug-report` auto-runs (Claude Haiku with vision)
+3. Haiku extracts a specific routing lesson or returns `INSUFFICIENT_DETAIL`
+4. Admin approves/rejects with optional notes → `learned_corrections`
+5. `generate-route` injects approved corrections into Claude's system prompt
+
+---
+
+## Edge Functions
+
+| Function | Purpose |
+|---|---|
+| `generate-route` | Main routing pipeline (v2.85) |
+| `analyze-bug-report` | Haiku-with-vision lesson extraction |
+| `seed-known-roads` | Claude bulk-enumerate iconic roads → `known_roads` (pending) |
+| `validate-known-road` | Re-snap + route-verify + cache geometry on approval |
+| `find-rider` | Email → user_id lookup for friend requests |
+| `send-user-message` | Admin → rider email via Resend → `sent_messages` |
+| `notify-signup` | Email Ivan on new signup |
+| `delete-account` | App Store 5.1.1(v) account deletion (cascades) |
+
+---
+
+## Admin Portal (`admin/index.html`, 9 tabs)
+
+| Tab | Purpose |
+|---|---|
+| **Bug Reports** | Reports w/ MapLibre screenshots; lesson extraction + approval |
+| **Users** | Account list (email, join date, provider, confirmation); Message action |
+| **Rulebook** | Active routing rules (manual + approved bug lessons); add/revoke |
+| **Rides** | Consolidated session list (merged old Routes/Route Debug/Ride Logs); filters All/Navigated/Planning/Errors/Reroutes; expandable per-ride trace |
+| **Tasks** | Kanban (inbox/todo/in_progress/blocked/done/wontdo), priority + category filters, drag-drop |
+| **Stop ratings** | Recent ratings + aggregated top-rated places (3+ ratings) |
+| **Announcements** | Compose form + active/scheduled list |
+| **Known Roads** | Seeder card + list/map views, status/state filters, approve/reject/edit |
+| **Costs** | Monthly burn tracker per service |
+
+Hidden (no nav button, still in HTML): `panel-debug`, `panel-routes`.
+
+---
+
+## Deploy Rules (Claude has push + deploy authority — 2026-06-19)
 
 | Layer | Mechanism | Trigger |
 |---|---|---|
@@ -128,25 +274,15 @@ Claude can deploy directly. Three layers, three mechanisms:
 | Supabase SQL migrations | Management API `/database/query` | curl POST with SQL body |
 
 **Rules Claude must follow:**
+1. **Narrate before pushing.** State what's about to land BEFORE the push/deploy fires.
+2. **Ask before destructive ops.** `drop table`, `truncate`, `alter` losing data, force-push, deleting edge functions — anything irreversible.
+3. **One-deploy-at-a-time.** Don't bundle unrelated changes.
+4. **Pause on red flags.** Unexpected files in `git status` (iOS, secrets, untracked) → ask before committing.
+5. **Edge-fn rollback is one click** in the Supabase dashboard if a deploy breaks prod.
 
-1. **Narrate before pushing.** State in chat what's about to land BEFORE the push/deploy fires. Ivan can intercept.
-2. **Ask before destructive ops.** `drop table`, `truncate`, `alter` losing data, force-push to main, deleting edge functions, anything irreversible.
-3. **One-deploy-at-a-time.** Don't bundle unrelated changes into one push.
-4. **Pause on red flags.** If `git status` shows files Ivan didn't expect (e.g. iOS, secrets, untracked things), ask before committing.
-5. **Edge-fn rollback is one click** in the Supabase dashboard if a deploy breaks production. Mention this when relevant.
+**Still requires Ivan:** iOS/Xcode/TestFlight/App Store, Apple Developer/billing, new Supabase secrets/env vars, DNS, anything uncertain.
 
-**What still requires Ivan's explicit action:**
-- iOS / Xcode / TestFlight / App Store
-- Apple Developer / billing / vendor accounts
-- New Supabase secrets / env vars
-- Domain / DNS changes
-- Anything where Claude isn't sure → ask first
-
-**Git remote:** `git@github.com:ivanstamatovski/twotired-ui.git` (SSH, not HTTPS — Ivan uses Google OAuth, no password)
-
-**Historical context:**
-- Pre-2026-06-19: Ivan deployed manually via Monaco + paste-into-SQL-editor. Restriction lifted after generating a Supabase Personal Access Token (stored at `~/.supabase_pat`).
-- "Never run git from sandbox" was a sandbox-mode artifact (macOS mount unlink issue). Claude Code with direct Bash isn't affected.
+**Git remote:** `git@github.com:ivanstamatovski/twotired-ui.git` (SSH — Ivan uses Google OAuth, no HTTPS password). "Never run git from sandbox" was a sandbox-mode artifact; direct Bash is unaffected.
 
 ---
 
@@ -155,10 +291,12 @@ Claude can deploy directly. Three layers, three mechanisms:
 ### Key State
 ```javascript
 const [sheetMode, setSheetMode] = useState('idle'); // 'idle' | 'collapsed' | 'expanded'
-const [routeVariant, setRouteVariant] = useState('classic');
 const [userLocation, setUserLocation] = useState(null); // always-on GPS watch
 const [session, setSession] = useState(null); // Supabase auth
+const [pickerMode, setPickerMode] = useState(false); // visual road picker
+const [anchorCardExpanded, setAnchorCardExpanded] = useState(false);
 ```
+(The old `routeVariant` state is gone — see v2.65 scoring removal.)
 
 ### Mobile Bottom Sheet
 **Architecture:** `position: fixed; top: 0; bottom: var(--keyboard-height, 0px)` — full viewport height, slides via `translateY`.
@@ -171,34 +309,30 @@ const [session, setSession] = useState(null); // Supabase auth
 | collapsed | `translateY(calc(100% - 110px))` | top 110px of sheet |
 | expanded | `translateY(max(0px, env(safe-area-inset-top)))` | full screen |
 
-**Idle state layout (top→down within visible 220px):**
-- 18px padding-top
-- 72px centered mic/send hero button (mic icon → arrow icon when text present)
-- 10px gap
-- 60px full-width input pill
-- Handle row is hidden in idle (`display: none`)
+**Idle state layout (top→down within visible 220px):** 18px padding-top → 72px centered mic/send hero (mic→arrow when text present) → 10px gap → 60px full-width input pill. Handle row hidden in idle.
 
-**Collapsed state:** Handle row (~44px) + route title + Navigate button. `flex-shrink: 0` on collapsed-content (NOT `flex: 1` — that would center content vertically in a 700px container, invisible in 66px strip).
+**Collapsed state:** Handle row (~44px) + route title + Navigate button. `flex-shrink: 0` on collapsed-content (NOT `flex: 1`).
 
 ### GPS / Location
-- Always-on `watchPosition` started on map load → `userLocation` state (maximumAge: 2000)
-- `submitQuery` uses `userLocation` if available (instant), falls back to `getCurrentGPS({ timeout: 1500, maximumAge: 30000 })`
-- **Do NOT use `maximumAge: 0`** — forces fresh GPS fix, hangs for seconds on device
-- iOS requires `NSLocationWhenInUseUsageDescription` in Info.plist (added May 2026)
+- Always-on `watchPosition` started on map load → `userLocation` (maximumAge: 2000)
+- `submitQuery` uses `userLocation` if available, falls back to `getCurrentGPS({ timeout: 1500, maximumAge: 30000 })`
+- **Do NOT use `maximumAge: 0`** — forces a fresh fix, hangs for seconds on device
+- iOS requires `NSLocationWhenInUseUsageDescription` in Info.plist
 
 ### Auth — OTP (no magic links)
-- `signInWithOtp({ email, options: { shouldCreateUser: true } })` → sends 6-digit code
-- `verifyOtp({ email, token, type: 'email' })` — minimum 6 digits (Supabase enforces)
-- Magic links were abandoned — they open Safari instead of the native app
-- Email sent via Resend SMTP (`smtp.resend.com:465`, user=`resend`, sender `support@twotired.net`)
+- `signInWithOtp({ email, options: { shouldCreateUser: true } })` → 6-digit code
+- `verifyOtp({ email, token, type: 'email' })` — min 6 digits (Supabase enforces)
+- Magic links abandoned (open Safari instead of the native app)
+- Email via Resend SMTP (`smtp.resend.com:465`, user=`resend`, sender `support@twotired.net`)
+- App-review login bypass exists for App Store review.
 
 ### submitQuery flow
 ```
 1. Clear query, add user message to messages[]
-2. Don't expand sheet — stay in idle/loading state (hero shows spinner, input shows loadingMsg)
-3. Get GPS (userLocation || 1.5s timeout fallback)
-4. generateRoute() → on success: setSheetMode('collapsed')
-5. On clarify response: setSheetMode('expanded') to show clarify options
+2. Stay in idle/loading (hero spinner, input shows loadingMsg) — don't expand
+3. Get GPS (userLocation || 1.5s fallback)
+4. generateRoute() → success: setSheetMode('collapsed')
+5. clarify response: setSheetMode('expanded')
 ```
 
 ---
@@ -223,42 +357,22 @@ npm run build && npx cap sync
 
 ### capacitor.config.json (keep clean)
 ```json
-{
-  "appId": "net.twotired.app",
-  "appName": "TwoTired",
-  "webDir": "dist"
-}
+{ "appId": "net.twotired.app", "appName": "TwoTired", "webDir": "dist" }
 ```
 Do NOT add `server.url` (breaks HTTPS tile requests via ATS) or `scrollEnabled: false` (breaks MapLibre).
 
 ### Common Xcode Issues
-- Open `.xcworkspace` not `.xcodeproj` (use `npx cap open ios`)
-- Signing: Xcode → Target → Signing & Capabilities → Team = Ivan's Apple ID → Automatically manage signing
-- Display Name: set in Xcode → General → Display Name (resets on iOS project regeneration)
+- Open `.xcworkspace` not `.xcodeproj` (`npx cap open ios`)
+- Signing: Target → Signing & Capabilities → Team = Ivan's Apple ID → Automatically manage
+- Display Name: Xcode → General (resets on iOS project regeneration)
 - Physical device: trust cert at iPhone Settings → General → VPN & Device Management
 - `CapApp-SPM already opened`: you opened `.xcodeproj` instead of `.xcworkspace`
 
 ### iOS-specific bugs fixed
-- MapLibre broken by `scrollEnabled: false` in Capacitor config → removed
-- Map blank: ATS blocks HTTPS tile requests from HTTP `server.url` → removed server block
+- MapLibre broken by `scrollEnabled: false` → removed
+- Map blank: ATS blocks HTTPS tiles from HTTP `server.url` → removed server block
 - App renders larger than screen: added `maximum-scale=1.0, user-scalable=no` to viewport meta
-
----
-
-## Supabase Tables
-
-| Table | Purpose |
-|---|---|
-| `routes` | Saved routes |
-| `bug_reports` | User bug reports — `comment`, `image_data` (JPEG base64), `route_context` JSONB, `proposed_lesson`, `lesson_approved`, `admin_notes` |
-| `route_logs` | Full pipeline trace per generation |
-
-### Bug Report → Routing Lesson Pipeline
-1. User submits bug report (map screenshot + comment + full route_context)
-2. Admin opens report → `analyze-bug-report` edge function auto-runs (Claude Haiku with vision)
-3. Haiku extracts specific routing lesson or returns `INSUFFICIENT_DETAIL`
-4. Admin approves/rejects with optional notes
-5. `generate-route` fetches only `lesson_approved=true` lessons → injects into Claude's system prompt
+- Idle textarea auto-grow on iOS WKWebView fixed
 
 ---
 
@@ -269,13 +383,13 @@ Do NOT add `server.url` (breaks HTTPS tile requests via ATS) or `scrollEnabled: 
 
 ### Safe Areas (iOS)
 ```css
-/* Sheet itself gets bottom safe-area padding via @supports */
-/* sheet-idle content is at TOP of visible strip — no bottom padding needed there */
-/* Expanded sheet input area needs: padding-bottom: max(10px, env(safe-area-inset-bottom)) */
+/* Sheet gets bottom safe-area padding via @supports */
+/* sheet-idle content is at TOP of visible strip — no bottom padding there */
+/* Expanded input area needs: padding-bottom: max(10px, env(safe-area-inset-bottom)) */
 ```
 
 ### Map Locate Button
-Position above idle sheet: `bottom: 228px` (mobile). `bottom: 48px` (desktop via media query).
+`bottom: 228px` (mobile, above idle sheet). `bottom: 48px` (desktop via media query).
 
 ---
 
@@ -283,58 +397,51 @@ Position above idle sheet: `bottom: 228px` (mobile). `bottom: 48px` (desktop via
 
 - Routes must be one smooth continuous line — no detached segments, no U-turns
 - Waypoints must be on named paved roads, never in water, parking lots, or dead-ends
-- Sterling Lake (April 2026): bad waypoint off-road → OSRM spur — example of what to avoid
-- GWB routing from Queens: use Triborough approach (`40.853310, -73.960688`) — without this, routes go through midtown Manhattan
+- Sterling Lake (April 2026): bad waypoint off-road → OSRM spur — what to avoid
+- GWB from Queens: use Triborough approach (`40.853310, -73.960688`) — else routes go through midtown
+- Wegmans Brooklyn (June 2026): intra-NYC trips must skip the two-phase escape (else 30mi via Staten Island)
 
 ---
 
 ## Architecture History (how we got here)
 
 ### Phase 1 (April 2026) — Gemini + Google Maps
-- Gemini 2.5 Flash generated waypoints → Google Directions API routed
-- 18 versions of patches fighting coordinate hallucination (waypoints in rivers, parking lots)
-- v18: Roads API snap + spur detection (ratio > 1.4 filter) — best v1 result
-- Key lessons: `via:` prefix prevents U-turns but not spur routing; Embed API silently ignores `via:`
+Gemini 2.5 Flash generated waypoints → Google Directions routed. 18 versions fighting coordinate hallucination (waypoints in rivers/parking lots). v18: Roads API snap + spur detection. Lessons: `via:` prevents U-turns but not spur routing; Embed API silently ignores `via:`.
 
 ### Phase 2 (May 11, 2026) — v2 Architecture Pivot
-**Root cause fix:** LLM never produces coordinates. Claude parses intent (text only) → Places API geocodes → GraphHopper routes.
-- Claude Sonnet 4.6 for intent, Claude Haiku 4.5 for narrative
-- GraphHopper self-hosted on Molly (home server), motorcycle + car profiles
-- Two-phase routing: direct city escape leg (car) + scenic leg (motorcycle)
-- haversine post-filter on Places results (rejects results > radius_km)
+Root-cause fix: the LLM never produces coordinates. Claude parses intent (text only) → Places API geocodes → GraphHopper routes. Sonnet 4.6 for intent, Haiku 4.5 for narrative. Two-phase routing (car escape + motorcycle scenic). Haversine post-filter on Places.
 
 ### Phase 3 (May 13–15, 2026) — Admin + Learning Loop
-- Admin portal at `admin.twotired.net`
-- Bug report flow: MapLibre canvas screenshot (preserveDrawingBuffer: true) → Supabase
-- Supervised learning: bug → Haiku lesson extraction → human approval → injected into routing prompt
-- SSH git push set up (Ivan uses Google OAuth, no password for HTTPS)
+Admin portal. Bug-report flow (MapLibre canvas screenshot, `preserveDrawingBuffer:true`). Supervised learning: bug → Haiku lesson → human approval → injected into prompt. SSH git push.
 
-### Phase 4 (May 2026) — Scoring Architecture Pivot + iOS
-- Scoring pivot planned: replace class-based GH weights with joy/transit area polygons
-- A/B variant toggle (classic vs scoring) implemented
-- Rebuilt frontend as chat UI (MapLibre, mobile-first bottom sheet)
-- Capacitor iOS app working on device via TestFlight pipeline (in progress)
-- OTP login replaces magic links (Resend SMTP for `support@twotired.net`)
+### Phase 4 (late May 2026) — Social + App Store + iOS
+Friends/profiles/share-codes, live position sharing, route sharing, Universal Links. Privacy + support pages, account deletion, app icon, app-review bypass — App Store readiness. Chat UI with mobile bottom sheet. OTP login (Resend SMTP). Auto-reroute + nav UX.
+
+### Phase 5 (June 2026) — Telemetry, Loops, NYC Polygon, Known Roads
+Removed scoring variant (v2.65); NYC polygon + intra-NYC escape skip (v2.66–68); circular loops (v2.76); nav_events telemetry + session linkage; announcements; stop ratings; admin Tasks/Costs/consolidated Rides. **Known Roads catalog + scenic anchors (v2.78–v2.84)** — the current frontier: Claude routes through a human-curated catalog of iconic roads, with a visual map picker for riders.
 
 ---
 
-## Open Issues / Next Steps (as of May 23, 2026)
+## Open Issues / Next Steps (as of 2026-06-22)
 
-- [ ] **TestFlight upload** — app builds on device; needs App Store Connect record, distribution build, TestFlight invite
-- [ ] **Scoring variant testing** — `scoring` variant implemented but not thoroughly tested vs `classic`
+- [ ] **TestFlight / App Store submission** — still Ivan's manual step (distribution build, App Store Connect, invites)
+- [ ] **Known Roads coverage** — catalog is the active build-out; seed + approve more states/regions; tune the detour-gate thresholds (1.5× haversine / 1.8× actual) against real rides
+- [ ] **Scenic-anchor quality** — validate that anchor direction inference (haversine entry/exit) picks the right end on real geometry
 - [ ] **Joy area polygons** — `generate_joy_areas.py` on Molly, GH config update, graph rebuild (~2h)
 - [ ] **Score server geometry cap** — cap route to ~500 points before POST to avoid 20s timeouts
-- [ ] **webkitSpeechRecognition** — browser API, won't work in native Capacitor shell; plan: Capacitor speech plugin or Whisper API
-- [ ] **Recent rides → Supabase** — currently localStorage only, breaks cross-device
+- [ ] **Native speech input** — `webkitSpeechRecognition` won't work in the Capacitor shell; plan Capacitor speech plugin or Whisper API
+- [ ] **Recent rides → Supabase** — confirm rides are off localStorage (live sharing already DB-backed)
 
 ---
 
 ## Feedback Rules (behavioral guidelines for Claude)
 
-- **Narrate before deploys** — state what's landing in chat before each `git push` or edge fn deploy so Ivan can intercept.
+- **Narrate before deploys** — state what's landing before each `git push` or edge-fn deploy so Ivan can intercept.
 - **Ask before destructive SQL** — drop/truncate/alter losing data, force-push, deleting edge functions.
-- **`finally` always runs** even after `return` in `try` — use a flag variable pattern, never assert otherwise.
-- **Verify the right file before editing** — real App.jsx is `twotired-ui/src/App.jsx`. Confirm it's in the git repo before editing.
-- **Google Maps Embed API** does not support `via:` waypoints. Silently shows world map. `buildMapSrc` must use `origin` + `destination` only.
+- **`finally` always runs** even after `return` in `try` — use a flag-variable pattern, never assert otherwise.
+- **Verify the right file before editing** — real App.jsx is `twotired-ui/src/App.jsx`. Confirm it's in the git repo first.
+- **Google Maps Embed API** does not support `via:` waypoints (silently shows world map). `buildMapSrc` must use `origin` + `destination` only.
 - **6 decimal places on coordinates** — `40.853310, -73.960688` not `40.85, -73.96`. Precision matters for road-level snapping.
-- **`translateY(positive)` shows TOP of element** at screen bottom, not the bottom. Don't use `justify-content: flex-end` in slide-up sheets.
+- **`translateY(positive)` shows TOP of element** at screen bottom. Don't use `justify-content: flex-end` in slide-up sheets.
+- **No routing variant toggle** — v2.65 baked in the one model deliberately; don't reintroduce A/B scoring.
+- **Anchors and corridors are mutually exclusive** — if Claude emits both, corridor wins.
