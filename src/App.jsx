@@ -1408,6 +1408,9 @@ export default function App() {
   const [pickerStatus, setPickerStatus] = useState('loading');
   const pickerPeekedRef = useRef(false);                       // adaptive peek-zoom fires once per open
   const [pickerEndChoice, setPickerEndChoice] = useState(null); // single road awaiting "which end to enter" choice
+  // Active picker ride, for loop-aware reroute: { roundTrip, finalDest, legs:[{road_id,entry,exit,entrySide}], doneCount }.
+  // On reroute we re-target the entry of the next un-ridden seeded road, not home.
+  const pickerRideRef = useRef(null);
   const PICKER_MAX = 4;
   const [bugScreenshot, setBugScreenshot] = useState(null);           // base64 captured at tap-time
   const [bugScreenshotZoom, setBugScreenshotZoom] = useState(false);  // tap-to-enlarge preview
@@ -1777,10 +1780,11 @@ export default function App() {
   //   oneWayMi — estimate ending at the last road's far end, for "Take me there"
   //   lastExit — that far endpoint, used as the one-way ride's destination
   function computeOrderedLoop() {
-    if (!userLocation || !pickerSelected.length) return { ordered: [], totalMi: 0, oneWayMi: 0, lastExit: null };
+    if (!userLocation || !pickerSelected.length) return { ordered: [], totalMi: 0, oneWayMi: 0, lastExit: null, legs: [] };
     const anchorsById = new Map(pickerCatalog.map(r => [r.id, r]));
     const remaining = pickerSelected.map(id => anchorsById.get(id)).filter(Boolean);
     const ordered = [];
+    const legs = [];
     let cursor = userLocation;
     let total = 0;
     while (remaining.length) {
@@ -1793,7 +1797,9 @@ export default function App() {
         const end   = { lat: r.end_lat,   lng: r.end_lng };
         const dS = haversineMi(cursor, start);
         const dE = haversineMi(cursor, end);
-        const closer = dS <= dE ? { entry: start, exit: end, d: dS } : { entry: end, exit: start, d: dE };
+        const closer = dS <= dE
+          ? { entry: start, exit: end, d: dS, side: 'start' }
+          : { entry: end, exit: start, d: dE, side: 'end' };
         if (closer.d < bestDist) {
           bestDist = closer.d;
           bestIdx = i;
@@ -1804,34 +1810,39 @@ export default function App() {
       const roadMi = r.length_km ? r.length_km * 0.621371 : 0;
       total += bestDist + roadMi;
       ordered.push(r);
+      // Per-road leg for the active-ride tracker + loop-aware reroute.
+      legs.push({ road_id: r.id, entry: bestEntry.entry, exit: bestEntry.exit, entrySide: bestEntry.side });
       cursor = bestEntry.exit;
     }
     const oneWayMi = Math.round(total);       // ends at the last road's far end
     const lastExit = cursor;                  // that far endpoint
     total += haversineMi(cursor, userLocation); // + return-home leg
-    return { ordered, totalMi: Math.round(total), oneWayMi, lastExit };
+    return { ordered, totalMi: Math.round(total), oneWayMi, lastExit, legs };
   }
 
   async function planPickedLoop() {
     if (!pickerSelected.length || !userLocation) return;
-    const { ordered, totalMi } = computeOrderedLoop();
+    const { ordered, totalMi, legs } = computeOrderedLoop();
     if (!ordered.length) return;
     showPickerPreview(ordered);   // keep the picked road(s) on the map while we plan
+    const home = { lat: userLocation.lat, lng: userLocation.lng };
+    // Remember the loop so an off-route reroute can re-target the next seeded
+    // road's entry instead of beelining home (loop-aware reroute, v2.89).
+    pickerRideRef.current = { roundTrip: true, finalDest: home, legs, doneCount: 0 };
     setPickerMode(false);  // exit picker, will trigger cleanup
     setPickerSelected([]);
-    // Submit structured request to generate-route, skipping Claude intent.
-    // loop_distance_km carries our estimated loop length so that IF the anchors
-    // fail to resolve server-side (admin rejected/deleted since the catalog
-    // loaded), the round_trip fallback targets a sane distance instead of a
-    // degenerate 0-mile loop (edge fn v2.85). totalMi is the est. picked-road
-    // loop; convert mi → km. force_anchors: the rider explicitly picked these.
+    // Structured request, skipping Claude intent. phased: fast transit + twisty
+    // fun legs (v2.89). force_anchors: the rider explicitly picked these.
+    // loop_distance_km is the fallback target if anchors fail to resolve.
     const payload = {
-      origin: { lat: userLocation.lat, lng: userLocation.lng },
-      destination: { lat: userLocation.lat, lng: userLocation.lng },
+      origin: home,
+      destination: home,
       round_trip: true,
       curviness: 2,
       scenic_anchors: ordered.map(r => r.id),
+      anchor_entries: legs.map(l => l.entrySide),
       force_anchors: true,
+      phased: true,
       loop_distance_km: totalMi > 0 ? Math.round(totalMi * 1.60934) : undefined,
       user_id: session?.user?.id || null,
     };
@@ -1855,11 +1866,18 @@ export default function App() {
   // edge fn ride the road from the chosen end instead of dropping it (v2.87).
   async function planRideToRoad(road, entry) {
     if (!road || !userLocation) return;
+    const entryPt = entry === 'start'
+      ? { lat: road.start_lat, lng: road.start_lng }
+      : { lat: road.end_lat,   lng: road.end_lng };
     const exit = entry === 'start'
       ? { lat: road.end_lat,   lng: road.end_lng }
       : { lat: road.start_lat, lng: road.start_lng };
     setPickerEndChoice(null);
     showPickerPreview([road]);
+    pickerRideRef.current = {
+      roundTrip: false, finalDest: exit, doneCount: 0,
+      legs: [{ road_id: road.id, entry: entryPt, exit, entrySide: entry }],
+    };
     setPickerMode(false);
     setPickerSelected([]);
     await generateRoute({
@@ -1870,6 +1888,7 @@ export default function App() {
       scenic_anchors: [road.id],
       anchor_entries: [entry],
       force_anchors: true,
+      phased: true,
       user_id: session?.user?.id || null,
     });
   }
@@ -1878,9 +1897,10 @@ export default function App() {
   // order, ending at the far end of the last one.
   async function planPickedDestination() {
     if (!pickerSelected.length || !userLocation) return;
-    const { ordered, lastExit } = computeOrderedLoop();
+    const { ordered, lastExit, legs } = computeOrderedLoop();
     if (!ordered.length || !lastExit) return;
     showPickerPreview(ordered);
+    pickerRideRef.current = { roundTrip: false, finalDest: lastExit, legs, doneCount: 0 };
     setPickerMode(false);
     setPickerSelected([]);
     const payload = {
@@ -1889,7 +1909,9 @@ export default function App() {
       round_trip: false,
       curviness: 2,
       scenic_anchors: ordered.map(r => r.id),
+      anchor_entries: legs.map(l => l.entrySide),
       force_anchors: true,
+      phased: true,
       user_id: session?.user?.id || null,
     };
     await generateRoute(payload);
@@ -3011,6 +3033,18 @@ export default function App() {
       heading:   typeof pos.coords.heading === 'number' && !isNaN(pos.coords.heading) ? pos.coords.heading : null,
     };
 
+    // Loop-aware ride progress: once the rider passes near a seeded road's exit,
+    // mark it done so an off-route reroute targets only the REMAINING roads
+    // (and never sends them back to re-ride one they finished). v2.89.
+    const ride = pickerRideRef.current;
+    if (ride && navModeRef.current && ride.doneCount < ride.legs.length) {
+      const nextExit = ride.legs[ride.doneCount].exit;
+      if (nextExit && haversineMi({ lat, lng }, nextExit) < 0.2) {  // ~320m
+        ride.doneCount++;
+        console.log(`[picker-ride] passed seeded road ${ride.doneCount}/${ride.legs.length}`);
+      }
+    }
+
     // ── Map matching ────────────────────────────────────────────────────
     // During navigation, project the raw GPS onto the route polyline. If
     // we're within MAP_MATCH_MAX_M of the route, treat the snapped point as
@@ -3614,7 +3648,25 @@ export default function App() {
 
     let success = false;
     try {
-      const reroutePayload = {
+      // Loop-aware reroute (v2.89): on a picker ride, don't beeline to the
+      // destination — re-target the entry of the next un-ridden seeded road,
+      // ride the remaining roads, then continue to finalDest (home for a loop).
+      // Phased so the transit back onto the loop is fast. This is the fix for
+      // "missed an exit → app took me home via Staten Island instead of back
+      // onto my loop."
+      const ride = pickerRideRef.current;
+      const remainingLegs = ride ? ride.legs.slice(ride.doneCount) : [];
+      const reroutePayload = (ride && remainingLegs.length) ? {
+        origin: { lat, lng },
+        destination: { lat: ride.finalDest.lat, lng: ride.finalDest.lng },
+        event_origin: 'reroute',
+        scenic_anchors: remainingLegs.map(l => l.road_id),
+        anchor_entries: remainingLegs.map(l => l.entrySide),
+        force_anchors: true,
+        phased: true,
+        round_trip: !!ride.roundTrip,
+        curviness: 2,
+      } : {
         origin: { lat, lng },
         destination,
         // Tag for the route_logs linkage so the admin Ride Detail timeline
@@ -3629,6 +3681,9 @@ export default function App() {
         curviness: currentIntent?.curviness ?? 2,
         round_trip: false,
       };
+      if (ride && remainingLegs.length) {
+        console.log(`[reroute] loop-aware: ${remainingLegs.length}/${ride.legs.length} seeded roads remaining → re-targeting next road's entry`);
+      }
       const oldGeomKey = JSON.stringify(routeDataRef.current?.geometry?.coordinates?.slice(0, 5));
       const oldLength  = routeDataRef.current?.geometry?.coordinates?.length;
       console.log('[reroute] calling generateRoute, oldRoute coords=', oldLength);
@@ -4088,6 +4143,7 @@ export default function App() {
     setRouteApproved(false);
     setLoading(false);
     drawRouteOnMap(null);
+    pickerRideRef.current = null;
     localStorage.removeItem(LAST_ROUTE_KEY);
   }
 
@@ -4106,6 +4162,7 @@ export default function App() {
     // had no route_log linked — the admin map showed nothing because the
     // initial-route probe only catches calls within a 5-min window.
     navSessionIdRef.current = crypto.randomUUID();
+    pickerRideRef.current = null;   // a text ride is not a picker loop — drop loop-aware reroute state
     // Keep the captured prompt visible in the input pill while we plan — the
     // rider may not have been watching when the words appeared. We clear it
     // in generateRoute's `finally` once planning is done.
@@ -5015,6 +5072,7 @@ export default function App() {
               <div className="route-secondary-actions">
                 <button className="route-action-btn" onClick={() => {
                   setRouteData(null); setRouteApproved(false);
+                  pickerRideRef.current = null;
                   setMessages([]); setFollowUpInput(''); setQuery('');
                   setRefineOpen(false); setSheetMode('idle');
                   const m = mapRef.current;

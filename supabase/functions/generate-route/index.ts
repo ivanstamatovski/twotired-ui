@@ -1,4 +1,12 @@
-// generate-route edge function — v2.88
+// generate-route edge function — v2.89
+// v2.89: phased picker routing. A loop/picker ride is now routed as alternating
+//        legs — FAST transit (curviness 1, highways OK) to/from/between the
+//        seeded roads, and each seeded road ridden at its own curviness_tier
+//        ("arrive fast, enjoy the twists"). Legs route in parallel + merge
+//        (mergeRouteList), with per-leg labels for client coloring. Gated by
+//        body.phased — standard text routes are untouched. Pairs with the
+//        loop-aware reroute (frontend) so going off-route re-targets the entry
+//        of the remaining seeded road, not home.
 // v2.88: name picker rides after the seeded road(s). When the destination is a
 //        bare coordinate (visual-picker "Take me there" / loop), the title was
 //        "Route to 40.25,-75.25" — which is what nav shows the rider. Now it's
@@ -364,6 +372,11 @@ interface RouteRequest {
                                      // road to ENTER from (rider's choice in the picker). 'start' →
                                      // enter at the row's start_*, ride to end_*; 'end' → the reverse.
                                      // Overrides resolveAnchorSequence's origin-proximity heuristic.
+  phased?: boolean;                  // v2.89: picker loops/rides only. Route as alternating legs —
+                                     // FAST transit (curviness 1, highways OK) to/from/between the
+                                     // seeded roads, and each seeded road ridden at its own
+                                     // curviness_tier. "Arrive fast, enjoy the twists." Standard
+                                     // (text) routes never set this and are unaffected.
 }
 
 // ── Palisades Pkwy avoidance zone ─────────────────────────────────────────────
@@ -1852,7 +1865,7 @@ async function fetchAnchorsByIds(ids: string[]): Promise<any[]> {
   try {
     const idsParam = ids.map(i => `"${i}"`).join(',');
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/known_roads?id=in.(${idsParam})&approved=eq.true&select=id,name,route_number,start_lat,start_lng,end_lat,end_lng,length_km,vibe_tags,must_see,caveats,region`,
+      `${SUPABASE_URL}/rest/v1/known_roads?id=in.(${idsParam})&approved=eq.true&select=id,name,route_number,start_lat,start_lng,end_lat,end_lng,length_km,curviness_tier,vibe_tags,must_see,caveats,region`,
       {
         headers: {
           apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -1919,6 +1932,7 @@ function resolveAnchorSequence(
       entry,
       exit,
       length_km: a.length_km ?? null,
+      curviness_tier: a.curviness_tier ?? null,
       vibe_tags: a.vibe_tags || [],
       must_see: a.must_see || null,
       caveats: a.caveats || null,
@@ -2491,6 +2505,68 @@ function mergeRoutes(leg1: any, leg2: any): any {
   };
 }
 
+// Merge N legs (phased picker routing) into one route, preserving per-leg
+// labels + geometries so the client can color transit vs. fun legs distinctly.
+function mergeRouteList(legs: Array<{ label: string; route: any }>): any {
+  const valid = legs.filter(l => Array.isArray(l.route?.geometry?.coordinates) && l.route.geometry.coordinates.length);
+  if (valid.length === 0) throw new Error('phased route produced no valid legs');
+  let coords: number[][] = [];
+  let instructions: any[] = [];
+  let dist = 0, time = 0, raw = 0;
+  const legGeometries: any[] = [];
+  const ghRequestLegs: any[] = [];
+  for (const l of valid) {
+    const c: number[][] = l.route.geometry.coordinates;
+    coords = coords.length ? [...coords, ...c.slice(1)] : [...c];  // drop dup join point
+    instructions = [...instructions, ...(l.route.instructions || [])];
+    dist += l.route.distance_miles || 0;
+    time += l.route.time_minutes || 0;
+    raw  += l.route.raw_time_minutes || 0;
+    legGeometries.push({ label: l.label, geometry: l.route.geometry });
+    ghRequestLegs.push({ label: l.label, request: l.route.gh_request });
+  }
+  return {
+    distance_miles: Math.round(dist * 10) / 10,
+    time_minutes: time,
+    raw_time_minutes: raw,
+    details: valid[0].route.details || {},
+    geometry: { type: 'LineString', coordinates: coords },
+    instructions,
+    gh_request_legs: ghRequestLegs,
+    leg_geometries: legGeometries,
+  };
+}
+
+// ── Phased picker routing (v2.89) ─────────────────────────────────────────────
+// A loop/picker ride isn't one route — it's "get to the fun fast, ride the fun,
+// get to the next fun fast." Build alternating legs and route them in PARALLEL
+// (independent point-pairs, so wall-clock ≈ one GH call):
+//   • transit legs (prev → road entry, and last exit → destination): curviness 1
+//     (highways OK — the rider wants to ARRIVE FAST).
+//   • fun legs (road entry → exit): the road's own curviness_tier, so a backroad
+//     gets maxed and a parkway is ridden as a parkway (forcing 3 would make GH's
+//     motorway penalty avoid the very road the rider picked).
+async function routePhased(
+  origin: LatLng,
+  anchorMeta: Array<{ entry: LatLng; exit: LatLng; curviness_tier: number | null; name: string }>,
+  destination: LatLng,
+  fallbackCurviness: 1 | 2 | 3,
+): Promise<any> {
+  const specs: Array<{ label: string; points: LatLng[]; curviness: 0 | 1 | 2 | 3 }> = [];
+  let prev = origin;
+  for (const a of anchorMeta) {
+    specs.push({ label: 'transit', points: [prev, a.entry], curviness: 1 });
+    const tier = (a.curviness_tier && a.curviness_tier >= 1 && a.curviness_tier <= 3)
+      ? (a.curviness_tier as 1 | 2 | 3) : fallbackCurviness;
+    specs.push({ label: 'fun', points: [a.entry, a.exit], curviness: tier });
+    prev = a.exit;
+  }
+  specs.push({ label: 'transit', points: [prev, destination], curviness: 1 });
+  console.log(`[routePhased] ${specs.length} legs: ${specs.map(s => `${s.label}/c${s.curviness}`).join(' → ')}`);
+  const routed = await Promise.all(specs.map(s => getRoute(s.points, s.curviness)));
+  return mergeRouteList(specs.map((s, i) => ({ label: s.label, route: routed[i] })));
+}
+
 // Reduce a LineString's coordinate count to ≤ maxPoints by even-stepped
 // sampling. Always preserves first and last points so the start/end markers
 // match the rendered polyline exactly.
@@ -2987,7 +3063,11 @@ Deno.serve(async (req) => {
           const briefsPromise = Promise.all(
             anchorMeta.map(a => generateAnchorBrief(a))
           );
-          route = await getRoute(anchoredPoints, curviness);
+          // v2.89: phased picker rides route fast-transit + twisty-fun legs;
+          // everything else uses the single-curviness anchored path.
+          route = body.phased
+            ? await routePhased(originLL, anchorMeta, destinationLL, curviness as 1 | 2 | 3)
+            : await getRoute(anchoredPoints, curviness);
 
           // ── v2.83 post-route check ─────────────────────────────────
           // Haversine through waypoints is generous — it can't see the
