@@ -1,4 +1,9 @@
-// generate-route edge function — v2.87
+// generate-route edge function — v2.88
+// v2.88: name picker rides after the seeded road(s). When the destination is a
+//        bare coordinate (visual-picker "Take me there" / loop), the title was
+//        "Route to 40.25,-75.25" — which is what nav shows the rider. Now it's
+//        the road name(s): "Route 97", "Skyline Drive loop". The `destination`
+//        field stays a coord-string so reroute can still parse it to a LatLng.
 // v2.87: picker "Take me there" fixes. (1) force_anchors — when the rider
 //        explicitly picks roads in the visual picker, skip the detour-drop
 //        gates. They exist to catch Claude's bad anchor picks; for a user pick
@@ -3121,6 +3126,25 @@ Deno.serve(async (req) => {
     }
 
     const destName = 'query' in body.destination ? body.destination.query : `${destinationLL.lat},${destinationLL.lng}`;
+    // v2.88: friendly ride title. When the destination is a bare coordinate
+    // (visual-picker "Take me there" / loop rides), name the ride after the
+    // seeded road(s) — "Route 97", "Skyline Drive loop" — instead of
+    // "Route to 40.25,-75.25", which is what nav shows the rider. The
+    // `destination` field stays a coord-string so reroute can parse it back.
+    const shortRoadName = (a: any): string => {
+      let s = String(a?.name || '').trim();
+      if (s) {
+        s = s.split('(')[0].trim();              // drop "(A to B …)" descriptor
+        s = s.split(/\s+[–—-]\s+/)[0].trim();     // drop " – descriptor"
+        if (s) return s;
+      }
+      return a?.route_number ? `Route ${a.route_number}` : '';
+    };
+    const anchorNames = [...new Set(((log.scenic_anchors_resolved as any[]) || []).map(shortRoadName).filter(Boolean))];
+    const isCoordDest = !('query' in body.destination);
+    const rideTitle = (isCoordDest && anchorNames.length)
+      ? (body.round_trip ? `${anchorNames.join(' + ')} loop` : anchorNames.join(' + '))
+      : `Route to ${destName}`;
     const originalQuery = typeof (rawBody as any).query === 'string'
       ? (rawBody as any).query
       : ('query' in body.destination ? body.destination.query : 'route');
@@ -3148,7 +3172,7 @@ Deno.serve(async (req) => {
     // Save route to Supabase (best-effort)
     try {
       const record = {
-        title: `Route to ${destName}`,
+        title: rideTitle,
         destination: destName,
         duration_str: fmtDur(totalMinutes),
         distance_mi: route.distance_miles,
@@ -3196,7 +3220,7 @@ Deno.serve(async (req) => {
       waypoints: allWaypoints,
       stops,
       destination: destName,
-      title: `Route to ${destName}`,
+      title: rideTitle,
       // v2.57: ETA breakdown — clients can render the full picture or fall back to duration_str
       drive_minutes: driveMinutes,
       stop_minutes: stopMinutes,
