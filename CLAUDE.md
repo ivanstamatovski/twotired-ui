@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-06-24 against `main` (generate-route at **v2.86**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-06-26 against `main` (generate-route at **v2.87**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -43,7 +43,7 @@ twotired-ui/
     main.jsx
   supabase/
     functions/
-      generate-route/        ← main edge function (v2.86)
+      generate-route/        ← main edge function (v2.87)
       analyze-bug-report/    ← Haiku-with-vision lesson extraction from bug reports
       seed-known-roads/      ← Claude bulk-enumerates iconic roads → known_roads (pending)
       validate-known-road/   ← on approval: re-snap, route-verify, cache geometry
@@ -91,7 +91,7 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.86 (multi-seed round_trip — tamed loop overshoot)
+**Current version:** v2.87 (picker "Take me there" — force_anchors + entry-end choice)
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
@@ -170,8 +170,14 @@ Key columns: `name`, `route_number`, `state`, `region`, `start_lat/lng` + `end_l
 ### Anchor card UI (`src/App.jsx`)
 Three states driven by `scenic_anchors_resolved` + nav mode: **peek** (small top-left card, first anchor name+brief), **expanded** (all anchors with tags/caveats/briefs), **nav-circle** (FAB with anchor count during navigation, auto-collapses off-route).
 
-### Visual picker mode (latest, June 20)
-Rider taps the 🛣 FAB → catalog roads within `PICKER_RADIUS_MI=75` render as tappable MapLibre polylines (orange unselected / green selected, wide invisible hit layer for fat-finger tapping, real cached geometry). Select up to `PICKER_MAX=4`, "Plan loop" → `computeOrderedLoop()` greedy nearest-neighbor orders them → `generateRoute({ origin: here, destination: here, round_trip: true, curviness: 2, scenic_anchors: [...] })`. Phase 2B does the rest.
+### Visual picker mode ("known bike routes", reworked June 24–26)
+Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable MapLibre polylines (orange unselected / green selected, wide invisible hit layer, real cached geometry). No distance radius — on open, an **adaptive peek-zoom** keeps the rider centered and zooms out only enough for the nearest ~3 routes to peek in at the edges (zoom-OUT only; fires once per open via `pickerPeekedRef`). Select up to `PICKER_MAX=4`. Two actions:
+- **Make a loop** → `computeOrderedLoop()` greedy nearest-neighbor order → `generateRoute({ origin: here, destination: here, round_trip: true, scenic_anchors: [...], force_anchors: true, loop_distance_km })`.
+- **Take me there** → one-way ride out through the road(s). For a **single road** a card asks **which end to enter from** (`roadEndInfo()` labels each end from the "A to B" name or compass + distance) → `generateRoute({ destination: oppositeEnd, scenic_anchors: [id], anchor_entries: ['start'|'end'], force_anchors: true })`. Multiple roads skip the prompt and use greedy order.
+
+**`force_anchors` (v2.87):** picker requests set it so the edge fn never drops the rider's explicitly-picked roads via the detour gates (those gates only guard Claude's picks). Without it, "Take me there" silently routed to the endpoint without riding the road.
+
+**No-blank-flash:** on action, the picked road(s) draw as a green `picker-preview` line that stays until the blue route renders (`showPickerPreview` / `clearPickerPreview`, cleared inside `drawRouteOnMap`). `pickerStatus` ('loading' → 'ready' | 'empty') drives the overlay so the rider never sees a bare map.
 
 ---
 
@@ -238,7 +244,7 @@ Rider taps the 🛣 FAB → catalog roads within `PICKER_RADIUS_MI=75` render as
 
 | Function | Purpose |
 |---|---|
-| `generate-route` | Main routing pipeline (v2.86) |
+| `generate-route` | Main routing pipeline (v2.87) |
 | `analyze-bug-report` | Haiku-with-vision lesson extraction |
 | `seed-known-roads` | Claude bulk-enumerate iconic roads → `known_roads` (pending) |
 | `validate-known-road` | Re-snap + route-verify + cache geometry on approval |

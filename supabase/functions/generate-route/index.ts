@@ -1,4 +1,11 @@
-// generate-route edge function — v2.86
+// generate-route edge function — v2.87
+// v2.87: picker "Take me there" fixes. (1) force_anchors — when the rider
+//        explicitly picks roads in the visual picker, skip the detour-drop
+//        gates. They exist to catch Claude's bad anchor picks; for a user pick
+//        they were silently dropping the road, so a one-way ride routed to the
+//        road's endpoint WITHOUT traversing it. (2) anchor_entries — the rider
+//        chooses which end of the road to enter from; resolveAnchorSequence
+//        honors it instead of the origin-proximity heuristic.
 // v2.86: tame the GH round_trip overshoot. round_trip.distance is a target,
 //        not a constraint — with the curviness custom model a single unlucky
 //        seed could balloon a loop to 4–5× (Hudson-crossing detours). Now
@@ -344,6 +351,14 @@ interface RouteRequest {
                                      // chose to anchor the ride through. Currently observability-only
                                      // — routing still ignores these. Phase 2B will N-phase-route
                                      // through the anchors. Mutually exclusive with road_corridor.
+  force_anchors?: boolean;           // v2.87: the rider EXPLICITLY picked these roads (visual picker).
+                                     // Skip the detour-drop gates — the gates exist to catch Claude's
+                                     // bad anchor picks, but a user pick must always be honored (else
+                                     // "Take me there" silently routes to the endpoint without the road).
+  anchor_entries?: ('start' | 'end')[]; // v2.87: parallel to scenic_anchors — which endpoint of each
+                                     // road to ENTER from (rider's choice in the picker). 'start' →
+                                     // enter at the row's start_*, ride to end_*; 'end' → the reverse.
+                                     // Overrides resolveAnchorSequence's origin-proximity heuristic.
 }
 
 // ── Palisades Pkwy avoidance zone ─────────────────────────────────────────────
@@ -1870,6 +1885,7 @@ async function fetchAnchorsByIds(ids: string[]): Promise<any[]> {
 function resolveAnchorSequence(
   origin: LatLng,
   anchors: any[],
+  entryOverrides?: ('start' | 'end')[],
 ): {
   waypoints: LatLng[];
   meta: Array<{ road_id: string; name: string; route_number: string | null; direction: 'forward' | 'reverse'; entry: LatLng; exit: LatLng; length_km: number | null }>;
@@ -1877,12 +1893,16 @@ function resolveAnchorSequence(
   const waypoints: LatLng[] = [];
   const meta: any[] = [];
   let prev = origin;
-  for (const a of anchors) {
+  for (let i = 0; i < anchors.length; i++) {
+    const a = anchors[i];
     const start: LatLng = { lat: a.start_lat, lng: a.start_lng };
     const end:   LatLng = { lat: a.end_lat,   lng: a.end_lng   };
-    const dStart = haversineKm(prev, start);
-    const dEnd   = haversineKm(prev, end);
-    const forward = dStart <= dEnd;
+    // Explicit rider choice wins ('start' enters at start_*, 'end' at end_*);
+    // otherwise enter from whichever endpoint is closest to the previous point.
+    const override = entryOverrides?.[i];
+    const forward = override === 'start' ? true
+      : override === 'end' ? false
+      : haversineKm(prev, start) <= haversineKm(prev, end);
     const entry = forward ? start : end;
     const exit  = forward ? end   : start;
     waypoints.push(entry, exit);
@@ -2902,7 +2922,7 @@ Deno.serve(async (req) => {
           route = await getRoute(allWaypoints, curviness);
         }
       } else {
-        const { waypoints: anchorWPs, meta: anchorMeta } = resolveAnchorSequence(originLL, anchorRows);
+        const { waypoints: anchorWPs, meta: anchorMeta } = resolveAnchorSequence(originLL, anchorRows, body.anchor_entries);
 
         // ── v2.83 detour gate ───────────────────────────────────────────
         // Before committing to anchor-mode routing, sanity-check that the
@@ -2927,9 +2947,12 @@ Deno.serve(async (req) => {
           detour_km: Math.round(detourKm * 10) / 10,
           ratio: Math.round(detourRatio * 100) / 100,
           limit: DETOUR_LIMIT,
+          forced: !!body.force_anchors,
         };
 
-        if (detourRatio > DETOUR_LIMIT) {
+        // force_anchors (visual picker) bypasses the gate — the rider explicitly
+        // chose this road, so we never silently drop it.
+        if (!body.force_anchors && detourRatio > DETOUR_LIMIT) {
           console.warn(`[generate-route] anchor detour ratio ${detourRatio.toFixed(2)}× exceeds ${DETOUR_LIMIT}× — dropping anchors, fallback to default routing`);
           (log as any).anchor_detour_dropped = true;
           // Fall through to default routing with original allWaypoints.
@@ -2984,9 +3007,10 @@ Deno.serve(async (req) => {
             ratio: Math.round(actualRatio * 100) / 100,
             limit: ACTUAL_LIMIT,
             skipped_for_round_trip: !!body.round_trip,
+            forced: !!body.force_anchors,
           };
 
-          if (!body.round_trip && actualRatio > ACTUAL_LIMIT) {
+          if (!body.force_anchors && !body.round_trip && actualRatio > ACTUAL_LIMIT) {
             console.warn(`[generate-route] anchor actual-distance ratio ${actualRatio.toFixed(2)}× exceeds ${ACTUAL_LIMIT}× — re-routing without anchors`);
             (log as any).anchor_detour_dropped = true;
             (log as any).anchor_detour_dropped_reason = 'actual_distance';

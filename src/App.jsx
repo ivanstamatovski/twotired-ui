@@ -1407,6 +1407,7 @@ export default function App() {
   // instead of a bare map while loading: 'loading' → 'ready' | 'empty'.
   const [pickerStatus, setPickerStatus] = useState('loading');
   const pickerPeekedRef = useRef(false);                       // adaptive peek-zoom fires once per open
+  const [pickerEndChoice, setPickerEndChoice] = useState(null); // single road awaiting "which end to enter" choice
   const PICKER_MAX = 4;
   const [bugScreenshot, setBugScreenshot] = useState(null);           // base64 captured at tap-time
   const [bugScreenshotZoom, setBugScreenshotZoom] = useState(false);  // tap-to-enlarge preview
@@ -1815,6 +1816,7 @@ export default function App() {
     if (!pickerSelected.length || !userLocation) return;
     const { ordered, totalMi } = computeOrderedLoop();
     if (!ordered.length) return;
+    showPickerPreview(ordered);   // keep the picked road(s) on the map while we plan
     setPickerMode(false);  // exit picker, will trigger cleanup
     setPickerSelected([]);
     // Submit structured request to generate-route, skipping Claude intent.
@@ -1822,26 +1824,63 @@ export default function App() {
     // fail to resolve server-side (admin rejected/deleted since the catalog
     // loaded), the round_trip fallback targets a sane distance instead of a
     // degenerate 0-mile loop (edge fn v2.85). totalMi is the est. picked-road
-    // loop; convert mi → km.
+    // loop; convert mi → km. force_anchors: the rider explicitly picked these.
     const payload = {
       origin: { lat: userLocation.lat, lng: userLocation.lng },
       destination: { lat: userLocation.lat, lng: userLocation.lng },
       round_trip: true,
       curviness: 2,
       scenic_anchors: ordered.map(r => r.id),
+      force_anchors: true,
       loop_distance_km: totalMi > 0 ? Math.round(totalMi * 1.60934) : undefined,
       user_id: session?.user?.id || null,
     };
     await generateRoute(payload);
   }
 
-  // "Take me there" — a one-way scenic ride from the rider out to (and through)
-  // the picked road(s), ending at the far end of the last one. Same Phase 2B
-  // anchor routing as the loop, just round_trip=false with a real destination.
+  // "Take me there" entry point. For a single road we ask which end to enter
+  // from (the choice flips the ride's direction + where it ends). For multiple
+  // roads we use the greedy order and skip the prompt.
+  function onTakeMeThere() {
+    if (!pickerSelected.length || !userLocation) return;
+    if (pickerSelected.length === 1) {
+      const road = pickerCatalog.find(r => r.id === pickerSelected[0]);
+      if (road) { setPickerEndChoice(road); return; }
+    }
+    planPickedDestination();
+  }
+
+  // Single road, rider-chosen entry end. entry: 'start' | 'end' of the road row.
+  // Destination is the OPPOSITE end; force_anchors + anchor_entries make the
+  // edge fn ride the road from the chosen end instead of dropping it (v2.87).
+  async function planRideToRoad(road, entry) {
+    if (!road || !userLocation) return;
+    const exit = entry === 'start'
+      ? { lat: road.end_lat,   lng: road.end_lng }
+      : { lat: road.start_lat, lng: road.start_lng };
+    setPickerEndChoice(null);
+    showPickerPreview([road]);
+    setPickerMode(false);
+    setPickerSelected([]);
+    await generateRoute({
+      origin: { lat: userLocation.lat, lng: userLocation.lng },
+      destination: { lat: exit.lat, lng: exit.lng },
+      round_trip: false,
+      curviness: 2,
+      scenic_anchors: [road.id],
+      anchor_entries: [entry],
+      force_anchors: true,
+      user_id: session?.user?.id || null,
+    });
+  }
+
+  // Multi-road "Take me there" — one-way through the picked roads in greedy
+  // order, ending at the far end of the last one.
   async function planPickedDestination() {
     if (!pickerSelected.length || !userLocation) return;
     const { ordered, lastExit } = computeOrderedLoop();
     if (!ordered.length || !lastExit) return;
+    showPickerPreview(ordered);
     setPickerMode(false);
     setPickerSelected([]);
     const payload = {
@@ -1850,14 +1889,48 @@ export default function App() {
       round_trip: false,
       curviness: 2,
       scenic_anchors: ordered.map(r => r.id),
+      force_anchors: true,
       user_id: session?.user?.id || null,
     };
     await generateRoute(payload);
   }
 
+  // Labels for a road's two ends — parse "A to B" from the name when present,
+  // else fall back to a compass direction; always tack on the distance from
+  // the rider so they can judge "enter near me vs. ride out to the far end".
+  function roadEndInfo(road) {
+    // Most catalog names encode the two ends as "… (A to B …)" — rows are
+    // oriented start→end, so A≈start, B≈end. Prefer the parenthetical, split on
+    // " to ", and trim any trailing "— descriptor".
+    const parseEnds = (name) => {
+      if (!name) return null;
+      const paren = name.match(/\(([^)]+)\)/);
+      const seg = paren ? paren[1] : name;
+      const mm = seg.match(/^(.*?)\s+to\s+(.+)$/i);
+      if (!mm) return null;
+      const trim = (s) => s.split(/\s[–—-]\s/)[0].trim();
+      return { a: trim(mm[1].split(/\s[–—-]\s/).pop()), b: trim(mm[2]) };
+    };
+    const m = parseEnds(road?.name);
+    const compass = (which) => {
+      const me    = which === 'start' ? { lat: road.start_lat, lng: road.start_lng } : { lat: road.end_lat, lng: road.end_lng };
+      const other = which === 'start' ? { lat: road.end_lat, lng: road.end_lng }     : { lat: road.start_lat, lng: road.start_lng };
+      const dLat = me.lat - other.lat, dLng = me.lng - other.lng;
+      return Math.abs(dLat) >= Math.abs(dLng) ? (dLat >= 0 ? 'north' : 'south') : (dLng >= 0 ? 'east' : 'west');
+    };
+    const dist = (which) => userLocation
+      ? Math.round(haversineMi(userLocation, which === 'start' ? { lat: road.start_lat, lng: road.start_lng } : { lat: road.end_lat, lng: road.end_lng }))
+      : null;
+    return {
+      start: { label: (m?.a) || `${compass('start')} end`, dist: dist('start') },
+      end:   { label: (m?.b) || `${compass('end')} end`,   dist: dist('end') },
+    };
+  }
+
   function cancelPicker() {
     setPickerMode(false);
     setPickerSelected([]);
+    setPickerEndChoice(null);
   }
   useEffect(() => { sessionRef.current = session; }, [session]);
 
@@ -3225,10 +3298,37 @@ export default function App() {
   }
 
   // ── Draw route on map ─────────────────────────────────────────────────────
+  // Picker preview — keep the rider's picked road(s) drawn (green) between the
+  // moment they choose an action and the generated route appearing, so the map
+  // never blanks out. Replaced by the real route in drawRouteOnMap.
+  function showPickerPreview(roads) {
+    const map = mapRef.current;
+    if (!map || !mapLoadedRef.current) return;
+    clearPickerPreview();
+    const features = (roads || []).map(r => {
+      const coords = (Array.isArray(r.geometry?.coordinates) && r.geometry.coordinates.length >= 2)
+        ? r.geometry.coordinates
+        : [[r.start_lng, r.start_lat], [r.end_lng, r.end_lat]];
+      return { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } };
+    });
+    if (!features.length) return;
+    map.addSource('picker-preview', { type: 'geojson', data: { type: 'FeatureCollection', features } });
+    map.addLayer({ id: 'picker-preview-line', type: 'line', source: 'picker-preview',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#22c55e', 'line-width': 5, 'line-opacity': 0.9 } });
+  }
+  function clearPickerPreview() {
+    const map = mapRef.current;
+    if (!map) return;
+    if (map.getLayer('picker-preview-line')) map.removeLayer('picker-preview-line');
+    if (map.getSource('picker-preview')) map.removeSource('picker-preview');
+  }
+
   function drawRouteOnMap(route) {
     const map = mapRef.current;
     if (!map || !mapLoadedRef.current) { pendingRoute.current = route; return; }
 
+    clearPickerPreview();   // the real route takes over from the green preview
     if (map.getLayer('route-line')) map.removeLayer('route-line');
     if (map.getLayer('route-casing')) map.removeLayer('route-casing');
     if (map.getSource('route')) map.removeSource('route');
@@ -3956,6 +4056,7 @@ export default function App() {
     }
     finally {
       setLoading(false);
+      clearPickerPreview();   // drop any leftover green preview (error/clarify/abort paths)
       if (routeAbortRef.current === controller) routeAbortRef.current = null;
       // Clear the input now that planning is done (success, error, or clarify).
       // The captured prompt was visible during loading so the rider could
@@ -4468,7 +4569,7 @@ export default function App() {
             wherever they are; the rider zooms/pans to find and tap them. States:
             loading (fetching), empty (none in the catalog at all), ready (pick +
             plan). Stays out of the way of the report and recenter FABs. */}
-        {pickerMode && !navMode && (() => {
+        {pickerMode && !navMode && !pickerEndChoice && (() => {
           if (pickerStatus === 'loading') {
             return <div className="picker-counter picker-counter--status">Loading known bike routes…</div>;
           }
@@ -4500,14 +4601,35 @@ export default function App() {
               </div>
               <div className="picker-actions">
                 <button className="picker-cancel" onClick={cancelPicker}>Cancel</button>
-                <button className="picker-plan picker-plan--secondary" disabled={sel === 0 || !canPlan} onClick={planPickedDestination}>
+                <button className="picker-plan picker-plan--secondary" disabled={sel === 0 || !canPlan} onClick={onTakeMeThere}>
                   Take me there
                 </button>
                 <button className="picker-plan" disabled={sel === 0 || !canPlan} onClick={planPickedLoop}>
-                  Make loop
+                  Make a loop
                 </button>
               </div>
             </>
+          );
+        })()}
+
+        {/* "Take me there" end-choice — which end of the road to enter from.
+            The choice flips the ride direction and where it ends. */}
+        {pickerMode && !navMode && pickerEndChoice && (() => {
+          const ends = roadEndInfo(pickerEndChoice);
+          return (
+            <div className="picker-empty">
+              <div className="picker-empty-title">Which end do you want to ride from?</div>
+              <p className="picker-empty-hint">{pickerEndChoice.name}</p>
+              <div className="picker-empty-actions">
+                <button className="picker-plan" onClick={() => planRideToRoad(pickerEndChoice, 'start')}>
+                  Start at {ends.start.label}{ends.start.dist != null ? ` · ~${ends.start.dist} mi` : ''}
+                </button>
+                <button className="picker-plan" onClick={() => planRideToRoad(pickerEndChoice, 'end')}>
+                  Start at {ends.end.label}{ends.end.dist != null ? ` · ~${ends.end.dist} mi` : ''}
+                </button>
+                <button className="picker-cancel" onClick={() => setPickerEndChoice(null)}>Back</button>
+              </div>
+            </div>
           );
         })()}
 
