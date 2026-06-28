@@ -1,4 +1,11 @@
-// generate-route edge function — v2.91
+// generate-route edge function — v2.92
+// v2.92: smooth merge onto seeded roads. A transit leg routes to a road's fixed
+//        endpoint; approaching from the side the road continues toward, GH
+//        overshoots and the next leg doubles straight back — a blind U-turn
+//        (180° at the join). GH ignores a heading on a route's final point, so
+//        mergeRouteList de-spikes geometrically: at each leg join it trims where
+//        the next leg's head retraces the prior leg's tail, splicing at the
+//        divergence point. Collapses the spur into a clean turn.
 // v2.91: loops come back ROUND again. v2.89 routed the return leg at transit
 //        curviness 1 (fastest) — same as the outbound — so loops retraced the
 //        same highway. Now a round-trip's return leg uses the scenic curviness,
@@ -2513,28 +2520,81 @@ function mergeRoutes(leg1: any, leg2: any): any {
   };
 }
 
+// Distance in meters between two [lng,lat] points (small-scale haversine).
+function coordMeters(a: number[], b: number[]): number {
+  const R = 6371000, r = Math.PI / 180;
+  const dLat = (b[1] - a[1]) * r, dLng = (b[0] - a[0]) * r;
+  const la = a[1] * r, lb = b[1] * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la) * Math.cos(lb) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
 // Merge N legs (phased picker routing) into one route, preserving per-leg
 // labels + geometries so the client can color transit vs. fun legs distinctly.
+//
+// De-spike (v2.92): a transit leg routes to a road's fixed endpoint; when the
+// rider approaches from the side the road continues toward, GH overshoots the
+// endpoint and the next (fun) leg doubles straight back over the same pavement
+// — a blind U-turn at the join. GH ignores a heading on a route's final point,
+// so we fix it geometrically: at each join, find how far the next leg's head
+// retraces the previous leg's tail (consecutive points within ~25 m) and splice
+// both at the divergence point, collapsing the spur into a clean turn.
+const DESPIKE_M = 25;
 function mergeRouteList(legs: Array<{ label: string; route: any }>): any {
-  const valid = legs.filter(l => Array.isArray(l.route?.geometry?.coordinates) && l.route.geometry.coordinates.length);
+  const valid = legs.filter(l => Array.isArray(l.route?.geometry?.coordinates) && l.route.geometry.coordinates.length >= 2);
   if (valid.length === 0) throw new Error('phased route produced no valid legs');
+
+  // Trim each leg's head where it reverse-retraces the prior (already-trimmed)
+  // leg's tail — the overshoot-and-back. GH returns identical points there, so
+  // the signature is coords[1+i] ≈ prev[last-i]. Require ≥2 matches so a normal
+  // dense-geometry turn isn't mistaken for a U-turn.
+  const trimmed: Array<{ label: string; coords: number[][]; route: any }> = [];
+  for (const l of valid) {
+    let coords: number[][] = l.route.geometry.coordinates.slice();
+    if (trimmed.length) {
+      const prev = trimmed[trimmed.length - 1].coords;
+      const last = prev.length - 1;
+      // Walk the next leg from its head while each point still sits on the prev
+      // leg's tail (the overshoot the next leg is retracing). The expected
+      // transit index under coords[j] is ~last-j; search a small window so we
+      // don't depend on which point is the exact shared join.
+      let j = 0, divergeIdx = last;
+      while (j < coords.length) {
+        let best = -1, bestD = Infinity;
+        for (let t = Math.max(0, last - j - 4); t <= Math.min(last, last - j + 4); t++) {
+          const d = coordMeters(coords[j], prev[t]);
+          if (d < bestD) { bestD = d; best = t; }
+        }
+        if (bestD > DESPIKE_M) break;
+        divergeIdx = best;
+        j++;
+      }
+      if (j >= 3) {                                  // a real spur, not a dense-geometry turn
+        prev.length = divergeIdx + 1;                // prev ends at the divergence point D
+        coords = [prev[prev.length - 1], ...coords.slice(j)];  // next leg resumes off the tail
+      }
+    }
+    trimmed.push({ label: l.label, coords, route: l.route });
+  }
+
   let coords: number[][] = [];
   let instructions: any[] = [];
-  let dist = 0, time = 0, raw = 0;
+  let time = 0, raw = 0;
   const legGeometries: any[] = [];
   const ghRequestLegs: any[] = [];
-  for (const l of valid) {
-    const c: number[][] = l.route.geometry.coordinates;
-    coords = coords.length ? [...coords, ...c.slice(1)] : [...c];  // drop dup join point
-    instructions = [...instructions, ...(l.route.instructions || [])];
-    dist += l.route.distance_miles || 0;
-    time += l.route.time_minutes || 0;
-    raw  += l.route.raw_time_minutes || 0;
-    legGeometries.push({ label: l.label, geometry: l.route.geometry });
-    ghRequestLegs.push({ label: l.label, request: l.route.gh_request });
+  for (const t of trimmed) {
+    coords = coords.length ? [...coords, ...t.coords.slice(1)] : [...t.coords];  // drop dup join point
+    instructions = [...instructions, ...(t.route.instructions || [])];
+    time += t.route.time_minutes || 0;
+    raw  += t.route.raw_time_minutes || 0;
+    legGeometries.push({ label: t.label, geometry: { type: 'LineString', coordinates: t.coords } });
+    ghRequestLegs.push({ label: t.label, request: t.route.gh_request });
   }
+  // Recompute distance from the de-spiked geometry (trimming changed lengths).
+  let distM = 0;
+  for (let i = 1; i < coords.length; i++) distM += coordMeters(coords[i - 1], coords[i]);
   return {
-    distance_miles: Math.round(dist * 10) / 10,
+    distance_miles: Math.round((distM / 1609.34) * 10) / 10,
     time_minutes: time,
     raw_time_minutes: raw,
     details: valid[0].route.details || {},

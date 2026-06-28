@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-06-27 against `main` (generate-route at **v2.91**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-06-27 against `main` (generate-route at **v2.92**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -43,7 +43,7 @@ twotired-ui/
     main.jsx
   supabase/
     functions/
-      generate-route/        ← main edge function (v2.91)
+      generate-route/        ← main edge function (v2.92)
       analyze-bug-report/    ← Haiku-with-vision lesson extraction from bug reports
       seed-known-roads/      ← Claude bulk-enumerates iconic roads → known_roads (pending)
       validate-known-road/   ← on approval: re-snap, route-verify, cache geometry
@@ -91,7 +91,7 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.91 (loops round again — autotune skips round-trips, scenic return)
+**Current version:** v2.92 (de-spike: trim blind U-turns connecting to seeded roads)
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
@@ -177,6 +177,8 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 
 **`force_anchors` (v2.87):** picker requests set it so the edge fn never drops the rider's explicitly-picked roads via the detour gates (those gates only guard Claude's picks). Without it, "Take me there" silently routed to the endpoint without riding the road.
 
+**De-spike (v2.92):** a transit leg routes to a road's *fixed* endpoint; approaching from the side the road continues toward, GH overshoots and the next leg doubles straight back over the same pavement — a blind 180° U-turn at the join (GH ignores a heading on a route's *final* point, so prevention via heading doesn't work with the per-leg split). `mergeRouteList` fixes it geometrically: at each leg join it walks the next leg's head while it sits on the prior leg's tail (closest-point within ~25 m, small index window so it's robust to which point is the shared join), and if ≥3 points retrace, splices both at the divergence point. Verified: Franklin entry 180°→89°, and ~12 mi of overshoot spurs removed from a 521+565 loop. (A genuine end-of-road turn-around toward home — not a retrace — is left alone.)
+
 **Phased routing (v2.89):** picker rides send `phased: true`. `routePhased` routes alternating legs — **transit** (prev → road entry, last exit → destination) at **curviness 1** (highways OK, "arrive fast"), **fun** (road entry → exit) at the **road's own `curviness_tier`** (backroad maxed, parkway ridden as a parkway — forcing 3 would make GH avoid the parkway). Legs route in parallel + merge (`mergeRouteList`), per-leg `leg_geometries` labels (`transit`/`fun`) for client coloring. Standard text routes never set `phased`.
 
 **Loop-aware reroute (v2.89):** frontend keeps `pickerRideRef = { roundTrip, finalDest, legs:[{road_id,entry,exit,entrySide}], doneCount }`. A road is marked done when the rider passes within ~0.2 mi of its exit. On off-route, `rerouteFromCurrentPosition` re-plans **current → entry of the next un-ridden road → … → finalDest** (phased, `force_anchors`, original `anchor_entries`) instead of beelining to the destination. Fixes the 2026-06-27 bug: missed a Turnpike exit → app went home via Staten Island instead of back onto the loop. Cleared on text query / route clear / cancel.
@@ -249,7 +251,7 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 
 | Function | Purpose |
 |---|---|
-| `generate-route` | Main routing pipeline (v2.91) |
+| `generate-route` | Main routing pipeline (v2.92) |
 | `analyze-bug-report` | Haiku-with-vision lesson extraction |
 | `seed-known-roads` | Claude bulk-enumerate iconic roads → `known_roads` (pending) |
 | `validate-known-road` | Re-snap + route-verify + cache geometry on approval |
