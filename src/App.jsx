@@ -1470,7 +1470,6 @@ export default function App() {
   const mapRef = useRef(null);
   const mapLoadedRef = useRef(false);
   const pendingRoute = useRef(null);
-  const routeReturnStartRef = useRef(null); // index in route.geometry where the loop's faint return leg begins (null = no return)
   const markersRef = useRef([]);
   const messagesEnd = useRef(null);
   const userMarkerRef = useRef(null);
@@ -3073,29 +3072,14 @@ export default function App() {
         try { drawRouteOnMap(route); }
         catch (e) { console.warn('[nav] route self-heal failed:', e?.message || e); }
       }
-      // Trim to the rider's "ahead" portion (crop the traveled part behind
-      // them). Two lines: the solid pre-return path (rider → return start) and
-      // the faint way-back (return start → home), each trimmed as the rider
-      // advances. setData on existing sources — no per-tick layer churn.
+      // Trim the polyline to the rider's "ahead" portion — crop the traveled
+      // part behind them; the whole rest of the loop (incl. the way back) stays
+      // visible. setData on the existing source — no per-tick layer churn.
       if (map && mapMatch && map.getSource('route')) {
         const coords = route.geometry.coordinates;
-        const lastIdx = coords.length - 1;
-        const rIdx = (routeReturnStartRef.current != null) ? routeReturnStartRef.current : lastIdx;
-        const seg = mapMatch.segmentIdx;
-        const snLng = mapMatch.snappedLng, snLat = mapMatch.snappedLat;
-        const empty = { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } };
-        // Solid: from rider up to the return start (nothing if already past it).
-        const mainAhead = seg < rIdx ? sliceRange(coords, seg, snLng, snLat, rIdx) : null;
-        try { map.getSource('route').setData(mainAhead ? { type:'Feature', geometry:{ type:'LineString', coordinates: mainAhead } } : empty); } catch {}
-        // Faint return: from the rider (if on it) or the return start → home.
-        if (map.getSource('route-return')) {
-          let ret = null;
-          if (rIdx < lastIdx) {
-            ret = seg >= rIdx
-              ? sliceRange(coords, seg, snLng, snLat, lastIdx)
-              : sliceRange(coords, rIdx, coords[rIdx][0], coords[rIdx][1], lastIdx);
-          }
-          try { map.getSource('route-return').setData(ret ? { type:'Feature', geometry:{ type:'LineString', coordinates: ret } } : empty); } catch {}
+        const ahead = sliceRange(coords, mapMatch.segmentIdx, mapMatch.snappedLng, mapMatch.snappedLat, coords.length - 1);
+        if (ahead) {
+          try { map.getSource('route').setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: ahead } }); } catch {}
         }
       }
     }
@@ -3396,30 +3380,10 @@ export default function App() {
 
     if (!route?.geometry) return;
 
-    // Split the drawn line into the main (solid) path and a loop's return leg
-    // (lighter blue) so the way-back is distinguishable where it overlaps the outbound
-    // line near home. leg_geometries comes from phased picker rides (v2.90);
-    // everything else draws as one solid line.
-    const concatLegs = (geoms) => {
-      let c = [];
-      for (const g of geoms) {
-        const gc = g?.coordinates || [];
-        c = c.length ? [...c, ...gc.slice(1)] : [...gc];
-      }
-      return c;
-    };
-    const legs = Array.isArray(route.leg_geometries) ? route.leg_geometries : [];
-    const mainCoords = legs.length
-      ? concatLegs(legs.filter(l => l.label !== 'return').map(l => l.geometry))
-      : route.geometry.coordinates;
-    const returnCoords = legs.length
-      ? concatLegs(legs.filter(l => l.label === 'return').map(l => l.geometry))
-      : [];
-    // Index in the FULL geometry where the return leg begins — the nav trim
-    // uses it to draw the pre-return part solid and the way-back faint.
-    routeReturnStartRef.current = returnCoords.length >= 2 ? Math.max(0, mainCoords.length - 1) : null;
-
-    map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: mainCoords } } });
+    // Whole route (incl. a loop's return leg) drawn as ONE uniform blue line.
+    // (We tried a lighter-blue return leg to distinguish the way-back, but it
+    // blended with water on the basemap — back to a single blue loop.)
+    map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:route.geometry } });
     // Pick the layer to insert our route polyline BEFORE so labels stay
     // legible. Priority: a road-name symbol layer (so "Long Beach Road" and
     // similar render on top of the route ribbon, not under). Falls back to
@@ -3467,24 +3431,6 @@ export default function App() {
           20, 18,
         ],
       } }, firstLabelLayer);
-
-    // Loop return leg — lighter solid blue, no casing, so it reads as "your way
-    // back" distinct from the solid outbound line where they share streets.
-    if (returnCoords.length >= 2) {
-      map.addSource('route-return', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: returnCoords } } });
-      map.addLayer({ id:'route-return-line', type:'line', source:'route-return',
-        layout:{ 'line-join':'round','line-cap':'round' },
-        paint:{
-          'line-color':'#93b4f5',   // lighter shade of the route blue (solid, not dashed)
-          'line-opacity':0.85,
-          'line-width': ['interpolate', ['linear'], ['zoom'],
-            10, 3,
-            14, 5,
-            17, 9,
-            20, 13,
-          ],
-        } }, firstLabelLayer);
-    }
 
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
@@ -3964,7 +3910,7 @@ export default function App() {
       mapRef.current.easeTo({ bearing: 0, pitch: 0, zoom: 13, duration: 600 });
     }
     // Redraw the route cleanly now that the rider has finished/cancelled — the
-    // full route (incl. the dashed return) was already visible during nav (we
+    // full route was already visible during nav (we
     // no longer trim), but this guarantees the split main/return layers are in
     // their canonical state.
     const r = routeDataRef.current;
