@@ -1819,6 +1819,7 @@ export default function App() {
     if (!pickerSelected.length || !userLocation) return;
     const { ordered, totalMi, legs } = computeOrderedLoop();
     if (!ordered.length) return;
+    navSessionIdRef.current = crypto.randomUUID();  // so the planned ride shows in admin Rides (links plan→nav)
     showPickerPreview(ordered);   // keep the picked road(s) on the map while we plan
     const home = { lat: userLocation.lat, lng: userLocation.lng };
     // Remember the loop so an off-route reroute can re-target the next seeded
@@ -1861,6 +1862,7 @@ export default function App() {
   // edge fn ride the road from the chosen end instead of dropping it (v2.87).
   async function planRideToRoad(road, entry) {
     if (!road || !userLocation) return;
+    navSessionIdRef.current = crypto.randomUUID();  // so the planned ride shows in admin Rides
     const entryPt = entry === 'start'
       ? { lat: road.start_lat, lng: road.start_lng }
       : { lat: road.end_lat,   lng: road.end_lng };
@@ -1894,6 +1896,7 @@ export default function App() {
     if (!pickerSelected.length || !userLocation) return;
     const { ordered, lastExit, legs } = computeOrderedLoop();
     if (!ordered.length || !lastExit) return;
+    navSessionIdRef.current = crypto.randomUUID();  // so the planned ride shows in admin Rides
     showPickerPreview(ordered);
     pickerRideRef.current = { roundTrip: false, finalDest: lastExit, legs, doneCount: 0 };
     setPickerMode(false);
