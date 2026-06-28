@@ -1,4 +1,9 @@
-// generate-route edge function — v2.90
+// generate-route edge function — v2.91
+// v2.91: loops come back ROUND again. v2.89 routed the return leg at transit
+//        curviness 1 (fastest) — same as the outbound — so loops retraced the
+//        same highway. Now a round-trip's return leg uses the scenic curviness,
+//        so it takes a different, rounder way home (fast highway out, scenic
+//        back). One-way "take me there" keeps its fast final leg.
 // v2.90: label a loop's final transit leg 'return' (vs 'transit') in routePhased
 //        so the client can draw the way-back dashed — it overlaps the outbound
 //        line near home and was confusing as one solid blue line.
@@ -2565,10 +2570,15 @@ async function routePhased(
     specs.push({ label: 'fun', points: [a.entry, a.exit], curviness: tier });
     prev = a.exit;
   }
-  // The final leg back to the destination is the "return" on a loop — the client
-  // draws it dashed so it's distinguishable from the outbound line where they
-  // overlap near home.
-  specs.push({ label: roundTrip ? 'return' : 'transit', points: [prev, destination], curviness: 1 });
+  // The final leg back to the destination is the "return" on a loop. Route it
+  // at the SCENIC curviness (not transit-1) so it takes a different, rounder way
+  // home instead of retracing the fast outbound highway — "nice round loop"
+  // rather than out-and-back. (One-way "take me there" keeps a fast final leg.)
+  specs.push({
+    label: roundTrip ? 'return' : 'transit',
+    points: [prev, destination],
+    curviness: roundTrip ? fallbackCurviness : 1,
+  });
   console.log(`[routePhased] ${specs.length} legs: ${specs.map(s => `${s.label}/c${s.curviness}`).join(' → ')}`);
   const routed = await Promise.all(specs.map(s => getRoute(s.points, s.curviness)));
   return mergeRouteList(specs.map((s, i) => ({ label: s.label, route: routed[i] })));
@@ -2876,7 +2886,13 @@ Deno.serve(async (req) => {
     // penalties of curviness 2/3 don't produce absurd routing (the Wegmans
     // Brooklyn ride hit this 2026-06-11). Threshold 5 mi covers most
     // borough-internal trips without affecting longer urban→suburb rides.
-    if (curviness > 1) {
+    //
+    // v2.91: SKIP for round-trips. A loop's destination IS its origin, so the
+    // straight-line is always ~0 — the autotune was firing on every loop
+    // started from inside NYC and forcing the whole (140-mi!) ride to curviness
+    // 1, which made it a fast highway out-and-back instead of a scenic round
+    // loop. The "short intra-NYC" intent only applies to genuine A→B hops.
+    if (curviness > 1 && !body.round_trip) {
       const straightLineMi = haversineKm(originLL, destinationLL) * 0.621371;
       if (straightLineMi < 5 && isInNYC(originLL) && isInNYC(destinationLL)) {
         console.log(`[curviness-autotune] short intra-NYC (${straightLineMi.toFixed(1)} mi) → forcing curviness 1 from ${curviness}`);

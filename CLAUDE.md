@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-06-27 against `main` (generate-route at **v2.90**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-06-27 against `main` (generate-route at **v2.91**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -43,7 +43,7 @@ twotired-ui/
     main.jsx
   supabase/
     functions/
-      generate-route/        ← main edge function (v2.90)
+      generate-route/        ← main edge function (v2.91)
       analyze-bug-report/    ← Haiku-with-vision lesson extraction from bug reports
       seed-known-roads/      ← Claude bulk-enumerates iconic roads → known_roads (pending)
       validate-known-road/   ← on approval: re-snap, route-verify, cache geometry
@@ -91,7 +91,7 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.90 (loop return leg labeled for dashed-line rendering)
+**Current version:** v2.91 (loops round again — autotune skips round-trips, scenic return)
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
@@ -122,7 +122,7 @@ https://molly.tail71232f.ts.net:8443
 ### NYC detection & intra-NYC handling (v2.66–v2.68)
 - `isInNYC()` uses a **hand-drawn 5-borough polygon** (`NYC_POLYGON_COORDS`, ray-cast `pointInPolygon`) mirrored from Molly's `nyc.json` — NOT a bounding box. v2.66 fixed false-positives on east-NJ towns (Newark, Jersey City, Paterson).
 - **Skip two-phase escape when destination is ALSO in NYC** (v2.67-hotfix) — the "Wegmans Brooklyn" fix: a 2mi intra-NYC trip was being routed 30mi via Staten Island because the escape leg preferred I-278.
-- **Curviness autotune** (v2.68): trips <5mi with both endpoints in NYC are forced to curviness 1 — grid streets don't need scenic penalties. Logged as `curviness_autotune` in `routing_config`.
+- **Curviness autotune** (v2.68): trips <5mi with both endpoints in NYC are forced to curviness 1 — grid streets don't need scenic penalties. Logged as `curviness_autotune` in `routing_config`. **v2.91: skipped for `round_trip`** — a loop's destination IS its origin, so the straight-line is always ~0; the autotune was firing on every loop from inside NYC and forcing the whole 140-mi ride to curviness 1 (fast highway out-and-back instead of a scenic round loop). Combined with the phased return leg now using the scenic curviness (not transit-1), picker loops come back a different, rounder way (0% outbound/return overlap, vs the old same-highway retrace).
 
 ### Circular loops (v2.76, picker-loop fixes v2.85)
 When `round_trip` is set AND origin≈destination (<1km) AND no stops/corridor/anchors, `getRoundTripRoute()` calls GraphHopper's `algorithm: 'round_trip'` with a target distance and a random seed for variety. Two-phase NYC escape is skipped (start≈end). Claude only sets `round_trip` on explicit "loop / round trip / there and back" language.
@@ -249,7 +249,7 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 
 | Function | Purpose |
 |---|---|
-| `generate-route` | Main routing pipeline (v2.90) |
+| `generate-route` | Main routing pipeline (v2.91) |
 | `analyze-bug-report` | Haiku-with-vision lesson extraction |
 | `seed-known-roads` | Claude bulk-enumerate iconic roads → `known_roads` (pending) |
 | `validate-known-road` | Re-snap + route-verify + cache geometry on approval |
