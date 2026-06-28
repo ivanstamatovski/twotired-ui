@@ -3394,7 +3394,7 @@ export default function App() {
     if (!route?.geometry) return;
 
     // Split the drawn line into the main (solid) path and a loop's return leg
-    // (dashed) so the way-back is distinguishable where it overlaps the outbound
+    // (lighter blue) so the way-back is distinguishable where it overlaps the outbound
     // line near home. leg_geometries comes from phased picker rides (v2.90);
     // everything else draws as one solid line.
     const concatLegs = (geoms) => {
@@ -3465,16 +3465,15 @@ export default function App() {
         ],
       } }, firstLabelLayer);
 
-    // Loop return leg — dashed, lighter, no casing, so it reads as "your way
+    // Loop return leg — lighter solid blue, no casing, so it reads as "your way
     // back" distinct from the solid outbound line where they share streets.
     if (returnCoords.length >= 2) {
       map.addSource('route-return', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: returnCoords } } });
       map.addLayer({ id:'route-return-line', type:'line', source:'route-return',
         layout:{ 'line-join':'round','line-cap':'round' },
         paint:{
-          'line-color':'#2563eb',
-          'line-opacity':0.4,
-          'line-dasharray':[1.4, 1.4],
+          'line-color':'#93b4f5',   // lighter shade of the route blue (solid, not dashed)
+          'line-opacity':0.85,
           'line-width': ['interpolate', ['linear'], ['zoom'],
             10, 3,
             14, 5,
@@ -5140,12 +5139,7 @@ export default function App() {
                   pickerRideRef.current = null;
                   setMessages([]); setFollowUpInput(''); setQuery('');
                   setRefineOpen(false); setSheetMode('idle');
-                  const m = mapRef.current;
-                  if (m) {
-                    if (m.getLayer('route-line'))   m.removeLayer('route-line');
-                    if (m.getLayer('route-casing')) m.removeLayer('route-casing');
-                    if (m.getSource('route'))       m.removeSource('route');
-                  }
+                  drawRouteOnMap(null);   // removes all route layers incl. the return leg
                 }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
