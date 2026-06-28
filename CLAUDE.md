@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-06-27 against `main` (generate-route at **v2.89**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-06-27 against `main` (generate-route at **v2.90**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -43,7 +43,7 @@ twotired-ui/
     main.jsx
   supabase/
     functions/
-      generate-route/        ← main edge function (v2.89)
+      generate-route/        ← main edge function (v2.90)
       analyze-bug-report/    ← Haiku-with-vision lesson extraction from bug reports
       seed-known-roads/      ← Claude bulk-enumerates iconic roads → known_roads (pending)
       validate-known-road/   ← on approval: re-snap, route-verify, cache geometry
@@ -91,7 +91,7 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.89 (phased picker routing — fast transit + twisty fun + loop-aware reroute)
+**Current version:** v2.90 (loop return leg labeled for dashed-line rendering)
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
@@ -194,6 +194,7 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 - **Stop dwell survey:** `STOP_RADIUS_M=50`, `STOP_DWELL_MS=2min` continuous → fires `StopRatingSheet` (−1/0/+1) → `stop_ratings` table. One-shot timer, never blocks nav.
 - **Session telemetry:** `nav_session_id` (one UUID per Navigate→Stop arc) spans planning + nav and groups all `nav_events` (nav_start, off_route, reroute_request/complete/failed, nav_arrive, nav_stop). `route_logs` links back via `nav_session_id`.
 - **Background:** keep-awake during nav (`@capacitor-community/keep-awake`), audio background mode, redraw polyline on foreground (`visibilitychange` + Capacitor `appStateChange`).
+- **Route polyline (v2.90):** `drawRouteOnMap` splits on `leg_geometries` into a **solid** main line (`route`/`route-line`, non-`return` legs) and the loop's **faint dashed** return leg (`route-return`/`route-return-line`, opacity 0.4) so the way-back is distinct from the outbound line where they overlap near home. `routeReturnStartRef` marks where the return begins in the full geometry. **Nav still crops the traveled part behind the rider** (the "ahead trim"): each tick, the solid line is trimmed `rider → return-start` and the faint return `return-start → home` (each advances as the rider rides) via `setData` on the two sources (`sliceRange`). So the rider sees the road immediately ahead solid + the rest of the loop faint, never the part already ridden. **Self-heal:** if `route-line` is missing (iOS WebGL/style reload drops it), `drawRouteOnMap` re-runs that tick — fixes "line vanishes mid-ride, needs a refresh." `projectOntoRoute` uses the full geometry for map-match/bearing/off-route. (Known edge: on a loop, where outbound + return share a street near home, the global nearest-segment match can prefer the lower-index outbound segment — refine with monotonic forward projection if it bites.)
 
 ---
 
@@ -248,7 +249,7 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 
 | Function | Purpose |
 |---|---|
-| `generate-route` | Main routing pipeline (v2.89) |
+| `generate-route` | Main routing pipeline (v2.90) |
 | `analyze-bug-report` | Haiku-with-vision lesson extraction |
 | `seed-known-roads` | Claude bulk-enumerate iconic roads → `known_roads` (pending) |
 | `validate-known-road` | Re-snap + route-verify + cache geometry on approval |

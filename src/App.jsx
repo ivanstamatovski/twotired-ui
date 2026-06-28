@@ -683,21 +683,15 @@ function projectOntoRoute(lat, lng, route) {
   };
 }
 
-// Build the geometry of the route from a given point onward — used during
-// navigation so the blue polyline only shows the road AHEAD of the rider.
-// The completed portion behind them gets dropped; they don't need to see
-// where they've already been. Returns a LineString geometry that starts at
-// the snapped point on segment[segmentIdx] and continues to the destination.
-function sliceRouteAhead(route, segmentIdx, snappedLat, snappedLng) {
-  const coords = route?.geometry?.coordinates;
-  if (!coords || segmentIdx < 0 || segmentIdx >= coords.length - 1) {
-    return route?.geometry || null;
-  }
-  const ahead = [[snappedLng, snappedLat]];
-  for (let i = segmentIdx + 1; i < coords.length; i++) {
-    ahead.push(coords[i]);
-  }
-  return { type: 'LineString', coordinates: ahead };
+// Slice a coord array from a start point (lying on segment startIdx) through
+// endIdx inclusive — used during nav to trim the polyline to the rider's
+// "ahead" portion (the traveled part behind them is cropped). Returns a coord
+// array, or null when the range is empty.
+function sliceRange(coords, startIdx, startLng, startLat, endIdx) {
+  if (!coords || startIdx < 0 || endIdx >= coords.length || startIdx > endIdx) return null;
+  const out = [[startLng, startLat]];
+  for (let i = startIdx + 1; i <= endIdx; i++) out.push(coords[i]);
+  return out.length >= 2 ? out : null;
 }
 
 // Bearing of the route AT the user's nearest point, sampled ~30m ahead so the
@@ -1476,6 +1470,7 @@ export default function App() {
   const mapRef = useRef(null);
   const mapLoadedRef = useRef(false);
   const pendingRoute = useRef(null);
+  const routeReturnStartRef = useRef(null); // index in route.geometry where the loop's faint return leg begins (null = no return)
   const markersRef = useRef([]);
   const messagesEnd = useRef(null);
   const userMarkerRef = useRef(null);
@@ -3065,15 +3060,39 @@ export default function App() {
         displayLat = mapMatch.snappedLat;
         displayLng = mapMatch.snappedLng;
       }
-      // Trim the visible polyline so only the road AHEAD of the rider is
-      // drawn. The rider doesn't care where they've been — only where they
-      // need to go. Uses setData on the existing source so we don't churn
-      // layers every GPS tick. Restored to full geometry by stopNavigation.
-      if (mapMatch && mapRef.current?.getSource('route')) {
-        const ahead = sliceRouteAhead(route, mapMatch.segmentIdx, mapMatch.snappedLat, mapMatch.snappedLng);
-        if (ahead) {
-          try { mapRef.current.getSource('route').setData({ type: 'Feature', geometry: ahead }); }
-          catch {}
+      const map = mapRef.current;
+      // Self-heal: iOS reclaims the WebGL surface (and the basemap style
+      // reloads) mid-ride, silently dropping the route-line/casing layers. Nav
+      // only setData()s each tick, so a dropped layer stayed gone until a
+      // foreground redraw ("takes a few refreshes"). Re-add if missing — heals
+      // within one GPS tick.
+      if (map && !map.getLayer('route-line')) {
+        try { drawRouteOnMap(route); }
+        catch (e) { console.warn('[nav] route self-heal failed:', e?.message || e); }
+      }
+      // Trim to the rider's "ahead" portion (crop the traveled part behind
+      // them). Two lines: the solid pre-return path (rider → return start) and
+      // the faint way-back (return start → home), each trimmed as the rider
+      // advances. setData on existing sources — no per-tick layer churn.
+      if (map && mapMatch && map.getSource('route')) {
+        const coords = route.geometry.coordinates;
+        const lastIdx = coords.length - 1;
+        const rIdx = (routeReturnStartRef.current != null) ? routeReturnStartRef.current : lastIdx;
+        const seg = mapMatch.segmentIdx;
+        const snLng = mapMatch.snappedLng, snLat = mapMatch.snappedLat;
+        const empty = { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } };
+        // Solid: from rider up to the return start (nothing if already past it).
+        const mainAhead = seg < rIdx ? sliceRange(coords, seg, snLng, snLat, rIdx) : null;
+        try { map.getSource('route').setData(mainAhead ? { type:'Feature', geometry:{ type:'LineString', coordinates: mainAhead } } : empty); } catch {}
+        // Faint return: from the rider (if on it) or the return start → home.
+        if (map.getSource('route-return')) {
+          let ret = null;
+          if (rIdx < lastIdx) {
+            ret = seg >= rIdx
+              ? sliceRange(coords, seg, snLng, snLat, lastIdx)
+              : sliceRange(coords, rIdx, coords[rIdx][0], coords[rIdx][1], lastIdx);
+          }
+          try { map.getSource('route-return').setData(ret ? { type:'Feature', geometry:{ type:'LineString', coordinates: ret } } : empty); } catch {}
         }
       }
     }
@@ -3363,15 +3382,41 @@ export default function App() {
     if (!map || !mapLoadedRef.current) { pendingRoute.current = route; return; }
 
     clearPickerPreview();   // the real route takes over from the green preview
-    if (map.getLayer('route-line')) map.removeLayer('route-line');
-    if (map.getLayer('route-casing')) map.removeLayer('route-casing');
-    if (map.getSource('route')) map.removeSource('route');
+    for (const id of ['route-line', 'route-return-line', 'route-casing']) {
+      if (map.getLayer(id)) map.removeLayer(id);
+    }
+    for (const id of ['route', 'route-return']) {
+      if (map.getSource(id)) map.removeSource(id);
+    }
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
 
     if (!route?.geometry) return;
 
-    map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:route.geometry } });
+    // Split the drawn line into the main (solid) path and a loop's return leg
+    // (dashed) so the way-back is distinguishable where it overlaps the outbound
+    // line near home. leg_geometries comes from phased picker rides (v2.90);
+    // everything else draws as one solid line.
+    const concatLegs = (geoms) => {
+      let c = [];
+      for (const g of geoms) {
+        const gc = g?.coordinates || [];
+        c = c.length ? [...c, ...gc.slice(1)] : [...gc];
+      }
+      return c;
+    };
+    const legs = Array.isArray(route.leg_geometries) ? route.leg_geometries : [];
+    const mainCoords = legs.length
+      ? concatLegs(legs.filter(l => l.label !== 'return').map(l => l.geometry))
+      : route.geometry.coordinates;
+    const returnCoords = legs.length
+      ? concatLegs(legs.filter(l => l.label === 'return').map(l => l.geometry))
+      : [];
+    // Index in the FULL geometry where the return leg begins — the nav trim
+    // uses it to draw the pre-return part solid and the way-back faint.
+    routeReturnStartRef.current = returnCoords.length >= 2 ? Math.max(0, mainCoords.length - 1) : null;
+
+    map.addSource('route', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: mainCoords } } });
     // Pick the layer to insert our route polyline BEFORE so labels stay
     // legible. Priority: a road-name symbol layer (so "Long Beach Road" and
     // similar render on top of the route ribbon, not under). Falls back to
@@ -3419,6 +3464,25 @@ export default function App() {
           20, 18,
         ],
       } }, firstLabelLayer);
+
+    // Loop return leg — dashed, lighter, no casing, so it reads as "your way
+    // back" distinct from the solid outbound line where they share streets.
+    if (returnCoords.length >= 2) {
+      map.addSource('route-return', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: returnCoords } } });
+      map.addLayer({ id:'route-return-line', type:'line', source:'route-return',
+        layout:{ 'line-join':'round','line-cap':'round' },
+        paint:{
+          'line-color':'#2563eb',
+          'line-opacity':0.4,
+          'line-dasharray':[1.4, 1.4],
+          'line-width': ['interpolate', ['linear'], ['zoom'],
+            10, 3,
+            14, 5,
+            17, 9,
+            20, 13,
+          ],
+        } }, firstLabelLayer);
+    }
 
     route.stops?.forEach(stop => {
       if (!stop.lat || !stop.lng) return;
@@ -3897,12 +3961,13 @@ export default function App() {
     if (mapRef.current) {
       mapRef.current.easeTo({ bearing: 0, pitch: 0, zoom: 13, duration: 600 });
     }
-    // Restore the FULL polyline now that the rider has finished or cancelled
-    // — during nav we trimmed it to "ahead only" each GPS tick. Without this,
-    // the route preview after nav would still be the last sliced version.
+    // Redraw the route cleanly now that the rider has finished/cancelled — the
+    // full route (incl. the dashed return) was already visible during nav (we
+    // no longer trim), but this guarantees the split main/return layers are in
+    // their canonical state.
     const r = routeDataRef.current;
-    if (r?.geometry && mapRef.current?.getSource('route')) {
-      try { mapRef.current.getSource('route').setData({ type: 'Feature', geometry: r.geometry }); }
+    if (r?.geometry && mapRef.current) {
+      try { drawRouteOnMap(r); }
       catch {}
     }
   }
