@@ -1,4 +1,7 @@
-// generate-route edge function — v2.89
+// generate-route edge function — v2.90
+// v2.90: label a loop's final transit leg 'return' (vs 'transit') in routePhased
+//        so the client can draw the way-back dashed — it overlaps the outbound
+//        line near home and was confusing as one solid blue line.
 // v2.89: phased picker routing. A loop/picker ride is now routed as alternating
 //        legs — FAST transit (curviness 1, highways OK) to/from/between the
 //        seeded roads, and each seeded road ridden at its own curviness_tier
@@ -2551,6 +2554,7 @@ async function routePhased(
   anchorMeta: Array<{ entry: LatLng; exit: LatLng; curviness_tier: number | null; name: string }>,
   destination: LatLng,
   fallbackCurviness: 1 | 2 | 3,
+  roundTrip: boolean,
 ): Promise<any> {
   const specs: Array<{ label: string; points: LatLng[]; curviness: 0 | 1 | 2 | 3 }> = [];
   let prev = origin;
@@ -2561,7 +2565,10 @@ async function routePhased(
     specs.push({ label: 'fun', points: [a.entry, a.exit], curviness: tier });
     prev = a.exit;
   }
-  specs.push({ label: 'transit', points: [prev, destination], curviness: 1 });
+  // The final leg back to the destination is the "return" on a loop — the client
+  // draws it dashed so it's distinguishable from the outbound line where they
+  // overlap near home.
+  specs.push({ label: roundTrip ? 'return' : 'transit', points: [prev, destination], curviness: 1 });
   console.log(`[routePhased] ${specs.length} legs: ${specs.map(s => `${s.label}/c${s.curviness}`).join(' → ')}`);
   const routed = await Promise.all(specs.map(s => getRoute(s.points, s.curviness)));
   return mergeRouteList(specs.map((s, i) => ({ label: s.label, route: routed[i] })));
@@ -3066,7 +3073,7 @@ Deno.serve(async (req) => {
           // v2.89: phased picker rides route fast-transit + twisty-fun legs;
           // everything else uses the single-curviness anchored path.
           route = body.phased
-            ? await routePhased(originLL, anchorMeta, destinationLL, curviness as 1 | 2 | 3)
+            ? await routePhased(originLL, anchorMeta, destinationLL, curviness as 1 | 2 | 3, !!body.round_trip)
             : await getRoute(anchoredPoints, curviness);
 
           // ── v2.83 post-route check ─────────────────────────────────
