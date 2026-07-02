@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-06-27 against `main` (generate-route at **v2.92**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-07-02 against `main` (generate-route at **v2.93**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -91,7 +91,7 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.92 (de-spike: trim blind U-turns connecting to seeded roads)
+**Current version:** v2.93 (exact admin geometry: log FULL route_geometry/route_legs, not sampled; persist title/phased/force_anchors for admin picker markers)
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
@@ -223,7 +223,7 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 |---|---|
 | `routes` | Saved routes (legacy, pre-migration schema) |
 | `bug_reports` | User bug reports — `comment`, `image_data` (JPEG base64), `route_context` JSONB, `proposed_lesson`, `lesson_approved`, `admin_notes` (legacy schema) |
-| `route_logs` | Full pipeline trace per generation; `gh_request`, `route_legs`, `user_id`, `nav_session_id`, `scenic_anchors_chosen/offered/resolved`, `anchor_detour_*` |
+| `route_logs` | Full pipeline trace per generation; `gh_request`, `route_legs`, `user_id`, `nav_session_id`, `scenic_anchors_chosen/offered/resolved`, `anchor_detour_*`, `title`/`phased`/`force_anchors` (v2.93 picker markers). **v2.93: `route_geometry`/`route_legs` store the FULL path (was sampled ≤100 pts) — the admin Rides/debug LIST queries omit them and lazy-load per-session on open (`RIDE_LOG_LIST_COLS`/`RIDE_LOG_GEOM_COLS`) so the list stays light.** |
 | `profiles` / `friendships` | Friend identity + relationships |
 | `mate_positions` | Live position sharing |
 | `shared_routes` | Route inbox between mates |
@@ -269,7 +269,7 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 | **Bug Reports** | Reports w/ MapLibre screenshots; lesson extraction + approval |
 | **Users** | Account list (email, join date, provider, confirmation); Message action |
 | **Rulebook** | Active routing rules (manual + approved bug lessons); add/revoke |
-| **Rides** | Consolidated session list (merged old Routes/Route Debug/Ride Logs); filters All/Navigated/Planning/Errors/Reroutes; expandable per-ride trace |
+| **Rides** | Consolidated session list (merged old Routes/Route Debug/Ride Logs); filters All/Navigated/Planning/Errors/Reroutes; expandable per-ride trace. Ride-open lazy-loads full geometry so the map matches the app exactly (v2.93). Visual-picker rides show a 🛣 badge + seeded-road name instead of "no prompt". |
 | **Tasks** | Kanban (inbox/todo/in_progress/blocked/done/wontdo), priority + category filters, drag-drop |
 | **Stop ratings** | Recent ratings + aggregated top-rated places (3+ ratings) |
 | **Announcements** | Compose form + active/scheduled list |
