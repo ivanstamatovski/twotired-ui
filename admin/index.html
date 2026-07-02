@@ -1525,7 +1525,9 @@ async function loadDebugLogs() {
   const tbody = document.getElementById('debug-body');
   tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>';
   try {
-    const data = await sb('/rest/v1/route_logs?select=*&order=created_at.desc&limit=100');
+    // Lean like the Rides list — heavy geometry/scores lazy-load on trace-open
+    // (route_geometry/route_legs/gh_request/road_scores are full-fidelity now).
+    const data = await sb(`/rest/v1/route_logs?select=${RIDE_LOG_LIST_COLS}&order=created_at.desc&limit=100`);
     _debugLogs = data;
     document.getElementById('badge-debug').textContent = data.length;
 
@@ -1583,9 +1585,17 @@ function renderDebugRows(data) {
   }).join('');
 }
 
-function openTraceModal(i) {
+async function openTraceModal(i) {
   const r = _debugLogs[i];
   if (!r) return;
+  // Lazy-load the geometry/scores the lean list omitted (cached on the row).
+  if (!r._geomLoaded) {
+    try {
+      const heavy = await sb(`/rest/v1/route_logs?select=${RIDE_LOG_GEOM_COLS}&id=eq.${r.id}`);
+      if (heavy && heavy[0]) Object.assign(r, heavy[0]);
+      r._geomLoaded = true;
+    } catch (e) { console.warn('trace geometry lazy-load failed', e?.message); }
+  }
   const dest = r.raw_intent?.destination || r.resolved_dest?.query || 'Route';
   const joy  = r.road_scores?.score_joy;
   const dist = r.route_result?.distance_miles;
@@ -1997,6 +2007,53 @@ function setRidesWhen(w) {
   renderRides();
 }
 
+// Columns pulled for the Rides list + timeline. Deliberately excludes only the
+// full-fidelity geometry (route_geometry, route_legs) — edge fn v2.93 stopped
+// sampling those, so at ≤thousands of points/row they'd balloon the 1500-row
+// list. They're lazy-loaded per session on ride-open (openRideModal). The
+// small jsonb (road_scores, gh_request) stay so the debug joy/transit columns
+// and pipeline detail still render straight from the list pull.
+const RIDE_LOG_LIST_COLS = [
+  'id','created_at','user_id','nav_session_id','query','event_origin',
+  'title','phased','force_anchors',
+  'raw_intent','routing_config','resolved_origin','resolved_dest',
+  'resolved_waypoints','resolved_stops','route_result','eta_breakdown',
+  'scenic_anchors_chosen','scenic_anchors_offered_count','scenic_anchors_resolved',
+  'anchor_detour_check','anchor_actual_check','snap_origin','gh_request','road_scores',
+  'parse_ms','route_ms','narrative_ms','score_ms','total_ms','narrative','error',
+].join(',');
+
+// Full geometry lazy-loaded on ride-open (the only columns the list omits).
+const RIDE_LOG_GEOM_COLS = 'id,route_geometry,route_legs';
+
+// Short seeded-road name for the Rides list (mirrors the edge fn's
+// shortRoadName): drop the "(A to B …)" descriptor and any " – suffix".
+function shortAnchorName(a) {
+  let s = String(a?.name || '').trim();
+  if (s) {
+    s = s.split('(')[0].trim();
+    s = s.split(/\s+[–—-]\s+/)[0].trim();
+    if (s) return s;
+  }
+  return a?.route_number ? `Route ${a.route_number}` : '';
+}
+
+// Seeded-road label + picker flag for a session, from whichever log carries
+// resolved anchors. force_anchors (rider used the visual picker) is the
+// reliable signal; scenic_anchors_resolved also covers Claude auto-anchored
+// typed queries and older picker rides logged before force_anchors existed.
+function pickerInfo(lgs, initialLog) {
+  const candidates = [initialLog, ...(lgs || [])].filter(Boolean);
+  const anchorLog = candidates.find(l => Array.isArray(l.scenic_anchors_resolved) && l.scenic_anchors_resolved.length);
+  const isPicker = candidates.some(l => l.force_anchors) || !!anchorLog;
+  let roadLabel = null;
+  if (anchorLog) {
+    roadLabel = [...new Set(anchorLog.scenic_anchors_resolved.map(shortAnchorName).filter(Boolean))].join(' + ');
+  }
+  if (!roadLabel && isPicker) roadLabel = initialLog?.title || null;
+  return { isPicker, roadLabel: roadLabel || null };
+}
+
 async function loadRideSessions() {
   const tbody = document.getElementById('rides-body');
   tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>';
@@ -2005,9 +2062,13 @@ async function loadRideSessions() {
     //   nav_events  — what the rider DID (nav lifecycle)
     //   route_logs  — what the backend computed (pipeline traces)
     // Union them so sessions that have either source surface here.
+    // Lean list query: everything the list + timeline need EXCEPT the heavy
+    // jsonb (route_geometry, route_legs, gh_request, road_scores). Those are
+    // now full-fidelity (edge fn v2.93 stopped sampling), so we lazy-load them
+    // per-session on ride-open (openRideModal) to keep this 1500-row pull light.
     const [events, logs] = await Promise.all([
       sb('/rest/v1/nav_events?select=*&order=created_at.desc&limit=1500'),
-      sb('/rest/v1/route_logs?select=*&nav_session_id=not.is.null&order=created_at.desc&limit=1500'),
+      sb(`/rest/v1/route_logs?select=${RIDE_LOG_LIST_COLS}&nav_session_id=not.is.null&order=created_at.desc&limit=1500`),
     ]);
 
     const groups = {};  // session_id → { events: [], logs: [], user_id, ... }
@@ -2074,6 +2135,9 @@ async function loadRideSessions() {
       const pipelineCount = lgs.length;
       const errorCount    = lgs.filter(l => l.error).length;
 
+      // Visual-picker / seeded-road flagging
+      const { isPicker, roadLabel } = pickerInfo(lgs, initialLog);
+
       // Duration (only meaningful for navigated sessions)
       const navEnd = evs.findLast?.(e => e.event_type === 'nav_stop') ||
                      [...evs].reverse().find(e => e.event_type === 'nav_stop');
@@ -2101,6 +2165,8 @@ async function loadRideSessions() {
         worst_drift_m: worstDrift,
         pipeline_count: pipelineCount,
         error_count: errorCount,
+        is_picker: isPicker,
+        road_label: roadLabel,
       };
     });
 
@@ -2149,9 +2215,19 @@ function renderRides() {
   }
 
   tbody.innerHTML = filtered.map((s) => {
-    const promptCell = s.prompt
-      ? `<div class="cell-main" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(s.prompt)}">${escHtml(s.prompt)}</div>`
-      : '<span style="color:var(--text-muted);font-style:italic">no prompt</span>';
+    const pickerBadge = s.is_picker
+      ? `<span class="badge badge-orange" title="Visual road picker — rider tapped seeded road(s) instead of typing">🛣 picker</span> `
+      : '';
+    let promptCell;
+    if (s.prompt) {
+      promptCell = `<div class="cell-main" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(s.prompt)}">${pickerBadge}${escHtml(s.prompt)}</div>`;
+    } else if (s.road_label) {
+      // Picker/coord-destination ride with no typed prompt — name it by the
+      // seeded road(s) the rider selected instead of showing "no prompt".
+      promptCell = `<div class="cell-main" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Seeded road(s): ${escHtml(s.road_label)}">${pickerBadge}${escHtml(s.road_label)}</div>`;
+    } else {
+      promptCell = `${pickerBadge}<span style="color:var(--text-muted);font-style:italic">no prompt</span>`;
+    }
     const destCell = s.destination
       ? `<div style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(s.destination)}">${escHtml(s.destination)}${s.distance_mi != null ? `<div style="font-size:11px;color:var(--text-muted)">${Math.round(s.distance_mi)} mi</div>` : ''}</div>`
       : '—';
@@ -2222,6 +2298,21 @@ async function openRideModal(idOrIdx) {
       const probe = await sb(`/rest/v1/route_logs?select=*&user_id=eq.${s.user_id}&nav_session_id=is.null&created_at=gte.${startIso}&created_at=lt.${endIso}&order=created_at.desc&limit=1`);
       if (probe && probe[0]) initialLog = probe[0];
     } catch (e) { console.warn('legacy initial route_log probe failed', e?.message); }
+  }
+
+  // Lazy-load the full geometry (+ gh_request / road_scores) the list query
+  // omitted, for just this session's logs, and merge it in. Cached on s so
+  // re-opening the same ride doesn't refetch. The legacy probe above already
+  // pulled full rows (select=*), so it needs no merge.
+  if (!s._geomLoaded) {
+    try {
+      const heavy = await sb(`/rest/v1/route_logs?select=${RIDE_LOG_GEOM_COLS}&nav_session_id=eq.${s.session_id}`);
+      const byId = {};
+      (heavy || []).forEach(h => { byId[h.id] = h; });
+      linkedLogs = linkedLogs.map(l => byId[l.id] ? Object.assign(l, byId[l.id]) : l);
+      if (initialLog && byId[initialLog.id]) Object.assign(initialLog, byId[initialLog.id]);
+      s._geomLoaded = true;
+    } catch (e) { console.warn('ride geometry lazy-load failed', e?.message); }
   }
 
   document.getElementById('ride-modal-body').innerHTML = renderRideDetail(s, linkedLogs, initialLog);

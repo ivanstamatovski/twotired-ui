@@ -1,4 +1,10 @@
-// generate-route edge function — v2.92
+// generate-route edge function — v2.93
+// v2.93: exact admin geometry + picker markers. Stop sampling route_geometry/
+//        route_legs before logging (was ≤100 pts total — chord-cut every corner
+//        in the admin Rides map). Store the FULL path; the admin list lazy-loads
+//        geometry on ride-open so the payload stays lean. Also persist
+//        log.title / log.phased / log.force_anchors so the admin can flag which
+//        rides came from the visual road picker and name them by seeded road.
 // v2.92: smooth merge onto seeded roads. A transit leg routes to a road's fixed
 //        endpoint; approaching from the side the road continues toward, GH
 //        overshoots and the next leg doubles straight back — a blind U-turn
@@ -3269,23 +3275,24 @@ Deno.serve(async (req) => {
     } else if (route.gh_request) {
       log.gh_request = [{ label: 'main', request: route.gh_request }];
     }
-    // v2.69: per-leg simplified geometries so the admin can color the escape
-    // and scenic legs distinctly. Sampled to ≤50 pts each (≤100 total — same
-    // budget as the existing single route_geometry). Single-call routes leave
-    // route_legs null and the admin falls back to route_geometry.
+    // v2.93: store FULL geometry (was sampled to ≤50 pts/leg + ≤100 total)
+    // so the admin Rides map renders the exact route the rider saw — sampling
+    // chord-cut every corner into a "rough outline". The Rides LIST query no
+    // longer pulls these jsonb columns (admin/index.html lazy-loads them on
+    // ride-open), so full geometry doesn't bloat the list payload. Per-leg
+    // geometries still label escape/scenic (or phased transit/fun) for the
+    // admin's distinct leg coloring. Picker markers below let the admin flag
+    // seeded-road rides.
+    log.phased        = !!body.phased;
+    log.force_anchors = !!body.force_anchors;
     if (route.leg_geometries) {
       log.route_legs = route.leg_geometries.map((leg: any) => ({
         label: leg.label,
-        geometry: simplifyLineString(leg.geometry, 50),
+        geometry: leg.geometry,
       }));
     }
-    // v2.53: store simplified geometry (≤100 pts) for Route Debug map in admin portal
     if (route.geometry?.coordinates?.length > 1) {
-      const coords: [number, number][] = route.geometry.coordinates;
-      const step = Math.ceil(coords.length / 100);
-      const sampled = coords.filter((_: any, i: number) => i % step === 0);
-      if (sampled[sampled.length - 1] !== coords[coords.length - 1]) sampled.push(coords[coords.length - 1]);
-      log.route_geometry = { type: 'LineString', coordinates: sampled };
+      log.route_geometry = route.geometry;
     }
 
     const destName = 'query' in body.destination ? body.destination.query : `${destinationLL.lat},${destinationLL.lng}`;
@@ -3308,6 +3315,10 @@ Deno.serve(async (req) => {
     const rideTitle = (isCoordDest && anchorNames.length)
       ? (body.round_trip ? `${anchorNames.join(' + ')} loop` : anchorNames.join(' + '))
       : `Route to ${destName}`;
+    // Persist the friendly ride name so the admin Rides list can title a
+    // picker/loop ride by its seeded road(s) ("Route 97 loop") instead of
+    // showing "no prompt" for coord-destination rides.
+    log.title = rideTitle;
     const originalQuery = typeof (rawBody as any).query === 'string'
       ? (rawBody as any).query
       : ('query' in body.destination ? body.destination.query : 'route');
