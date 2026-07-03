@@ -1,4 +1,12 @@
-// generate-route edge function — v2.94
+// generate-route edge function — v2.95
+// v2.95: phased nav correctness. mergeRouteList now rebuilds the merged
+//        instruction list instead of raw-concatenating per-leg instructions.
+//        (1) Remaps each instruction's `interval` into merged-coordinate space
+//        by nearest-matching its maneuver coord within the leg's merged span —
+//        fixes turn-by-turn being wrong on the fun/return legs (missed exits).
+//        (2) Drops the intermediate FINISH instructions each leg ended with (no
+//        more "destination reached" at every road entry/exit) and relabels the
+//        transit→road arrival into a spoken "Start of <road>" cue (sign 5).
 // v2.94: fast loop return. A loop's return leg was routed at scenic curviness
 //        (v2.91) to come back "a rounder way" — but on a 30+mi return that
 //        detoured loops the long way through dense areas (NYC side streets /
@@ -2555,7 +2563,26 @@ function coordMeters(a: number[], b: number[]): number {
 // retraces the previous leg's tail (consecutive points within ~25 m) and splice
 // both at the divergence point, collapsing the spur into a clean turn.
 const DESPIKE_M = 25;
-function mergeRouteList(legs: Array<{ label: string; route: any }>): any {
+// Short, speakable road name for the "route start" cue: drop the "(A to B …)"
+// descriptor and any " – suffix" (mirrors the response-title shortRoadName).
+function cleanRoadName(n: string): string {
+  const s = String(n || '').trim().split('(')[0].trim().split(/\s+[–—-]\s+/)[0].trim();
+  return s || 'your route';
+}
+
+// Nearest index in coords[lo..hi] to (lng,lat) — used to remap each phased
+// leg's GH instruction intervals into the merged coordinate space.
+function nearestIdxInRange(coords: number[][], lng: number, lat: number, lo: number, hi: number): number {
+  let best = Math.max(0, lo), bestD = Infinity;
+  const top = Math.min(coords.length - 1, hi);
+  for (let i = Math.max(0, lo); i <= top; i++) {
+    const d = coordMeters(coords[i], [lng, lat]);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+function mergeRouteList(legs: Array<{ label: string; route: any; arriveCue?: string }>): any {
   const valid = legs.filter(l => Array.isArray(l.route?.geometry?.coordinates) && l.route.geometry.coordinates.length >= 2);
   if (valid.length === 0) throw new Error('phased route produced no valid legs');
 
@@ -2563,7 +2590,7 @@ function mergeRouteList(legs: Array<{ label: string; route: any }>): any {
   // leg's tail — the overshoot-and-back. GH returns identical points there, so
   // the signature is coords[1+i] ≈ prev[last-i]. Require ≥2 matches so a normal
   // dense-geometry turn isn't mistaken for a U-turn.
-  const trimmed: Array<{ label: string; coords: number[][]; route: any }> = [];
+  const trimmed: Array<{ label: string; coords: number[][]; route: any; arriveCue?: string }> = [];
   for (const l of valid) {
     let coords: number[][] = l.route.geometry.coordinates.slice();
     if (trimmed.length) {
@@ -2589,22 +2616,72 @@ function mergeRouteList(legs: Array<{ label: string; route: any }>): any {
         coords = [prev[prev.length - 1], ...coords.slice(j)];  // next leg resumes off the tail
       }
     }
-    trimmed.push({ label: l.label, coords, route: l.route });
+    trimmed.push({ label: l.label, coords, route: l.route, arriveCue: l.arriveCue });
   }
 
+  // First pass: concatenate geometry and record each leg's index span in the
+  // merged coords (join = the shared point, already present from the prior leg).
   let coords: number[][] = [];
-  let instructions: any[] = [];
   let time = 0, raw = 0;
   const legGeometries: any[] = [];
   const ghRequestLegs: any[] = [];
+  const legSpans: Array<{ join: number; end: number }> = [];
   for (const t of trimmed) {
+    const join = coords.length ? coords.length - 1 : 0;   // shared join point index
     coords = coords.length ? [...coords, ...t.coords.slice(1)] : [...t.coords];  // drop dup join point
-    instructions = [...instructions, ...(t.route.instructions || [])];
+    legSpans.push({ join, end: coords.length - 1 });
     time += t.route.time_minutes || 0;
     raw  += t.route.raw_time_minutes || 0;
     legGeometries.push({ label: t.label, geometry: { type: 'LineString', coordinates: t.coords } });
     ghRequestLegs.push({ label: t.label, request: t.route.gh_request });
   }
+
+  // Second pass: rebuild the instruction list against the MERGED geometry.
+  // Each phased leg is a separate GH route, so raw-concatenating instructions
+  // was doubly wrong: (a) each leg's `interval`s index its OWN points, so legs
+  // 2+ pointed at the wrong merged vertices — turn-by-turn was wrong on the fun
+  // + return legs; and (b) every leg ends in a FINISH ("you have arrived"), so
+  // the rider heard "destination reached" at each road entry/exit. Fix: match
+  // each maneuver coordinate to the nearest point WITHIN its leg's merged span
+  // (robust to the de-spike trim, which shifted indices), drop the intermediate
+  // FINISHes (keep only the true final arrival), and relabel a transit→road
+  // FINISH into a "Start of <road>" cue (sign 5, so the client announces it).
+  const staged: any[] = [];
+  for (let li = 0; li < trimmed.length; li++) {
+    const t = trimmed[li];
+    const isLast = li === trimmed.length - 1;
+    const { join, end } = legSpans[li];
+    const orig: number[][] = t.route.geometry?.coordinates || [];
+    for (const ins of (t.route.instructions || [])) {
+      const isFinish = ins.sign === 4 || /^arrive/i.test(String(ins.text || ''));
+      if (isFinish && !isLast) {
+        // Turn the leg-end arrival into a "route start" cue at the same spot,
+        // or drop it if this leg has no cue (e.g. a fun→return hand-off).
+        if (t.arriveCue) staged.push({ ...ins, sign: 5, text: t.arriveCue, _lo: join, _hi: end, _orig: orig });
+        continue;
+      }
+      staged.push({ ...ins, _lo: join, _hi: end, _orig: orig });
+    }
+  }
+  // Resolve merged intervals: nearest-match each maneuver coordinate within its
+  // leg span, force monotonic non-decreasing, then tile [start_i, start_{i+1}].
+  let prevStart = 0;
+  const starts: number[] = staged.map((ins) => {
+    const lo = ins._lo ?? 0, hi = ins._hi ?? (coords.length - 1);
+    const o: number[][] = (ins._orig && ins._orig.length) ? ins._orig : coords;
+    const si = Math.min(Math.max(ins.interval?.[0] ?? 0, 0), o.length - 1);
+    const p = o[si] || coords[Math.min(prevStart, coords.length - 1)];
+    let m = nearestIdxInRange(coords, p[0], p[1], lo, hi);
+    if (m < prevStart) m = prevStart;
+    prevStart = m;
+    return m;
+  });
+  const instructions: any[] = staged.map((ins, i) => {
+    const start = starts[i];
+    const endIdx = i < staged.length - 1 ? Math.max(start, starts[i + 1]) : coords.length - 1;
+    const { _lo, _hi, _orig, ...clean } = ins;
+    return { ...clean, interval: [start, endIdx] };
+  });
   // Recompute distance from the de-spiked geometry (trimming changed lengths).
   let distM = 0;
   for (let i = 1; i < coords.length; i++) distM += coordMeters(coords[i - 1], coords[i]);
@@ -2636,10 +2713,13 @@ async function routePhased(
   fallbackCurviness: 1 | 2 | 3,
   roundTrip: boolean,
 ): Promise<any> {
-  const specs: Array<{ label: string; points: LatLng[]; curviness: 0 | 1 | 2 | 3 }> = [];
+  const specs: Array<{ label: string; points: LatLng[]; curviness: 0 | 1 | 2 | 3; arriveCue?: string }> = [];
   let prev = origin;
   for (const a of anchorMeta) {
-    specs.push({ label: 'transit', points: [prev, a.entry], curviness: 1 });
+    // The transit leg delivers the rider to this road's entry — announce the
+    // fun beginning there ("route start") instead of GH's "you have arrived".
+    specs.push({ label: 'transit', points: [prev, a.entry], curviness: 1,
+                 arriveCue: `Start of ${cleanRoadName(a.name)} — enjoy the ride` });
     const tier = (a.curviness_tier && a.curviness_tier >= 1 && a.curviness_tier <= 3)
       ? (a.curviness_tier as 1 | 2 | 3) : fallbackCurviness;
     specs.push({ label: 'fun', points: [a.entry, a.exit], curviness: tier });
@@ -2660,7 +2740,7 @@ async function routePhased(
   });
   console.log(`[routePhased] ${specs.length} legs: ${specs.map(s => `${s.label}/c${s.curviness}`).join(' → ')}`);
   const routed = await Promise.all(specs.map(s => getRoute(s.points, s.curviness)));
-  return mergeRouteList(specs.map((s, i) => ({ label: s.label, route: routed[i] })));
+  return mergeRouteList(specs.map((s, i) => ({ label: s.label, route: routed[i], arriveCue: s.arriveCue })));
 }
 
 // Reduce a LineString's coordinate count to ≤ maxPoints by even-stepped
