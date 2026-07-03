@@ -1,4 +1,13 @@
-// generate-route edge function — v2.93
+// generate-route edge function — v2.94
+// v2.94: fast loop return. A loop's return leg was routed at scenic curviness
+//        (v2.91) to come back "a rounder way" — but on a 30+mi return that
+//        detoured loops the long way through dense areas (NYC side streets /
+//        Manhattan) instead of home. Now the return (and any one-way final leg)
+//        is curviness 1 (fastest): get to the curated road fast, ride it, get
+//        home fast. Known follow-ups (see current.md): phased legs concat GH
+//        instructions WITHOUT offsetting intervals → turn-by-turn is wrong on
+//        legs 2+, and intermediate leg-end FINISH instructions make nav say
+//        "destination reached" at the road start. Not fixed here.
 // v2.93: exact admin geometry + picker markers. Stop sampling route_geometry/
 //        route_legs before logging (was ≤100 pts total — chord-cut every corner
 //        in the admin Rides map). Store the FULL path; the admin list lazy-loads
@@ -2636,14 +2645,18 @@ async function routePhased(
     specs.push({ label: 'fun', points: [a.entry, a.exit], curviness: tier });
     prev = a.exit;
   }
-  // The final leg back to the destination is the "return" on a loop. Route it
-  // at the SCENIC curviness (not transit-1) so it takes a different, rounder way
-  // home instead of retracing the fast outbound highway — "nice round loop"
-  // rather than out-and-back. (One-way "take me there" keeps a fast final leg.)
+  // The final leg is the RETURN home (loop) or the arrival (one-way). Route it
+  // FAST (curviness 1, highways OK) either way — the rider came for the curated
+  // twisty road, and wants to get there fast AND back fast.
+  // v2.94 reverses v2.91's scenic return: a scenic-curviness return on a 30+mi
+  // leg detoured loops the long way through dense areas (e.g. NYC side streets /
+  // Manhattan) instead of blasting home. A partial same-highway retrace is an
+  // acceptable trade for a fast return; entry≠exit means the return differs from
+  // the outbound transit anyway.
   specs.push({
     label: roundTrip ? 'return' : 'transit',
     points: [prev, destination],
-    curviness: roundTrip ? fallbackCurviness : 1,
+    curviness: 1,
   });
   console.log(`[routePhased] ${specs.length} legs: ${specs.map(s => `${s.label}/c${s.curviness}`).join(' → ')}`);
   const routed = await Promise.all(specs.map(s => getRoute(s.points, s.curviness)));
