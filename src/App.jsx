@@ -540,41 +540,48 @@ function nearestRouteIdx(coords, lat, lng) {
   return nearIdx;
 }
 
-// Pull two pieces out of a GraphHopper instruction so the nav banner can
-// surface them on separate lines:
-//   exit   — the exit identifier ("Exit 17B") when the upcoming maneuver is
-//            a highway exit; null for regular street turns. Short by design
-//            so it fits on the top row next to the arrow + distance.
-//   street — the larger, more readable name of the road the rider is being
-//            led ONTO (the highway they're exiting onto, or the street the
-//            turn drops them on). Goes on the second, larger row.
-//
-// The exit pattern matches "exit 17", "Exit 17B", "Take exit 220A onto I-95
-// N toward Foo Bar", etc. `toward …` tail is trimmed because it's noisy.
+// Distil a GraphHopper instruction into the SHORTEST useful nav-banner label so
+// the road name never gets ellipsis-cut off screen. GH 11 gives us structured
+// fields — we lead with those and drop the verbose sentence (the arrow already
+// shows the maneuver). Returns:
+//   exit      — "Exit 17B" when GH emits an exit number (rare on our OSM data);
+//               shown as a chip on row 1.
+//   primary   — the big road name the rider is heading onto: street_name, else
+//               the highway ref being taken ("NY 117", "I-95 S"). Row 2.
+//   secondary — a small "toward <town>" hint when it adds info. Row 2, dimmed.
+// Examples: "Keep right and take NY 117 toward Bedford Hills" → {NY 117, toward
+// Bedford Hills}; "Turn left onto Paulding Street" → {Paulding Street}; a bare
+// "Turn right" → {'' } (row 2 hidden — the arrow + distance say it all).
 function shortDestinationLabel(instruction) {
-  if (!instruction) return { exit: null, street: '' };
-  const text = String(instruction.text || '');
+  if (!instruction) return { exit: null, primary: 'Follow the route', secondary: '' };
+  const text = String(instruction.text || '').trim();
+
+  // Our injected route-start cue (sign 5) is already curated short copy.
+  if (instruction.sign === 5) return { exit: null, primary: text, secondary: '' };
+
   const streetName = String(instruction.street_name || '').trim();
+  const streetRef  = String(instruction.street_ref || '').trim();
+  const destRef    = String(instruction.street_destination_ref || '').trim();
+  const dest       = String(instruction.street_destination || '').trim();
 
-  const ontoMatch = text.match(/onto\s+(.+?)(?:\s*toward.*)?$/i);
-  const parsedOnto = ontoMatch ? ontoMatch[1].trim() : '';
+  const exitMatch = text.match(/\bexit\s+([0-9]+[A-Za-z]?)\b/i);
+  const exit = exitMatch ? `Exit ${exitMatch[1]}` : null;
 
-  // Highway exit
-  const exitMatch = text.match(/exit\s+([\w-]+)/i);
-  if (exitMatch) {
-    return {
-      exit: `Exit ${exitMatch[1]}`,
-      street: streetName || parsedOnto,
-    };
+  // Big line: the road being taken. Prefer clean structured fields; only fall
+  // back to salvaging the text when GH gives us nothing structured.
+  let primary = streetName || destRef || streetRef || '';
+  if (!primary) {
+    const m = text.match(/\b(?:onto|take(?:\s+the)?|to)\s+(.+)$/i);
+    let t = (m ? m[1] : text).replace(/\s+towards?\b.*$/i, '').trim();
+    // Strip a leading bare maneuver verb so we don't show "Turn left" as a road.
+    t = t.replace(/^(?:keep (?:left|right)|turn (?:sharp |slight )?(?:left|right)|continue|merge|head\w*)\b[\s,]*/i, '').trim();
+    primary = t;
   }
 
-  // Regular turn / continue
-  if (streetName) return { exit: null, street: streetName };
-  if (parsedOnto)  return { exit: null, street: parsedOnto };
+  // Small line: the "toward <town>" hint, when it isn't just the primary again.
+  const secondary = (dest && dest.toLowerCase() !== primary.toLowerCase()) ? `toward ${dest}` : '';
 
-  // No street info at all — fall back to the verb (e.g., "Continue",
-  // "Keep right", "Arrive at destination").
-  return { exit: null, street: text.replace(/^(Take exit|onto.*)/i, '').trim() || text };
+  return { exit, primary: primary || '', secondary };
 }
 
 // Great-circle distance from a point to a line segment, returned in metres.
@@ -4776,7 +4783,7 @@ export default function App() {
       {navMode && (
         <div className="nav-overlay">
           {(() => {
-            const labelInfo = nextTurn ? shortDestinationLabel(nextTurn.instruction) : { exit: null, street: 'Follow the route' };
+            const labelInfo = nextTurn ? shortDestinationLabel(nextTurn.instruction) : { exit: null, primary: 'Follow the route', secondary: '' };
             return (
               <div className="nav-turn-banner">
                 {/* Row 1 — glance line: arrow, distance, optional exit chip */}
@@ -4813,11 +4820,12 @@ export default function App() {
                   </button>
                   <button className="nav-stop-btn" onClick={stopNavigation} aria-label="Stop navigation">✕</button>
                 </div>
-                {/* Row 2 — destination: the big road name the rider is being
-                    led onto (or the exit destination). One line, ellipsised. */}
-                {labelInfo.street && (
+                {/* Row 2 — destination: the big road name the rider is heading
+                    onto (≤2 lines), plus an optional dimmed "toward <town>". */}
+                {(labelInfo.primary || labelInfo.secondary) && (
                   <div className="nav-turn-row2">
-                    <span className="nav-turn-street">{labelInfo.street}</span>
+                    {labelInfo.primary && <span className="nav-turn-street">{labelInfo.primary}</span>}
+                    {labelInfo.secondary && <span className="nav-turn-toward">{labelInfo.secondary}</span>}
                   </div>
                 )}
               </div>

@@ -887,11 +887,25 @@ body {
   min-width: 0;
 }
 .nav-turn-street {
-  display: block;
+  /* Clamp to 2 lines so a long road name wraps instead of ellipsis-cutting the
+     useful part off-screen (the label logic already leads with the road name). */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
   font-size: 26px;
   font-weight: 700;
   color: #111;
   line-height: 1.15;
+}
+/* Small dimmed "toward <town>" hint under the road name. */
+.nav-turn-toward {
+  display: block;
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-muted, #667);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
