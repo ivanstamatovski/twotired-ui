@@ -474,3 +474,4 @@ Removed scoring variant (v2.65); NYC polygon + intra-NYC escape skip (v2.66–68
 - **`translateY(positive)` shows TOP of element** at screen bottom. Don't use `justify-content: flex-end` in slide-up sheets.
 - **No routing variant toggle** — v2.65 baked in the one model deliberately; don't reintroduce A/B scoring.
 - **Anchors and corridors are mutually exclusive** — if Claude emits both, corridor wins.
+- **Picker rides must ride the FULL seeded road** — the fun leg is the point; transit-out and return-home are just fast (curviness 1) connectors around it. Keep the fun leg threaded through the road's cached geometry via-points (v2.98) so it covers the whole road, and keep the return fast (v2.94, NOT scenic like v2.91). Don't regress either — the rider chose that road to ride all of it, then get home quick.
