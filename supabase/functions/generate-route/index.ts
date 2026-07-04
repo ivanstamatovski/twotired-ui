@@ -1,4 +1,8 @@
-// generate-route edge function — v2.96
+// generate-route edge function — v2.97
+// v2.97: exit-number lookup moved OFF the public-Overpass hot path. Junction
+//        nodes are now cached in the osm_junctions Supabase table (seeded by
+//        scripts/seed_osm_junctions.py); enrichExitNumbers does one indexed
+//        bbox query against it instead of calling Overpass per request.
 // v2.96: exit numbers. GraphHopper 11 gives destination refs but not motorway
 //        exit numbers, so `enrichExitNumbers` looks up the nearest OSM
 //        highway=motorway_junction node (ref = exit #) via Overpass for each
@@ -2761,17 +2765,18 @@ function simplifyLineString(geom: any, maxPoints: number): any {
   return { type: 'LineString', coordinates: sampled };
 }
 
-// ── Exit-number enrichment (v2.96) ────────────────────────────────────────────
+// ── Exit-number enrichment (v2.96, cached v2.97) ──────────────────────────────
 // GraphHopper 11 surfaces destination refs ("take I-84 W toward Danbury") but
-// NOT motorway-junction exit numbers. We look them up from OSM: every real
+// NOT motorway-junction exit numbers. We fill the gap from OSM: every real
 // motorway exit has a `highway=motorway_junction` node carrying `ref`=<exit #>.
-// For each keep-right/left maneuver (GH sign ±7) we query the nearest such node
-// via Overpass and, when one sits within ~80 m, tag the instruction with
-// `exit_ref` (+ `exit_name`). Self-filtering: a keep-right that isn't a signed
-// exit has no junction node nearby, so no false positives. Best-effort — any
-// failure/timeout leaves instructions untouched; runs in parallel with the
-// scores/narrative work so it rarely adds wall-clock.
-const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+// Those nodes are cached in the `osm_junctions` Supabase table (seeded from
+// Overpass by scripts/seed_osm_junctions.py) so this runs OFF the public-
+// Overpass hot path — a single indexed bbox query, not a network round-trip to
+// a shared service. For each keep-right/left maneuver (GH sign ±7) we tag the
+// instruction with the nearest junction's `exit_ref`/`exit_name` when it sits
+// within RADIUS_M. Self-filtering: a keep-right that isn't a signed exit has no
+// junction nearby, so no false positives. Best-effort — any failure leaves the
+// instructions untouched; runs in parallel with the scores/narrative work.
 async function enrichExitNumbers(route: any): Promise<number> {
   try {
     const insts: any[] = route?.instructions;
@@ -2788,48 +2793,37 @@ async function enrichExitNumbers(route: any): Promise<number> {
       const c = coords[idx];
       return { ins, lng: c[0], lat: c[1] };
     });
-    // One Overpass call: union of motorway_junction nodes near each candidate.
-    // `out;` (NOT `out tags;`) so the nodes carry lat/lon for the proximity match.
-    const query = `[out:json][timeout:15];(`
-      + pts.map((p) => `node(around:${RADIUS_M},${p.lat.toFixed(5)},${p.lng.toFixed(5)})[highway=motorway_junction];`).join('')
-      + `);out;`;
-    // AbortController + setTimeout (not AbortSignal.timeout, which isn't in every
-    // Deno runtime) so a slow/hung Overpass can't stall the response.
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 12000);
-    let res: Response;
-    try {
-      res = await fetch(OVERPASS_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          // Overpass 406-rejects requests without a descriptive User-Agent.
-          'User-Agent': 'twotired-routing/1.0 (ivan@easyaerial.com)',
-        },
-        body: 'data=' + encodeURIComponent(query),
-        signal: ctrl.signal,
-      });
-    } finally {
-      clearTimeout(timer);
+    // One bbox query over the candidate maneuvers (padded past RADIUS_M — ~165 m
+    // lat / ~125 m lng at our latitudes) against the cached junction table.
+    const PAD = 0.0015;
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const p of pts) {
+      minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat);
+      minLng = Math.min(minLng, p.lng); maxLng = Math.max(maxLng, p.lng);
     }
-    if (!res.ok) { console.warn('[exit-enrich] overpass', res.status); return 0; }
-    const data = await res.json();
-    const nodes: any[] = (data.elements || []).filter((e: any) => e?.tags?.ref && typeof e.lat === 'number');
-    if (!nodes.length) return 0;
+    const url = `${SUPABASE_URL}/rest/v1/osm_junctions?select=lat,lng,ref,name`
+      + `&lat=gte.${(minLat - PAD).toFixed(5)}&lat=lte.${(maxLat + PAD).toFixed(5)}`
+      + `&lng=gte.${(minLng - PAD).toFixed(5)}&lng=lte.${(maxLng + PAD).toFixed(5)}`;
+    const res = await fetch(url, {
+      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+    });
+    if (!res.ok) { console.warn('[exit-enrich] osm_junctions', res.status); return 0; }
+    const nodes: any[] = await res.json();
+    if (!Array.isArray(nodes) || !nodes.length) return 0;
     let tagged = 0;
     for (const p of pts) {
       let best: any = null, bestD = Infinity;
       for (const n of nodes) {
-        const d = coordMeters([p.lng, p.lat], [n.lon, n.lat]);
+        const d = coordMeters([p.lng, p.lat], [n.lng, n.lat]);
         if (d < bestD) { bestD = d; best = n; }
       }
       if (best && bestD <= RADIUS_M) {
-        p.ins.exit_ref = String(best.tags.ref).trim();
-        if (best.tags.name) p.ins.exit_name = String(best.tags.name).trim();
+        p.ins.exit_ref = String(best.ref).trim();
+        if (best.name) p.ins.exit_name = String(best.name).trim();
         tagged++;
       }
     }
-    console.log(`[exit-enrich] tagged ${tagged}/${pts.length} keep maneuvers with exit refs`);
+    console.log(`[exit-enrich] tagged ${tagged}/${pts.length} keep maneuvers (${nodes.length} junctions in bbox)`);
     return tagged;
   } catch (e: any) {
     console.warn('[exit-enrich] skipped:', e?.message || e);
