@@ -1,4 +1,12 @@
-// generate-route edge function — v2.97
+// generate-route edge function — v2.98
+// v2.98: picker rides now ride the WHOLE seeded road. The phased "fun" leg was
+//        routed between only the road's two endpoints, so GH picked its own path
+//        between them — a real picker loop covered just 2% of the chosen road.
+//        routePhased now threads the fun leg through via-points sampled from the
+//        road's cached geometry (roadViaPoints, ~1.5km spacing) → 100% coverage.
+//        Geometry is fetched in fetchAnchorsByIds + carried on anchorMeta, then
+//        stripped before logging so scenic_anchors_resolved doesn't bloat.
+// v2.97
 // v2.97: exit-number lookup moved OFF the public-Overpass hot path. Junction
 //        nodes are now cached in the osm_junctions Supabase table (seeded by
 //        scripts/seed_osm_junctions.py); enrichExitNumbers does one indexed
@@ -1913,7 +1921,7 @@ async function fetchAnchorsByIds(ids: string[]): Promise<any[]> {
   try {
     const idsParam = ids.map(i => `"${i}"`).join(',');
     const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/known_roads?id=in.(${idsParam})&approved=eq.true&select=id,name,route_number,start_lat,start_lng,end_lat,end_lng,length_km,curviness_tier,vibe_tags,must_see,caveats,region`,
+      `${SUPABASE_URL}/rest/v1/known_roads?id=in.(${idsParam})&approved=eq.true&select=id,name,route_number,start_lat,start_lng,end_lat,end_lng,length_km,curviness_tier,vibe_tags,must_see,caveats,region,geometry`,
       {
         headers: {
           apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -1985,6 +1993,10 @@ function resolveAnchorSequence(
       must_see: a.must_see || null,
       caveats: a.caveats || null,
       region: a.region || null,
+      // The road's cached GeoJSON coords (start→end) so routePhased can thread
+      // the fun leg THROUGH the actual road, not just its endpoints. Stripped
+      // before logging/response so it doesn't bloat scenic_anchors_resolved.
+      geometry: a.geometry?.coordinates || null,
     });
     prev = exit;
   }
@@ -2716,9 +2728,30 @@ function mergeRouteList(legs: Array<{ label: string; route: any; arriveCue?: str
 //   • fun legs (road entry → exit): the road's own curviness_tier, so a backroad
 //     gets maxed and a parkway is ridden as a parkway (forcing 3 would make GH's
 //     motorway penalty avoid the very road the rider picked).
+// Sample a seeded road's cached geometry into a handful of via-points (oriented
+// entry→exit) so GH is FORCED to follow the actual road on the fun leg. Routing
+// only between the two endpoints let GH pick its own (often totally different)
+// path — a picker loop covered just 2% of the chosen road. ~1.5 km spacing
+// puts GH firmly on the road (100% coverage in testing) without a huge waypoint
+// list. Falls back to [] (endpoints-only) when a road has no cached geometry.
+function roadViaPoints(geomCoords: number[][] | null | undefined, entry: LatLng, exit: LatLng): LatLng[] {
+  if (!Array.isArray(geomCoords) || geomCoords.length < 3) return [];
+  const g0 = geomCoords[0], gN = geomCoords[geomCoords.length - 1];
+  const startsAtEntry = coordMeters([entry.lng, entry.lat], g0) <= coordMeters([entry.lng, entry.lat], gN);
+  const oriented = startsAtEntry ? geomCoords : geomCoords.slice().reverse();
+  const SPACING_M = 1500, MAX_VIAS = 24;
+  const vias: LatLng[] = [];
+  let acc = 0;
+  for (let i = 1; i < oriented.length - 1; i++) {
+    acc += coordMeters(oriented[i - 1], oriented[i]);
+    if (acc >= SPACING_M) { vias.push({ lat: oriented[i][1], lng: oriented[i][0] }); acc = 0; if (vias.length >= MAX_VIAS) break; }
+  }
+  return vias;
+}
+
 async function routePhased(
   origin: LatLng,
-  anchorMeta: Array<{ entry: LatLng; exit: LatLng; curviness_tier: number | null; name: string }>,
+  anchorMeta: Array<{ entry: LatLng; exit: LatLng; curviness_tier: number | null; name: string; geometry?: number[][] | null }>,
   destination: LatLng,
   fallbackCurviness: 1 | 2 | 3,
   roundTrip: boolean,
@@ -2732,7 +2765,10 @@ async function routePhased(
                  arriveCue: `Start of ${cleanRoadName(a.name)} — enjoy the ride` });
     const tier = (a.curviness_tier && a.curviness_tier >= 1 && a.curviness_tier <= 3)
       ? (a.curviness_tier as 1 | 2 | 3) : fallbackCurviness;
-    specs.push({ label: 'fun', points: [a.entry, a.exit], curviness: tier });
+    // Thread the fun leg through the road's real geometry so it rides the WHOLE
+    // seeded road (v2.98), not GH's own shortcut between the two endpoints.
+    const vias = roadViaPoints(a.geometry, a.entry, a.exit);
+    specs.push({ label: 'fun', points: [a.entry, ...vias, a.exit], curviness: tier });
     prev = a.exit;
   }
   // The final leg is the RETURN home (loop) or the arrival (one-way). Route it
@@ -3378,6 +3414,7 @@ Deno.serve(async (req) => {
             const briefs = await briefsPromise;
             for (let i = 0; i < anchorMeta.length; i++) {
               (anchorMeta[i] as any).brief = briefs[i] || null;
+              delete (anchorMeta[i] as any).geometry;  // routing done — don't bloat the log/response
             }
             log.scenic_anchors_resolved = anchorMeta;
           }
