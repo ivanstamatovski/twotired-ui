@@ -370,6 +370,11 @@ npm run build && npx cap sync
 # Then rebuild in Xcode: ⌘R
 ```
 
+### Testing nav on-device without driving (GPX simulation)
+Turn-by-turn features (exit chip, off-route reroute, voice) only fire during a live nav session — you can't see them from a static map. To test in the Simulator without driving:
+1. **Static render check:** Simulator → **Features → Location → Custom Location** → a lat/lng just before the maneuver. Plan a route through it, Navigate — the banner shows the *next* turn from that spot (enough to confirm a chip/label renders).
+2. **Moving test (advance + voice):** feed Xcode a **GPX** that traces a real approach. Generate one from a GH route through a numbered exit, with a **~60s stationary dwell of duplicated start waypoints** up front so there's time to plan + Navigate before it moves, then timed waypoints (~22 m/s). Add the GPX to the Xcode project, then **Edit Scheme → Run → Options → Default Location = <gpx>** (auto-plays on launch — more reliable than Debug → Simulate Location, which is greyed unless the app is already running). Plan with **"fastest route to …"** so the app routes onto the highway the GPX follows. Verified 2026-07-04: exit chip appears on approach to I-84 Exit 8 this way.
+
 ### Info.plist Requirements
 ```xml
 <key>NSLocationWhenInUseUsageDescription</key>
