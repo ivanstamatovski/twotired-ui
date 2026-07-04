@@ -558,6 +558,8 @@ function shortDestinationLabel(instruction) {
 
   // Our injected route-start cue (sign 5) is already curated short copy.
   if (instruction.sign === 5) return { exit: null, primary: text, secondary: '' };
+  // Final arrival.
+  if (instruction.sign === 4) return { exit: null, primary: 'Arriving', secondary: '' };
 
   const streetName = String(instruction.street_name || '').trim();
   const streetRef  = String(instruction.street_ref || '').trim();
@@ -571,21 +573,24 @@ function shortDestinationLabel(instruction) {
   const exitMatch = text.match(/\bexit\s+([0-9]+[A-Za-z]?)\b/i);
   const exit = exitRef ? `Exit ${exitRef}` : (exitMatch ? `Exit ${exitMatch[1]}` : null);
 
-  // Big line: the road being taken. Prefer clean structured fields; only fall
-  // back to salvaging the text when GH gives us nothing structured.
-  let primary = streetName || destRef || streetRef || '';
+  // Big line = WHERE you're headed, taken from GH's STRUCTURED fields (the arrow
+  // already conveys the maneuver). Priority: the road you turn onto → the ref of
+  // the highway you take/stay on → the signed destination. We deliberately do
+  // NOT salvage words out of the sentence — that produced junk like "and drive"
+  // (from "…and drive toward Newtown Rd") and "stay on I 84" (from "keep right
+  // to stay on I 84"), burying the real destination in the small line. Only a
+  // clean "onto X" is used as a last resort.
+  let primary = streetName || destRef || streetRef || dest || '';
   if (!primary) {
-    const m = text.match(/\b(?:onto|take(?:\s+the)?|to)\s+(.+)$/i);
-    let t = (m ? m[1] : text).replace(/\s+towards?\b.*$/i, '').trim();
-    // Strip a leading bare maneuver verb so we don't show "Turn left" as a road.
-    t = t.replace(/^(?:keep (?:left|right)|turn (?:sharp |slight )?(?:left|right)|continue|merge|head\w*)\b[\s,]*/i, '').trim();
-    primary = t;
+    const m = text.match(/\bonto\s+(.+?)(?:\s+towards?\b.*)?$/i);
+    primary = m ? m[1].trim() : '';
   }
 
-  // Small line: the "toward <town>" hint, when it isn't just the primary again.
+  // Small line: the "toward <place>" hint — only when it adds something beyond
+  // the big line (skip when the destination already IS the big line).
   const secondary = (dest && dest.toLowerCase() !== primary.toLowerCase()) ? `toward ${dest}` : '';
 
-  return { exit, primary: primary || '', secondary };
+  return { exit, primary, secondary };
 }
 
 // Great-circle distance from a point to a line segment, returned in metres.
