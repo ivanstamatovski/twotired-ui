@@ -1,4 +1,10 @@
-// generate-route edge function — v2.95
+// generate-route edge function — v2.96
+// v2.96: exit numbers. GraphHopper 11 gives destination refs but not motorway
+//        exit numbers, so `enrichExitNumbers` looks up the nearest OSM
+//        highway=motorway_junction node (ref = exit #) via Overpass for each
+//        keep-right/left maneuver and tags the instruction with exit_ref /
+//        exit_name. Best-effort, parallel with scores/narrative. Frontend shows
+//        the exit chip + speaks "Exit N" from these fields.
 // v2.95: phased nav correctness. mergeRouteList now rebuilds the merged
 //        instruction list instead of raw-concatenating per-leg instructions.
 //        (1) Remaps each instruction's `interval` into merged-coordinate space
@@ -2755,6 +2761,82 @@ function simplifyLineString(geom: any, maxPoints: number): any {
   return { type: 'LineString', coordinates: sampled };
 }
 
+// ── Exit-number enrichment (v2.96) ────────────────────────────────────────────
+// GraphHopper 11 surfaces destination refs ("take I-84 W toward Danbury") but
+// NOT motorway-junction exit numbers. We look them up from OSM: every real
+// motorway exit has a `highway=motorway_junction` node carrying `ref`=<exit #>.
+// For each keep-right/left maneuver (GH sign ±7) we query the nearest such node
+// via Overpass and, when one sits within ~80 m, tag the instruction with
+// `exit_ref` (+ `exit_name`). Self-filtering: a keep-right that isn't a signed
+// exit has no junction node nearby, so no false positives. Best-effort — any
+// failure/timeout leaves instructions untouched; runs in parallel with the
+// scores/narrative work so it rarely adds wall-clock.
+const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+async function enrichExitNumbers(route: any): Promise<number> {
+  try {
+    const insts: any[] = route?.instructions;
+    const coords: number[][] = route?.geometry?.coordinates;
+    if (!Array.isArray(insts) || !Array.isArray(coords) || coords.length < 2) return 0;
+    // A junction node sits at the gore where the ramp diverges; the exit
+    // maneuver's first vertex lands ~0–90 m from it, while an ON-ramp's nearest
+    // junction is hundreds of metres away — so this radius isolates real exits.
+    const RADIUS_M = 100;
+    const cand = insts.filter((i) => i && (i.sign === 7 || i.sign === -7));
+    if (!cand.length) return 0;
+    const pts = cand.map((ins) => {
+      const idx = Math.min(Math.max(ins.interval?.[0] ?? 0, 0), coords.length - 1);
+      const c = coords[idx];
+      return { ins, lng: c[0], lat: c[1] };
+    });
+    // One Overpass call: union of motorway_junction nodes near each candidate.
+    // `out;` (NOT `out tags;`) so the nodes carry lat/lon for the proximity match.
+    const query = `[out:json][timeout:15];(`
+      + pts.map((p) => `node(around:${RADIUS_M},${p.lat.toFixed(5)},${p.lng.toFixed(5)})[highway=motorway_junction];`).join('')
+      + `);out;`;
+    // AbortController + setTimeout (not AbortSignal.timeout, which isn't in every
+    // Deno runtime) so a slow/hung Overpass can't stall the response.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    let res: Response;
+    try {
+      res = await fetch(OVERPASS_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          // Overpass 406-rejects requests without a descriptive User-Agent.
+          'User-Agent': 'twotired-routing/1.0 (ivan@easyaerial.com)',
+        },
+        body: 'data=' + encodeURIComponent(query),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) { console.warn('[exit-enrich] overpass', res.status); return 0; }
+    const data = await res.json();
+    const nodes: any[] = (data.elements || []).filter((e: any) => e?.tags?.ref && typeof e.lat === 'number');
+    if (!nodes.length) return 0;
+    let tagged = 0;
+    for (const p of pts) {
+      let best: any = null, bestD = Infinity;
+      for (const n of nodes) {
+        const d = coordMeters([p.lng, p.lat], [n.lon, n.lat]);
+        if (d < bestD) { bestD = d; best = n; }
+      }
+      if (best && bestD <= RADIUS_M) {
+        p.ins.exit_ref = String(best.tags.ref).trim();
+        if (best.tags.name) p.ins.exit_name = String(best.tags.name).trim();
+        tagged++;
+      }
+    }
+    console.log(`[exit-enrich] tagged ${tagged}/${pts.length} keep maneuvers with exit refs`);
+    return tagged;
+  } catch (e: any) {
+    console.warn('[exit-enrich] skipped:', e?.message || e);
+    return 0;
+  }
+}
+
 // ── NYC 5-borough boundary check ──────────────────────────────────────────────
 // Uses the exact polygon Ivan hand-drew in geojson.io on 2026-06-08 — the same
 // shape that's loaded into GraphHopper as `in_nyc` on Molly (custom_model rules
@@ -3427,6 +3509,12 @@ Deno.serve(async (req) => {
         .then(n => { log.narrative_ms = Date.now() - narrativeStart; return n; });
     });
 
+    // v2.96: annotate motorway-exit maneuvers with OSM exit numbers (parallel,
+    // best-effort — mutates route.instructions in place, adds ~no wall-clock).
+    const exitStart = Date.now();
+    const exitPromise = enrichExitNumbers(route)
+      .then((tagged) => { console.log(`[exit-enrich] ${Date.now() - exitStart}ms, tagged ${tagged}`); });
+
     // v2.57: ETA breakdown — drive (calibrated) + stop dwell time = total trip duration
     const driveMinutes = route.time_minutes;
     const stopMinutes = stops.reduce((sum, s) => sum + dwellMinutesForStop(s.type || ''), 0);
@@ -3468,7 +3556,7 @@ Deno.serve(async (req) => {
       console.error('[generate-route] DB insert exception:', dbErr.message);
     }
 
-    const [narrative, scores] = await Promise.all([narrativePromise, scoresPromise]);
+    const [narrative, scores] = await Promise.all([narrativePromise, scoresPromise, exitPromise]);
     log.narrative = narrative;
     log.total_ms = Date.now() - requestStart;
 

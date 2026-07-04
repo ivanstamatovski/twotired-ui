@@ -564,8 +564,12 @@ function shortDestinationLabel(instruction) {
   const destRef    = String(instruction.street_destination_ref || '').trim();
   const dest       = String(instruction.street_destination || '').trim();
 
+  // exit_ref is attached server-side (edge fn v2.96) from the OSM motorway
+  // junction node — GH itself never emits an exit number. Fall back to any
+  // number in the text on the off chance GH ever does.
+  const exitRef = String(instruction.exit_ref || '').trim();
   const exitMatch = text.match(/\bexit\s+([0-9]+[A-Za-z]?)\b/i);
-  const exit = exitMatch ? `Exit ${exitMatch[1]}` : null;
+  const exit = exitRef ? `Exit ${exitRef}` : (exitMatch ? `Exit ${exitMatch[1]}` : null);
 
   // Big line: the road being taken. Prefer clean structured fields; only fall
   // back to salvaging the text when GH gives us nothing structured.
@@ -3185,7 +3189,10 @@ export default function App() {
         if (bucket && lastAnnouncedRef.current !== key) {
           lastAnnouncedRef.current = key;
           const distPhrase = dist < 120 ? 'Now' : `In ${formatDist(dist)}`;
-          speak(`${distPhrase}, ${instruction.text}`);
+          // Lead with the exit number when we have one (edge fn v2.96) so the
+          // rider hears "…, Exit 8, keep right and take I-84 West".
+          const exitPhrase = instruction.exit_ref ? `Exit ${instruction.exit_ref}, ` : '';
+          speak(`${distPhrase}, ${exitPhrase}${instruction.text}`);
         }
       }
 
