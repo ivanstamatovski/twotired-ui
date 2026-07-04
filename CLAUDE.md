@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-07-03 against `main` (generate-route at **v2.96**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-07-04 against `main` (generate-route at **v2.97**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -91,9 +91,11 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.96 (exit numbers via OSM junction lookup — see below)
+**Current version:** v2.97 (exit-number lookup cached in Supabase, off the Overpass hot path — see below)
 
-**Exit numbers (v2.96):** GraphHopper 11 emits destination refs (`street_destination`/`street_destination_ref`, e.g. "I-84 W / Danbury") but NEVER motorway exit numbers (verified on real I-84 exits — `exit_number` is roundabout-only). `enrichExitNumbers()` fills the gap from OSM: every real exit has a `highway=motorway_junction` node tagged `ref`=<exit #>. For each keep-right/left maneuver (GH sign ±7) it queries the nearest such node via **Overpass** (one batched union call across all candidates) and, when one is within **100 m**, tags the instruction with `exit_ref`/`exit_name`. The proximity check self-filters — on-ramps/post-ramp turns have no junction within 100 m, so no false positives. Best-effort (never throws/blocks), runs in parallel with scores/narrative. **Gotchas baked in:** use `AbortController`+`setTimeout` (Supabase's Deno lacks `AbortSignal.timeout`), a descriptive `User-Agent` (Overpass 406s without one), and `out;` not `out tags;` (the latter omits node coords). Frontend: `shortDestinationLabel` renders the exit chip from `exit_ref`; the voice prompt leads with "Exit N". **Public Overpass on the hot path is the weak point** — if it gets flaky/rate-limited, cache junction refs (Supabase table keyed by rounded coord) or self-host Overpass on Molly.
+**Exit numbers (v2.96, cached v2.97):** GraphHopper 11 emits destination refs (`street_destination`/`street_destination_ref`, e.g. "I-84 W / Danbury") but NEVER motorway exit numbers (verified on real I-84 exits — `exit_number` is roundabout-only). `enrichExitNumbers()` fills the gap from OSM: every real exit has a `highway=motorway_junction` node tagged `ref`=<exit #>. For each keep-right/left maneuver (GH sign ±7) it tags the instruction with the nearest such node's `exit_ref`/`exit_name` when within **100 m**. The proximity check self-filters — on-ramps/post-ramp turns have no junction within 100 m, so no false positives. Best-effort (never throws/blocks), runs in parallel with scores/narrative. Frontend: `shortDestinationLabel` renders the exit chip from `exit_ref`; the voice prompt leads with "Exit N".
+- **v2.97 — cache, not Overpass on the hot path.** The ~11k junction nodes for the graph bbox are cached in the **`osm_junctions`** table; `enrichExitNumbers` does one indexed `lat/lng` bbox query against it (no network round-trip to public Overpass). Seed/refresh with **`scripts/seed_osm_junctions.py`** (fetches motorway_junction nodes in the bbox, chunk-upserts via the Management API). Because routes only run inside the graph bbox, the seed = full coverage; misses just skip tagging.
+- **Gotchas (all bit me):** Supabase's Deno lacks `AbortSignal.timeout` (v2.96 silently returned 0 until switched to `AbortController`; moot now that it's a Supabase query). Overpass 406s AND the Supabase Management API 403s python-urllib's default `User-Agent` — the seed script sets one. Overpass `out tags;` omits node coords — use `out;`.
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
@@ -242,6 +244,7 @@ Rider taps the 🛣 FAB → **all approved** catalog roads render as tappable Ma
 | `sent_messages` | Admin → user email log (channel, status, Resend errors) |
 | `known_roads` | Iconic-road catalog (see Known Roads section) |
 | `service_costs` | Monthly burn tracker (seeded with ~14 services) |
+| `osm_junctions` | Cached OSM motorway-junction nodes (ref = exit #) for exit-number tagging; seeded by `scripts/seed_osm_junctions.py` (see Exit numbers) |
 
 ### Bug Report → Routing Lesson Pipeline
 1. User submits bug report (map screenshot + comment + full route_context)
