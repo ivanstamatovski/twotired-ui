@@ -9,7 +9,7 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 **Admin portal:** https://admin.twotired.net (password: `TwoTired2026!`)  
 **Supabase project ref:** `ujvfwzcjgxupvtiwllhw`
 
-> **Doc currency:** Last refreshed 2026-07-03 against `main` (generate-route at **v2.95**). When you make a structural change, update this file in the same session.
+> **Doc currency:** Last refreshed 2026-07-03 against `main` (generate-route at **v2.96**). When you make a structural change, update this file in the same session.
 
 > **Live work state:** `@.claude/current.md` (gitignored) holds the current task / next step / open decisions and auto-loads each session. Update it as work progresses; on "checkpoint" flush state there. The durable backlog is the Supabase `tasks` table / admin Kanban.
 
@@ -91,7 +91,9 @@ https://molly.tail71232f.ts.net:8443
 ## Edge Function: generate-route
 
 **File:** `supabase/functions/generate-route/index.ts`  
-**Current version:** v2.95 (phased nav correctness — see Phased routing below)
+**Current version:** v2.96 (exit numbers via OSM junction lookup — see below)
+
+**Exit numbers (v2.96):** GraphHopper 11 emits destination refs (`street_destination`/`street_destination_ref`, e.g. "I-84 W / Danbury") but NEVER motorway exit numbers (verified on real I-84 exits — `exit_number` is roundabout-only). `enrichExitNumbers()` fills the gap from OSM: every real exit has a `highway=motorway_junction` node tagged `ref`=<exit #>. For each keep-right/left maneuver (GH sign ±7) it queries the nearest such node via **Overpass** (one batched union call across all candidates) and, when one is within **100 m**, tags the instruction with `exit_ref`/`exit_name`. The proximity check self-filters — on-ramps/post-ramp turns have no junction within 100 m, so no false positives. Best-effort (never throws/blocks), runs in parallel with scores/narrative. **Gotchas baked in:** use `AbortController`+`setTimeout` (Supabase's Deno lacks `AbortSignal.timeout`), a descriptive `User-Agent` (Overpass 406s without one), and `out;` not `out tags;` (the latter omits node coords). Frontend: `shortDestinationLabel` renders the exit chip from `exit_ref`; the voice prompt leads with "Exit N". **Public Overpass on the hot path is the weak point** — if it gets flaky/rate-limited, cache junction refs (Supabase table keyed by rounded coord) or self-host Overpass on Molly.
 
 ### Pipeline
 1. Claude Sonnet 4.6 parses natural language → `RouteRequest` (origin, destination, stops, curviness 1–3, escape_waypoint, intermediate_waypoints, **road_corridor**, **scenic_anchors**, round_trip)
