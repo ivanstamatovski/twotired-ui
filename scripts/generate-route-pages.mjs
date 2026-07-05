@@ -8,15 +8,25 @@
  *   public/routes/index.html    — routes hub
  *   public/sitemap.xml
  *
+ * REAL ROAD GEOMETRY: on first run (or with --refresh-geometry) the script routes
+ * each page's waypoints through GraphHopper on Molly (twotired profile) and caches
+ * the simplified polyline in scripts/route-geometries/<slug>.json (commit these!).
+ * Cached geometry is embedded into the static page — no runtime GH dependency.
+ * If GH is unreachable and no cache exists, the page falls back to a straight
+ * waypoint polyline.
+ *
  * Run after editing route-pages.json:  node scripts/generate-route-pages.mjs
- * Pages are committed to the repo; Vercel serves them as static files (cleanUrls
- * in vercel.json maps /routes/<slug> -> /routes/<slug>.html).
+ * Refresh road geometry:               node scripts/generate-route-pages.mjs --refresh-geometry
  */
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const GEO_DIR = join(ROOT, "scripts/route-geometries");
+const GH_URL = process.env.GH_URL || "https://molly.tail71232f.ts.net/gh";
+const REFRESH = process.argv.includes("--refresh-geometry");
+
 const cfg = JSON.parse(readFileSync(join(ROOT, "scripts/route-pages.json"), "utf8"));
 const { url: SITE, appStoreUrl: APP_STORE, appName: APP } = cfg.site;
 
@@ -27,6 +37,74 @@ if (!dbMatch) throw new Error("routesDb not found in src/data.js");
 const routesDb = new Function(`return ${dbMatch[1]}`)();
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+// ---------------- geometry: GraphHopper fetch + cache ----------------
+
+// Douglas-Peucker simplification (on [lat,lng] pairs, tolerance in degrees).
+function simplify(points, tol = 0.0004) {
+  if (points.length <= 2) return points;
+  const sqTol = tol * tol;
+  const sqSegDist = (p, a, b) => {
+    let x = a[0], y = a[1], dx = b[0] - x, dy = b[1] - y;
+    if (dx !== 0 || dy !== 0) {
+      const t = ((p[0] - x) * dx + (p[1] - y) * dy) / (dx * dx + dy * dy);
+      if (t > 1) { x = b[0]; y = b[1]; }
+      else if (t > 0) { x += dx * t; y += dy * t; }
+    }
+    return (p[0] - x) ** 2 + (p[1] - y) ** 2;
+  };
+  const keep = new Uint8Array(points.length);
+  keep[0] = keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [first, last] = stack.pop();
+    let maxDist = 0, idx = 0;
+    for (let i = first + 1; i < last; i++) {
+      const d = sqSegDist(points[i], points[first], points[last]);
+      if (d > maxDist) { maxDist = d; idx = i; }
+    }
+    if (maxDist > sqTol) { keep[idx] = 1; stack.push([first, idx], [idx, last]); }
+  }
+  return points.filter((_, i) => keep[i]);
+}
+
+async function fetchGeometry(slug, waypoints) {
+  const file = join(GEO_DIR, `${slug}.json`);
+  if (existsSync(file) && !REFRESH) return JSON.parse(readFileSync(file, "utf8"));
+  const points = waypoints.map((w) => w.split(",").map(Number)); // [lng,lat]
+  try {
+    const res = await fetch(`${GH_URL}/route`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        points,
+        profile: "twotired",
+        "ch.disable": true,
+        snap_prevention: ["motorway", "motorway_link"],
+        points_encoded: false,
+        instructions: false,
+        locale: "en",
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!res.ok) throw new Error(`GH ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const json = await res.json();
+    const coords = json.paths?.[0]?.points?.coordinates;
+    if (!coords?.length) throw new Error("GH returned no geometry");
+    const latlng = simplify(coords.map(([lng, lat]) => [lat, lng]));
+    const out = { slug, source: "graphhopper/twotired", fetched: new Date().toISOString().slice(0, 10), distance_m: Math.round(json.paths[0].distance), points: latlng.map(([a, b]) => [Number(a.toFixed(5)), Number(b.toFixed(5))]) };
+    mkdirSync(GEO_DIR, { recursive: true });
+    writeFileSync(file, JSON.stringify(out));
+    console.log(`  ↳ geometry from GraphHopper: ${out.points.length} pts, ${(out.distance_m / 1609).toFixed(1)} mi`);
+    return out;
+  } catch (e) {
+    if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+    console.warn(`  ↳ GH unavailable for ${slug} (${e.message}) — falling back to waypoint line. Run again on a machine that can reach Molly.`);
+    return null;
+  }
+}
+
+// ---------------- page templates ----------------
 
 const CSS = `
 :root{--bg:#f8f8f6;--surface:#fff;--surface2:#f1f1ef;--accent:#f97316;--accent-hover:#ea6c0a;--text:#1a1a1a;--text-dim:#555;--text-muted:#999}
@@ -94,10 +172,12 @@ function head(title, desc, path, extra = "") {
 </head><body>`;
 }
 
-function routePage(r) {
+function routePage(r, geo) {
   const d = routesDb.find((x) => x.id === r.routeId);
   if (!d) throw new Error(`routeId ${r.routeId} not in routesDb`);
-  const pts = d.waypoints.map((w) => { const [lng, lat] = w.split(",").map(Number); return [lat, lng]; });
+  const waypointPts = d.waypoints.map((w) => { const [lng, lat] = w.split(",").map(Number); return [lat, lng]; });
+  const pts = geo?.points?.length ? geo.points : waypointPts;
+  const isReal = Boolean(geo?.points?.length);
   const path = `/routes/${r.slug}`;
   const jsonld = {
     "@context": "https://schema.org", "@type": "TouristTrip",
@@ -113,6 +193,9 @@ function routePage(r) {
     const rd = rr && routesDb.find((x) => x.id === rr.routeId);
     return rr && rd ? `<a class="card" href="/routes/${rr.slug}"><b>${esc(rr.h1)}</b><span class="meta">${rd.distance_mi} mi · ${esc(rd.duration_str)} · ${esc(rr.region)}</span></a>` : "";
   }).join("\n");
+  const mapNote = isReal
+    ? `The actual road-by-road line, routed by ${APP}'s own engine — every curve you see is pavement you'll ride.`
+    : `Approximate path through the route's waypoints — open it in ${APP} for the full turn-by-turn line.`;
 
   return `${head(r.seoTitle, r.metaDescription, path,
     `<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -130,7 +213,7 @@ ${header}
 </div>
 <p class="body">${esc(r.intro)}</p>
 <div id="map"></div>
-<div class="map-note">Approximate path through the route's waypoints — open it in ${APP} for the full turn-by-turn line.</div>
+<div class="map-note">${mapNote}</div>
 <h2>How the ride breaks down</h2>
 ${r.segments.map((s) => `<div class="seg"><b>${esc(s.label)}</b>${esc(s.text)}</div>`).join("\n")}
 <h2>Local knowledge</h2>
@@ -185,13 +268,18 @@ ${urls.map((u) => `<url><loc>${SITE}${u}</loc><lastmod>${today}</lastmod></url>`
 </urlset>\n`;
 }
 
+// ---------------- main ----------------
+
 mkdirSync(join(ROOT, "public/routes"), { recursive: true });
+let realCount = 0;
 for (const r of cfg.routes) {
-  writeFileSync(join(ROOT, `public/routes/${r.slug}.html`), routePage(r));
-  console.log(`✓ public/routes/${r.slug}.html`);
+  const d = routesDb.find((x) => x.id === r.routeId);
+  console.log(`${r.slug}`);
+  const geo = await fetchGeometry(r.slug, d.waypoints);
+  if (geo?.points?.length) realCount++;
+  writeFileSync(join(ROOT, `public/routes/${r.slug}.html`), routePage(r, geo));
 }
 writeFileSync(join(ROOT, "public/routes/index.html"), hubPage());
-console.log("✓ public/routes/index.html");
 writeFileSync(join(ROOT, "public/sitemap.xml"), sitemap());
-console.log("✓ public/sitemap.xml");
-console.log(`\nDone. ${cfg.routes.length} route pages for ${SITE}`);
+console.log(`\nDone. ${cfg.routes.length} pages — ${realCount} with real road geometry, ${cfg.routes.length - realCount} on waypoint fallback.`);
+if (realCount < cfg.routes.length) console.log("Re-run on a machine that can reach Molly (or set GH_URL) to upgrade the fallbacks.");
