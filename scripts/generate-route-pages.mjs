@@ -28,7 +28,20 @@ const GH_URL = process.env.GH_URL || "https://molly.tail71232f.ts.net/gh";
 const REFRESH = process.argv.includes("--refresh-geometry");
 
 const cfg = JSON.parse(readFileSync(join(ROOT, "scripts/route-pages.json"), "utf8"));
-const { url: SITE, appStoreUrl: APP_STORE, appName: APP } = cfg.site;
+const { url: SITE, appStoreUrl: APP_STORE, playStoreUrl: PLAY_STORE, appName: APP } = cfg.site;
+
+const APPLE_BADGE = "https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us";
+const PLAY_BADGE = "https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png";
+
+function badges(center = true) {
+  const play = PLAY_STORE
+    ? `<a class="badge badge-play" href="${PLAY_STORE}"><img src="${PLAY_BADGE}" alt="Get it on Google Play"></a>`
+    : `<span class="badge badge-play badge-soon" title="Android version coming soon"><img src="${PLAY_BADGE}" alt="Google Play — coming soon"><em>Coming&nbsp;soon</em></span>`;
+  return `<div class="badges${center ? "" : " badges-left"}">
+<a class="badge" href="${APP_STORE}"><img src="${APPLE_BADGE}" alt="Download on the App Store"></a>
+${play}
+</div>`;
+}
 
 // --- pull routesDb out of src/data.js (it's a plain array literal) ---
 const dataSrc = readFileSync(join(ROOT, "src/data.js"), "utf8");
@@ -104,6 +117,31 @@ async function fetchGeometry(slug, waypoints) {
   }
 }
 
+// ---------------- SVG map thumbnails ----------------
+
+function thumbSVG(pts) { // pts: [[lat,lng],...]
+  const W = 400, H = 280, P = 20;
+  const lats = pts.map((p) => p[0]), lngs = pts.map((p) => p[1]);
+  const mnLa = Math.min(...lats), mxLa = Math.max(...lats);
+  const mnLo = Math.min(...lngs), mxLo = Math.max(...lngs);
+  const k = Math.cos(((mnLa + mxLa) / 2) * Math.PI / 180);
+  const w = Math.max((mxLo - mnLo) * k, 1e-6), h = Math.max(mxLa - mnLa, 1e-6);
+  const s = Math.min((W - 2 * P) / w, (H - 2 * P) / h);
+  const ox = (W - w * s) / 2, oy = (H - h * s) / 2;
+  const X = (lng) => ox + (lng - mnLo) * k * s;
+  const Y = (lat) => H - (oy + (lat - mnLa) * s);
+  const d = pts.map((p, i) => (i ? "L" : "M") + X(p[1]).toFixed(1) + " " + Y(p[0]).toFixed(1)).join("");
+  const [sx, sy] = [X(pts[0][1]), Y(pts[0][0])];
+  const [ex, ey] = [X(pts[pts.length - 1][1]), Y(pts[pts.length - 1][0])];
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" fill="#f1f1ef"/>
+<path d="${d}" fill="none" stroke="#e0d9cd" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="${d}" fill="none" stroke="#f97316" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="6" fill="#16a34a" stroke="#fff" stroke-width="2"/>
+<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="6" fill="#1a1a1a" stroke="#fff" stroke-width="2"/>
+</svg>\n`;
+}
+
 // ---------------- page templates ----------------
 
 const CSS = `
@@ -144,7 +182,14 @@ p.body{margin:12px 0;color:var(--text);font-size:1.02rem}
 footer.site{border-top:1px solid #e5e5e2;margin-top:50px;padding:26px 0;color:var(--text-muted);font-size:.85rem}
 footer.site .wrap{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between}
 footer.site a{color:var(--text-dim);margin-right:14px}
-@media(max-width:600px){h1{font-size:1.5rem}#map{height:280px}}
+.badges{display:flex;gap:16px;justify-content:center;align-items:center;flex-wrap:wrap;margin:6px 0}
+.badges-left{justify-content:flex-start}
+.badge img{height:58px;display:block}
+.badge-play img{height:86px;margin:-14px 0}
+.badge-soon{position:relative;display:inline-block;filter:grayscale(1);opacity:.55}
+.badge-soon em{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);font-style:normal;font-size:.68rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#fff;background:rgba(0,0,0,.75);padding:2px 8px;border-radius:6px;white-space:nowrap}
+.card .thumb{width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:12px;background:var(--surface2);display:block}
+@media(max-width:600px){h1{font-size:1.5rem}#map{height:280px}.badge img{height:48px}.badge-play img{height:72px;margin:-12px 0}}
 `;
 
 const header = `<header class="site"><div class="wrap">
@@ -191,7 +236,7 @@ function routePage(r, geo) {
   const related = (r.related || []).map((slug) => {
     const rr = cfg.routes.find((x) => x.slug === slug);
     const rd = rr && routesDb.find((x) => x.id === rr.routeId);
-    return rr && rd ? `<a class="card" href="/routes/${rr.slug}"><b>${esc(rr.h1)}</b><span class="meta">${rd.distance_mi} mi · ${esc(rd.duration_str)} · ${esc(rr.region)}</span></a>` : "";
+    return rr && rd ? `<a class="card" href="/routes/${rr.slug}"><img class="thumb" src="/routes/thumbs/${rr.slug}.svg" alt="Map of ${esc(rr.h1)}" loading="lazy"><b>${esc(rr.h1)}</b><span class="meta">${rd.distance_mi} mi · ${esc(rd.duration_str)} · ${esc(rr.region)}</span></a>` : "";
   }).join("\n");
   const mapNote = isReal
     ? `The actual road-by-road line, routed by ${APP}'s own engine — every curve you see is pavement you'll ride.`
@@ -220,7 +265,7 @@ ${r.segments.map((s) => `<div class="seg"><b>${esc(s.label)}</b>${esc(s.text)}</
 <div class="tips">${esc(r.tips)}</div>
 <div class="cta"><h2>Ride this route with ${APP}</h2>
 <p>This route ships inside the app — voice-controlled planning, live group tracking, and turn-by-turn for every mile of it. Best for: ${esc(r.bestFor).toLowerCase()}.</p>
-<a class="btn" href="${APP_STORE}">Download on the App Store</a></div>
+${badges()}</div>
 <h2>More routes like this</h2>
 <div class="cards">${related}</div>
 </main>
@@ -241,7 +286,7 @@ map.fitBounds(line.getBounds(),{padding:[24,24]});
 function hubPage() {
   const cards = cfg.routes.map((r) => {
     const d = routesDb.find((x) => x.id === r.routeId);
-    return `<a class="card" href="/routes/${r.slug}"><b>${esc(r.h1)}</b><span class="meta">${d.distance_mi} mi · ${esc(d.duration_str)} · ${esc(r.region)}</span><p>${esc(r.metaDescription.split(".")[0])}.</p></a>`;
+    return `<a class="card" href="/routes/${r.slug}"><img class="thumb" src="/routes/thumbs/${r.slug}.svg" alt="Map of ${esc(r.h1)}" loading="lazy"><b>${esc(r.h1)}</b><span class="meta">${d.distance_mi} mi · ${esc(d.duration_str)} · ${esc(r.region)}</span><p>${esc(r.metaDescription.split(".")[0])}.</p></a>`;
   }).join("\n");
   return `${head(
     "The Best Motorcycle Routes Near NYC — Curated & Rider-Vetted | " + APP,
@@ -253,7 +298,7 @@ ${header}
 <h1>The best motorcycle routes near NYC</h1>
 <p class="body">Every route below is curated and rider-vetted — real roads locals actually ride, scored for how twisty they are, with the boring transit minimized. All of them ship inside ${APP}, so you can open one and ride it with turn-by-turn today.</p>
 <div class="cards">${cards}</div>
-<div class="cta"><h2>Or just ask for a route</h2><p>${APP} builds custom routes from plain English — "two hours of twisties, end at a diner." Voice-first, so it works with gloves on.</p><a class="btn" href="${APP_STORE}">Download on the App Store</a></div>
+<div class="cta"><h2>Or just ask for a route</h2><p>${APP} builds custom routes from plain English — "two hours of twisties, end at a diner." Voice-first, so it works with gloves on.</p>${badges()}</div>
 </main>
 ${footer}
 </body></html>`;
@@ -271,12 +316,15 @@ ${urls.map((u) => `<url><loc>${SITE}${u}</loc><lastmod>${today}</lastmod></url>`
 // ---------------- main ----------------
 
 mkdirSync(join(ROOT, "public/routes"), { recursive: true });
+mkdirSync(join(ROOT, "public/routes/thumbs"), { recursive: true });
 let realCount = 0;
 for (const r of cfg.routes) {
   const d = routesDb.find((x) => x.id === r.routeId);
   console.log(`${r.slug}`);
   const geo = await fetchGeometry(r.slug, d.waypoints);
   if (geo?.points?.length) realCount++;
+  const pts = geo?.points?.length ? geo.points : d.waypoints.map((w) => { const [lng, lat] = w.split(",").map(Number); return [lat, lng]; });
+  writeFileSync(join(ROOT, `public/routes/thumbs/${r.slug}.svg`), thumbSVG(pts));
   writeFileSync(join(ROOT, `public/routes/${r.slug}.html`), routePage(r, geo));
 }
 writeFileSync(join(ROOT, "public/routes/index.html"), hubPage());

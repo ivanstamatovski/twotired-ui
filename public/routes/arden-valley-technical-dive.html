@@ -46,7 +46,14 @@ p.body{margin:12px 0;color:var(--text);font-size:1.02rem}
 footer.site{border-top:1px solid #e5e5e2;margin-top:50px;padding:26px 0;color:var(--text-muted);font-size:.85rem}
 footer.site .wrap{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between}
 footer.site a{color:var(--text-dim);margin-right:14px}
-@media(max-width:600px){h1{font-size:1.5rem}#map{height:280px}}
+.badges{display:flex;gap:16px;justify-content:center;align-items:center;flex-wrap:wrap;margin:6px 0}
+.badges-left{justify-content:flex-start}
+.badge img{height:58px;display:block}
+.badge-play img{height:86px;margin:-14px 0}
+.badge-soon{position:relative;display:inline-block;filter:grayscale(1);opacity:.55}
+.badge-soon em{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);font-style:normal;font-size:.68rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#fff;background:rgba(0,0,0,.75);padding:2px 8px;border-radius:6px;white-space:nowrap}
+.card .thumb{width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:12px;background:var(--surface2);display:block}
+@media(max-width:600px){h1{font-size:1.5rem}#map{height:280px}.badge img{height:48px}.badge-play img{height:72px;margin:-12px 0}}
 </style><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"TouristTrip","name":"The Arden Valley Technical Dive","description":"Arden Valley Road is the sharpest, most technical twisty section near NYC. This 55-mile motorcycle route from the city prioritizes tight cornering over everything else. 1h 30m.","touristType":"Motorcycle riders","itinerary":{"@type":"ItemList","itemListElement":[{"@type":"ListItem","position":1,"name":"Astoria, Queens (NYC)"},{"@type":"ListItem","position":2,"name":"Harriman State Park via Arden Valley Rd"}]},"provider":{"@type":"Organization","name":"TwoTired","url":"https://www.twotired.net"}}</script>
 </head><body>
@@ -75,11 +82,14 @@ footer.site a{color:var(--text-dim);margin-right:14px}
 <div class="tips">Surface can carry gravel wash after rain — first pass at 7/10ths. Sight lines are short; stay in your lane on blind crests. Combines well with the Seven Lakes loop if you want a full day.</div>
 <div class="cta"><h2>Ride this route with TwoTired</h2>
 <p>This route ships inside the app — voice-controlled planning, live group tracking, and turn-by-turn for every mile of it. Best for: riders who want corners, not cruising.</p>
-<a class="btn" href="https://apps.apple.com/us/app/twotired/id6773547851">Download on the App Store</a></div>
+<div class="badges">
+<a class="badge" href="https://apps.apple.com/us/app/twotired/id6773547851"><img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us" alt="Download on the App Store"></a>
+<span class="badge badge-play badge-soon" title="Android version coming soon"><img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Google Play — coming soon"><em>Coming&nbsp;soon</em></span>
+</div></div>
 <h2>More routes like this</h2>
-<div class="cards"><a class="card" href="/routes/seven-lakes-perkins-bear-mountain-loop"><b>The Seven Lakes &amp; Perkins Classic</b><span class="meta">58 mi · 1h 42m · Harriman State Park / Bear Mountain, NY</span></a>
-<a class="card" href="/routes/harriman-sterling-forest-sweep"><b>Harriman &amp; Sterling Forest Sweep</b><span class="meta">95 mi · 2h 42m · Harriman / Sterling Forest / Hawk's Nest, NY</span></a>
-<a class="card" href="/routes/storm-king-river-run"><b>The Storm King River Run</b><span class="meta">66 mi · 1h 43m · Hudson Highlands / Cornwall, NY</span></a></div>
+<div class="cards"><a class="card" href="/routes/seven-lakes-perkins-bear-mountain-loop"><img class="thumb" src="/routes/thumbs/seven-lakes-perkins-bear-mountain-loop.svg" alt="Map of The Seven Lakes &amp; Perkins Classic" loading="lazy"><b>The Seven Lakes &amp; Perkins Classic</b><span class="meta">58 mi · 1h 42m · Harriman State Park / Bear Mountain, NY</span></a>
+<a class="card" href="/routes/harriman-sterling-forest-sweep"><img class="thumb" src="/routes/thumbs/harriman-sterling-forest-sweep.svg" alt="Map of Harriman &amp; Sterling Forest Sweep" loading="lazy"><b>Harriman &amp; Sterling Forest Sweep</b><span class="meta">95 mi · 2h 42m · Harriman / Sterling Forest / Hawk's Nest, NY</span></a>
+<a class="card" href="/routes/storm-king-river-run"><img class="thumb" src="/routes/thumbs/storm-king-river-run.svg" alt="Map of The Storm King River Run" loading="lazy"><b>The Storm King River Run</b><span class="meta">66 mi · 1h 43m · Hudson Highlands / Cornwall, NY</span></a></div>
 </main>
 <footer class="site"><div class="wrap">
 <div>© 2026 TwoTired — AI-powered motorcycle route planning. Built by riders in NYC.</div>

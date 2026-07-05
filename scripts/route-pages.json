@@ -3,6 +3,8 @@
     "url": "https://www.twotired.net",
     "note": "Canonical domain. After editing routes, re-run: node scripts/generate-route-pages.mjs",
     "appStoreUrl": "https://apps.apple.com/us/app/twotired/id6773547851",
+    "playStoreUrl": "",
+    "playStoreNote": "Set the Google Play URL here when live, then re-run the generator. Empty = badge shows 'coming soon'.",
     "appName": "TwoTired"
   },
   "routes": [
