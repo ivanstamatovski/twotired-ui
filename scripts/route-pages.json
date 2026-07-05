@@ -1,6 +1,6 @@
 {
   "site": {
-    "url": "https://twotired.net",
+    "url": "https://www.twotired.net",
     "note": "Canonical domain. After editing routes, re-run: node scripts/generate-route-pages.mjs",
     "appStoreUrl": "https://apps.apple.com/us/app/twotired/id6773547851",
     "appName": "TwoTired"

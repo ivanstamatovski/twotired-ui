@@ -10,8 +10,6 @@
     }
   ],
   "rewrites": [
-    { "source": "/", "has": [{ "type": "query", "key": "add" }], "destination": "/index.html" },
-    { "source": "/", "destination": "/home.html" },
-    { "source": "/app", "destination": "/index.html" }
+    { "source": "/app", "destination": "/app.html" }
   ]
 }

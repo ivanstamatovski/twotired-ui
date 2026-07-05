@@ -2,4 +2,4 @@ User-agent: *
 Allow: /
 Disallow: /app
 
-Sitemap: https://twotired.net/sitemap.xml
+Sitemap: https://www.twotired.net/sitemap.xml
