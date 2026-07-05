@@ -28,8 +28,44 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 | AI — narrative & briefs | Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) |
 | Geocoding | Google Places API (New) — `searchText` + haversine post-filter |
 | Backend | Supabase Edge Functions (Deno) + Postgres |
-| Native wrapper | Capacitor 7 (`net.twotired.app`) |
+| Native wrapper | Capacitor 8 (`net.twotired.app`) |
 | Domain | `twotired.net` (Vercel DNS) |
+
+---
+
+## Platform Matrix — what's shared vs. forked
+
+**Mental model: this is NOT "3 apps" — it's ONE web codebase (`src/App.jsx`) that Capacitor wraps into thin native shells.** Three published surfaces, one brain:
+- **Web / PWA** → `twotired.net` (Vercel)
+- **iOS** → `ios/` shell → App Store
+- **Android** → `android/` shell → Play Store (scaffolded 2026-07-04; debug APK builds, not yet on a store)
+
+~95% of all work is write-once, serves-all-three. Only the thin native shell + store logistics fork. Everything below the WebView is platform-agnostic — it doesn't know which surface the request came from.
+
+### Mutual (one copy, serves every surface)
+| Resource | Notes |
+|---|---|
+| **Molly — GraphHopper** (`/gh`, `twotired` profile) | Backend HTTP; edge fn calls it. Zero platform awareness. |
+| **Molly — score server + `twotired_roads` DB** | Server-side road scoring. |
+| **All Supabase tables + `known_roads` catalog** | One Postgres, one source of truth. |
+| **All edge functions** (`generate-route` etc.) | A deploy hits every surface **instantly, no rebuild** — the superpower; prefer server-side fixes. |
+| **Claude** (Sonnet intent, Haiku narrative) + **Google Places** | Called from edge fns. |
+| **`src/App.jsx` + `App.css`** | The whole frontend — same `dist/` bundle loads in every shell. |
+| **`capacitor.config.json`** | Shared file (appId/appName/webDir). Keep clean — no `server.url`. |
+| **Admin portal, Vercel deploy, domain** | Server-side. |
+
+### Forked (the thin ~5% — native shell + store logistics)
+| Concern | iOS | Android |
+|---|---|---|
+| Shell dir | `ios/` | `android/` |
+| Permissions | `Info.plist` (location keys) | `AndroidManifest.xml` |
+| Signing / distribution | Apple Dev, Xcode, TestFlight, App Store Connect | Play Console, keystore, `.aab` |
+| Version counter | `CFBundleVersion` | `versionCode`/`versionName` (`android/app/build.gradle`) |
+| Icons / splash | Xcode assets | `res/` mipmaps |
+| Known platform quirks | (see iOS section) | WebView geolocation, back button (see Android section) |
+
+### Versioning model
+The **real product version is the edge-fn/frontend semver** (`generate-route` vX.YZ) — it's shared and deploys live to all surfaces with no rebuild. The per-store native counters (`CFBundleVersion`, Android `versionCode`) are **dumb packaging numbers**: independent per store, monotonic, and do NOT need to match each other. "Which features does a user have" = (server version, always current) + (native shell build, only matters when a *native* capability changed).
 
 ---
 
@@ -405,6 +441,37 @@ Do NOT add `server.url` (breaks HTTPS tile requests via ATS) or `scrollEnabled: 
 
 ---
 
+## Android / Capacitor (scaffolded 2026-07-04)
+
+Second native shell around the same web app. `android/` Capacitor project builds a clean debug APK; not yet on Play Store or run on a device. `@capacitor/android` pinned to `8.3.4` (matches the other `@capacitor/*`). appId `net.twotired.app` (same as iOS).
+
+### Build Workflow
+```bash
+# On Ivan's Mac (NOT Claude's sandbox — npm build fails there; direct Bash is fine)
+cd ~/Documents/twotired-ui
+npm run build && npx cap sync android      # sync web bundle → android/ (do this before ANY native build)
+cd android && ./gradlew assembleDebug      # → app/build/outputs/apk/debug/app-debug.apk
+npx cap open android                        # open in Android Studio → run on emulator / device
+```
+Same stale-bundle trap as iOS: **`npm run build && npx cap sync` before every native rebuild**, or the shell ships an old `dist/`.
+
+### Toolchain (this Mac, Apple Silicon arm64)
+JDK 21 (Temurin), Android Studio + SDK at `~/Library/Android/sdk` (platform-tools, build-tools 36+37, platforms/android-36.1, licenses accepted). Env vars in `~/.zshrc` (`JAVA_HOME`, `ANDROID_HOME`, PATH). **`cmdline-tools`/`sdkmanager` NOT installed** — not needed to build; add via Android Studio → Settings → Languages & Frameworks → Android SDK → SDK Tools → "Android SDK Command-line Tools" if you ever need package management.
+
+### AndroidManifest permissions (`android/app/src/main/AndroidManifest.xml`)
+Mirror the iOS Info.plist capabilities:
+- `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION` — WebView geolocation (mirrors iOS location keys).
+- `RECORD_AUDIO` — voice input. The `@capacitor-community/speech-recognition` plugin ships its OWN manifest with `RECORD_AUDIO` + a `<queries>`/`RecognitionService` block; the manifest merger pulls those into the final app manifest (verified). Declared explicitly too for self-documentation.
+- **No `ACCESS_BACKGROUND_LOCATION`** — Play Store review liability; nav keeps the screen awake (keep-awake) so location use stays foreground. keep-awake itself needs no permission (window `FLAG_KEEP_SCREEN_ON`).
+
+### Android-specific watch-outs
+- **⚠️ WebView geolocation likely doesn't "just work" (unverified on-device).** The app uses browser `navigator.geolocation.watchPosition`, NOT `@capacitor/geolocation`. On Android WebView the Capacitor bridge may not auto-grant the geolocation prompt like iOS does. **If GPS never fixes on-device, this is the cause** → handle `onGeolocationPermissionsShowPrompt` in `MainActivity`, or adopt the `@capacitor/geolocation` plugin.
+- **Keystore signing is Ivan's manual step** (like Xcode signing on iOS) — release `.aab` needs a keystore + Play Console.
+- Hardware **back button** behavior (Capacitor `App` plugin `backButton` listener) — verify it doesn't exit mid-nav.
+- Build artifacts are gitignored via Capacitor's `android/.gitignore` (APK, `.gradle/`, `build/`, `local.properties`, copied web assets) — only source is committed.
+
+---
+
 ## CSS Architecture — Critical Lessons
 
 ### Bottom Sheet
@@ -474,4 +541,6 @@ Removed scoring variant (v2.65); NYC polygon + intra-NYC escape skip (v2.66–68
 - **`translateY(positive)` shows TOP of element** at screen bottom. Don't use `justify-content: flex-end` in slide-up sheets.
 - **No routing variant toggle** — v2.65 baked in the one model deliberately; don't reintroduce A/B scoring.
 - **Anchors and corridors are mutually exclusive** — if Claude emits both, corridor wins.
+- **Native parity — one capability, two manifests.** Adding a native capability (a new permission, plugin, or entitlement) means updating BOTH `ios/App/App/Info.plist` AND `android/app/src/main/AndroidManifest.xml`. Updating one and forgetting the other is the main maintenance tax of two shells — check both every time.
+- **Sync before any native rebuild.** `npm run build && npx cap sync` before rebuilding iOS OR Android, or the shell ships a stale `dist/` (already bit us: TestFlight build 31).
 - **Picker rides must ride the FULL seeded road** — the fun leg is the point; transit-out and return-home are just fast (curviness 1) connectors around it. Keep the fun leg threaded through the road's cached geometry via-points (v2.98) so it covers the whole road, and keep the return fast (v2.94, NOT scenic like v2.91). Don't regress either — the rider chose that road to ride all of it, then get home quick.
