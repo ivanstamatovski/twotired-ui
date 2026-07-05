@@ -25,13 +25,26 @@ nav.top a{color:var(--text-dim);margin-left:18px;font-size:.92rem;font-weight:50
 .btn:hover{background:var(--accent-hover)}
 .btn-sm{padding:7px 14px;font-size:.88rem;border-radius:8px}
 .btn-dark{background:var(--text)}.btn-dark:hover{background:#000}
-.hero{text-align:center;padding:72px 0 56px}
-.hero h1{font-size:2.9rem;line-height:1.1;letter-spacing:-.03em;max-width:700px;margin:0 auto 16px}
+.hero{position:relative;min-height:560px;height:74vh;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:#1a1a1a}
+.hero-slide{position:absolute;inset:0;opacity:0;transition:opacity 1.4s ease}
+.hero-slide.on{opacity:1}
+.hero-slide img{width:100%;height:100%;object-fit:cover;display:block}
+.hero-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(12,12,12,.62) 0%,rgba(12,12,12,.30) 45%,rgba(12,12,12,.68) 100%)}
+.hero-inner{position:relative;z-index:2;padding:0 20px;max-width:760px}
+.hero h1{font-size:3rem;line-height:1.08;letter-spacing:-.03em;margin:0 auto 16px;color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.45)}
 .hero h1 em{color:var(--accent);font-style:normal}
-.hero p{font-size:1.2rem;color:var(--text-dim);max-width:560px;margin:0 auto 28px}
-.voice-demo{display:inline-block;background:var(--text);color:#fff;border-radius:999px;padding:12px 22px;font-size:1rem;margin-bottom:30px}
+.hero p{font-size:1.18rem;color:rgba(255,255,255,.88);max-width:560px;margin:0 auto 26px;text-shadow:0 1px 12px rgba(0,0,0,.5)}
+.voice-demo{display:inline-block;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.18);color:#fff;border-radius:999px;padding:12px 22px;font-size:1rem;margin-bottom:28px}
 .voice-demo .mic{color:var(--accent);margin-right:8px}
-.hero .sub{display:block;margin-top:12px;color:var(--text-muted);font-size:.85rem}
+.hero .sub{display:block;margin-top:14px;color:rgba(255,255,255,.65);font-size:.85rem}
+.hero-dots{position:absolute;bottom:22px;left:0;right:0;display:flex;justify-content:center;gap:9px;z-index:3}
+.hero-dots button{width:9px;height:9px;border-radius:50%;border:0;padding:0;background:rgba(255,255,255,.4);cursor:pointer;transition:background .3s,transform .3s}
+.hero-dots button.on{background:var(--accent);transform:scale(1.25)}
+.band{position:relative;border-radius:20px;overflow:hidden;min-height:340px;display:flex;align-items:flex-end;margin:10px 0}
+.band img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.band .band-shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(12,12,12,0) 30%,rgba(12,12,12,.72) 100%)}
+.band blockquote{position:relative;z-index:2;color:#fff;font-size:1.35rem;font-weight:600;letter-spacing:-.01em;padding:28px;max-width:560px;text-shadow:0 1px 12px rgba(0,0,0,.5)}
+.band blockquote span{display:block;font-size:.85rem;font-weight:400;color:rgba(255,255,255,.7);margin-top:6px}
 section{padding:46px 0}
 h2.sec{font-size:1.7rem;letter-spacing:-.02em;text-align:center;margin-bottom:8px}
 p.sec-sub{text-align:center;color:var(--text-dim);max-width:600px;margin:0 auto 30px}
@@ -57,7 +70,7 @@ p.sec-sub{text-align:center;color:var(--text-dim);max-width:600px;margin:0 auto 
 footer.site{border-top:1px solid #e5e5e2;margin-top:40px;padding:26px 0;color:var(--text-muted);font-size:.85rem}
 footer.site .wrap{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between}
 footer.site a{color:var(--text-dim);margin-right:14px}
-@media(max-width:640px){.hero h1{font-size:2.1rem}.hero{padding:48px 0 36px}}
+@media(max-width:640px){.hero h1{font-size:2.15rem}.hero{height:82vh;min-height:480px}.band blockquote{font-size:1.1rem;padding:20px}}
 </style>
 </head><body>
 <header class="site"><div class="wrap">
@@ -66,14 +79,22 @@ footer.site a{color:var(--text-dim);margin-right:14px}
 </div></header>
 
 <main>
-<div class="wrap">
-<div class="hero">
+<div class="hero" id="hero">
+<div class="hero-slide on"><img src="https://images.unsplash.com/photo-1756728906350-b0e266968c31?auto=format&fit=crop&w=2000&q=70" alt="Motorcyclist leaning deep into a curve on a twisty road" fetchpriority="high"></div>
+<div class="hero-slide"><img src="https://images.unsplash.com/photo-1508147532797-432d81b6808f?auto=format&fit=crop&w=2000&q=70" alt="Rider carving through a dense forest road" loading="lazy"></div>
+<div class="hero-slide"><img src="https://images.unsplash.com/photo-1707237898067-c78d644a97a5?auto=format&fit=crop&w=2000&q=70" alt="Motorcycle on a tree-lined backroad" loading="lazy"></div>
+<div class="hero-slide"><img src="https://images.unsplash.com/photo-1636217255382-596934360daf?auto=format&fit=crop&w=2000&q=70" alt="Rider sweeping down a curvy open road" loading="lazy"></div>
+<div class="hero-shade"></div>
+<div class="hero-inner">
 <h1>Ask for a ride.<br>Get <em>twisties</em>.</h1>
 <p>TwoTired is the AI route planner built for motorcyclists. Tell it what you want to ride — it builds the route, scores the curves, and keeps your whole group together.</p>
 <div class="voice-demo"><span class="mic">●</span>"Two hours of twisties, end at a diner."</div><br>
 <a class="btn" href="https://apps.apple.com/us/app/twotired/id6773547851">Download on the App Store</a>
 <span class="sub">Free · iPhone · Northeast US coverage</span>
 </div>
+<div class="hero-dots" id="hero-dots" aria-label="Slideshow position"></div>
+</div>
+<div class="wrap">
 
 <section>
 <h2 class="sec">Built around three things no other app does</h2>
@@ -108,6 +129,14 @@ footer.site a{color:var(--text-dim);margin-right:14px}
 </section>
 
 <section>
+<div class="band">
+<img src="https://images.unsplash.com/photo-1636217255382-596934360daf?auto=format&fit=crop&w=1800&q=70" alt="Rider on a sweeping curve" loading="lazy">
+<div class="band-shade"></div>
+<blockquote>"The road you've ridden a hundred times has a better version. You just haven't asked for it yet."<span>— every TwoTired route, basically</span></blockquote>
+</div>
+</section>
+
+<section>
 <div class="cta-final">
 <h2>Riding season doesn't wait.</h2>
 <p>Free on the App Store. Built by riders in NYC.</p>
@@ -118,7 +147,35 @@ footer.site a{color:var(--text-dim);margin-right:14px}
 </main>
 
 <footer class="site"><div class="wrap">
-<div>© 2026 TwoTired — AI-powered motorcycle route planning. Built by riders in NYC.</div>
+<div>© 2026 TwoTired — AI-powered motorcycle route planning. Built by riders in NYC. Photography via <a href="https://unsplash.com" rel="noopener">Unsplash</a>.</div>
 <div><a href="/routes/">Routes</a><a href="/privacy.html">Privacy</a><a href="/support.html">Support</a><a href="https://apps.apple.com/us/app/twotired/id6773547851">App Store</a></div>
 </div></footer>
+<script>
+(function(){
+  var slides=document.querySelectorAll('.hero-slide');
+  var dotsBox=document.getElementById('hero-dots');
+  var i=0,timer=null,INTERVAL=6000;
+  var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  slides.forEach(function(_,n){
+    var b=document.createElement('button');
+    b.setAttribute('aria-label','Show slide '+(n+1));
+    if(n===0)b.className='on';
+    b.addEventListener('click',function(){go(n);restart();});
+    dotsBox.appendChild(b);
+  });
+  var dots=dotsBox.querySelectorAll('button');
+  function go(n){
+    slides[i].classList.remove('on');dots[i].classList.remove('on');
+    i=n%slides.length;
+    slides[i].classList.add('on');dots[i].classList.add('on');
+  }
+  function tick(){go(i+1);}
+  function restart(){if(timer)clearInterval(timer);if(!reduced)timer=setInterval(tick,INTERVAL);}
+  document.addEventListener('visibilitychange',function(){
+    if(document.hidden){if(timer)clearInterval(timer);timer=null;}
+    else restart();
+  });
+  restart();
+})();
+</script>
 </body></html>
