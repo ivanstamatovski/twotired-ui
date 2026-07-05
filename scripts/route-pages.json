@@ -1,0 +1,130 @@
+{
+  "site": {
+    "url": "https://twotired.net",
+    "note": "Canonical domain. After editing routes, re-run: node scripts/generate-route-pages.mjs",
+    "appStoreUrl": "https://apps.apple.com/us/app/twotired/id6773547851",
+    "appName": "TwoTired"
+  },
+  "routes": [
+    {
+      "slug": "seven-lakes-perkins-bear-mountain-loop",
+      "routeId": "opt1",
+      "seoTitle": "Seven Lakes Drive & Perkins Memorial: The Classic Bear Mountain Motorcycle Loop from NYC",
+      "metaDescription": "The definitive Bear Mountain motorcycle route from NYC: Seven Lakes Drive's banked sweepers through Harriman State Park, ending with the Perkins Memorial Drive ascent. 58 miles, 1h 42m.",
+      "h1": "The Seven Lakes & Perkins Classic",
+      "region": "Harriman State Park / Bear Mountain, NY",
+      "start": "Astoria, Queens (NYC)",
+      "end": "Perkins Memorial Drive, Bear Mountain",
+      "character": "Banked forest sweepers, lakeside curves, summit hairpins",
+      "bestFor": "Every rider — the benchmark NYC escape loop",
+      "intro": "If you ride out of New York City, this is the loop everyone measures everything else against. You clear the city on highway, burn up the Palisades, then dive into Harriman State Park where Seven Lakes Drive strings together banked, forested sweepers past one pristine lake after another. The finale is the technical climb up Perkins Memorial Drive to the Bear Mountain summit — tight hairpins with a Hudson Valley panorama waiting at the top.",
+      "segments": [
+        {"label": "The escape", "text": "City streets and standard highway to get clear of NYC — get it done, nothing to savor here."},
+        {"label": "The transit", "text": "A straight, scenic parkway burn up the Palisades to Exit 14 (Willow Grove Rd)."},
+        {"label": "The reward", "text": "Engaging, banked sweepers through dense forest past pristine lakes, culminating in the tight hairpins of Perkins Memorial Drive."}
+      ],
+      "tips": "Perkins Memorial Drive is seasonal (typically closed in winter) and popular on weekends — go early. Watch for cyclists and deer on Seven Lakes Drive. Fuel up before entering the park.",
+      "related": ["arden-valley-technical-dive", "storm-king-river-run", "harriman-sterling-forest-sweep"]
+    },
+    {
+      "slug": "arden-valley-technical-dive",
+      "seoTitle": "Arden Valley Road: The Most Technical Motorcycle Road in Harriman State Park",
+      "routeId": "opt2",
+      "metaDescription": "Arden Valley Road is the sharpest, most technical twisty section near NYC. This 55-mile motorcycle route from the city prioritizes tight cornering over everything else. 1h 30m.",
+      "h1": "The Arden Valley Technical Dive",
+      "region": "Harriman State Park, NY",
+      "start": "Astoria, Queens (NYC)",
+      "end": "Harriman State Park via Arden Valley Rd",
+      "character": "Sharp, technical, elevation-changing corners",
+      "bestFor": "Riders who want corners, not cruising",
+      "intro": "Ask local riders where the sharpest pavement near NYC is and Arden Valley Road comes up every time. This route treats the highway and parkway purely as delivery mechanisms: the point is the highly technical, elevation-changing sequence of tight turns that many consider the best pure riding road in Harriman. Shorter than the classic loop, and every mile of the good part works you harder.",
+      "segments": [
+        {"label": "The escape", "text": "City streets and standard highway to get clear of NYC."},
+        {"label": "The transit", "text": "High-speed, multi-lane transit to bypass the suburban sprawl up to Exit 16."},
+        {"label": "The reward", "text": "Highly technical, elevation-changing sharp turns — considered the best pure riding road in Harriman."}
+      ],
+      "tips": "Surface can carry gravel wash after rain — first pass at 7/10ths. Sight lines are short; stay in your lane on blind crests. Combines well with the Seven Lakes loop if you want a full day.",
+      "related": ["seven-lakes-perkins-bear-mountain-loop", "harriman-sterling-forest-sweep", "storm-king-river-run"]
+    },
+    {
+      "slug": "storm-king-river-run",
+      "seoTitle": "Storm King Highway (NY-218): The Cliff-Carved Hudson River Motorcycle Run",
+      "routeId": "opt3",
+      "metaDescription": "Ride NY-218, the Storm King Highway — a road carved into a cliff face 400 feet above the Hudson River. A 66-mile motorcycle route from NYC with the best views in the region. 1h 43m.",
+      "h1": "The Storm King River Run",
+      "region": "Hudson Highlands / Cornwall, NY",
+      "start": "Astoria, Queens (NYC)",
+      "end": "Storm King Highway, Cornwall-on-Hudson",
+      "character": "Cliffside curves, panoramic river views",
+      "bestFor": "Scenery hunters and photographers",
+      "intro": "This one skips the deep woods entirely and goes straight for the most dramatic pavement in the Hudson Valley: the Storm King Highway, NY-218, carved directly into the granite face of Storm King Mountain. Four hundred feet below, the Hudson. Zero shoulders, low stone walls, and views that make it genuinely hard to keep your eyes on the road — which, on this road, you very much need to do.",
+      "segments": [
+        {"label": "The escape", "text": "City escape and fast highway transit past the Bear Mountain Traffic Circle up to Cornwall."},
+        {"label": "The transit", "text": "Smooth parkway cruising between the bridge and the Bear Mountain traffic circle."},
+        {"label": "The reward", "text": "A dramatic stretch carved directly into the mountainside with 400-foot drops to the river and zero shoulders."}
+      ],
+      "tips": "NY-218 closes in bad weather and for rockfall — check before you commit. The pull-offs near the crest are the photo spots. Pair it with lunch in Cornwall-on-Hudson.",
+      "related": ["storm-king-mountain-run", "seven-lakes-perkins-bear-mountain-loop", "nj-high-point-ascent"]
+    },
+    {
+      "slug": "harriman-sterling-forest-sweep",
+      "routeId": "hn-opt1",
+      "seoTitle": "Harriman & Sterling Forest to Hawk's Nest: The Quintessential NYC Rider Route",
+      "metaDescription": "95 miles of the best riding near NYC: the Harriman transverse, NY-17A through Sterling Forest and Greenwood Lake, finishing at the famous Hawk's Nest overlook on NY-97. 2h 42m.",
+      "h1": "Harriman & Sterling Forest Sweep",
+      "region": "Harriman / Sterling Forest / Hawk's Nest, NY",
+      "start": "Astoria, Queens (NYC)",
+      "end": "Hawk's Nest, NY-97 above the Delaware",
+      "character": "Long twisty transverse, sweeping forest curves, iconic finale",
+      "bestFor": "A proper half-day ride with a legendary payoff",
+      "intro": "The quintessential NYC-area rider route. It threads the beloved Harriman transverse on CR-106, picks up NY-17A's sweeping curves through Sterling Forest and past Greenwood Lake, and keeps pushing west until the pavement coils into Hawk's Nest — the stacked switchbacks above the Delaware River that appear in every motorcycle ad shot on the East Coast. Ninety-five miles, almost all of it worth riding.",
+      "segments": [
+        {"label": "The escape", "text": "City streets and standard highway to get clear of NYC."},
+        {"label": "The transit", "text": "Palisades Interstate Parkway North to Exit 15 (Gate Hill Rd)."},
+        {"label": "The reward", "text": "CR-106 west into highly twisty Harriman, connecting to NY-17A west through Sterling Forest and Greenwood Lake, finishing on the Hawk's Nest switchbacks."}
+      ],
+      "tips": "Hawk's Nest is best early morning — it fills with photographers and sport riders by mid-day on weekends. Fuel in Greenwood Lake. NY-97 continues north along the Delaware if you want to stretch the day.",
+      "related": ["storm-king-mountain-run", "nj-high-point-ascent", "seven-lakes-perkins-bear-mountain-loop"]
+    },
+    {
+      "slug": "nj-high-point-ascent",
+      "routeId": "hn-opt2",
+      "seoTitle": "The New Jersey High Point Ascent: Sussex County's Best Motorcycle Roads",
+      "metaDescription": "An 84-mile motorcycle route through northwestern New Jersey's rolling hills and deep woods to High Point State Park — the highest elevation in NJ. Steep climbs, tight corners. 2h 0m.",
+      "h1": "The New Jersey High Point Ascent",
+      "region": "Sussex County / High Point State Park, NJ",
+      "start": "Astoria, Queens (NYC)",
+      "end": "High Point State Park, NJ",
+      "character": "Rolling two-lane, deep woods, steep summit climb",
+      "bestFor": "Riders who want empty roads over famous ones",
+      "intro": "Everyone floods the New York state parks on weekends; this route goes the other way. It crosses into northwestern New Jersey and works through the rolling hills and deep woods of Sussex County — fantastic, lightly-trafficked two-lane — before climbing through High Point State Park's steep elevation changes and tight corners to the highest point in the state, with the obelisk and a three-state view waiting at the top.",
+      "segments": [
+        {"label": "The escape", "text": "I-80 West express lanes to NJ-23 North, staying on the divided highway until Newfoundland."},
+        {"label": "The transit", "text": "No parkway on this route — it goes straight from highway to the good stuff."},
+        {"label": "The reward", "text": "A fantastic two-lane scenic ride through Sussex County and up High Point State Park's steep elevation changes and tight corners."}
+      ],
+      "tips": "Sussex County roads are quiet but farm-adjacent — expect the occasional slow vehicle and gravel drive. The High Point monument parking is bike-friendly. Port Jervis and Hawk's Nest are 15 minutes away if you want to extend.",
+      "related": ["harriman-sterling-forest-sweep", "storm-king-mountain-run", "arden-valley-technical-dive"]
+    },
+    {
+      "slug": "storm-king-mountain-run",
+      "routeId": "hn-opt3",
+      "seoTitle": "Storm King to Hawk's Nest: The Full Hudson-to-Delaware Motorcycle Run",
+      "metaDescription": "128 miles combining the two most dramatic roads in the region: the cliffside Storm King Highway over the Hudson and the Hawk's Nest switchbacks above the Delaware. 3h 22m of riding.",
+      "h1": "The Storm King & Mountain Run",
+      "region": "Hudson Highlands to the Delaware River, NY",
+      "start": "Astoria, Queens (NYC)",
+      "end": "Hawk's Nest, NY-97",
+      "character": "Two icon roads in one ride, connected by country twisties",
+      "bestFor": "The full-day rider who wants the region's greatest hits",
+      "intro": "The big one. This route grabs the visually stunning cliffside Storm King Highway over the Hudson, then cuts west across the mountains through Cuddebackville's country roads until it reaches the Hawk's Nest switchbacks above the Delaware. Two of the East Coast's most photographed motorcycle roads, 128 miles, and a legitimate excuse to take the whole day.",
+      "segments": [
+        {"label": "The escape", "text": "City escape and Route 9W transit to Cornwall, then local connecting highways across the state."},
+        {"label": "The transit", "text": "Palisades Interstate Parkway North all the way to its northern terminus at Bear Mountain."},
+        {"label": "The reward", "text": "The legendary cliffside twists of NY-218 over the Hudson, leading into country roads through Cuddebackville to Hawk's Nest."}
+      ],
+      "tips": "This is a fuel-stop-required ride — plan around Cornwall and Port Jervis. Check NY-218 status (closes for weather/rockfall). Doing it clockwise puts the sun behind you at Hawk's Nest in late afternoon.",
+      "related": ["storm-king-river-run", "harriman-sterling-forest-sweep", "nj-high-point-ascent"]
+    }
+  ]
+}

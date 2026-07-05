@@ -1,0 +1,123 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TwoTired — AI Motorcycle Route Planner. Voice-First. Built for Riders.</title>
+<meta name="description" content="Plan motorcycle routes by voice — 'two hours of twisties, end at a diner.' Live group ride tracking so nobody gets dropped, plus curated rider-vetted routes near NYC. Free on the App Store.">
+<link rel="canonical" href="https://twotired.net/">
+<meta property="og:title" content="TwoTired — AI Motorcycle Route Planner">
+<meta property="og:description" content="Plan routes by voice. Track your group live. Ride curated Northeast twisties. Free on the App Store.">
+<meta property="og:type" content="website"><meta property="og:url" content="https://twotired.net/">
+<meta property="og:image" content="https://twotired.net/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"MobileApplication","name":"TwoTired","operatingSystem":"iOS","applicationCategory":"TravelApplication","description":"AI-powered motorcycle route planning with voice-first controls, live group ride tracking, and curated rider-vetted routes.","url":"https://apps.apple.com/us/app/twotired/id6773547851","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}</script>
+<style>
+:root{--bg:#f8f8f6;--surface:#fff;--surface2:#f1f1ef;--accent:#f97316;--accent-hover:#ea6c0a;--text:#1a1a1a;--text-dim:#555;--text-muted:#999}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6}
+a{color:var(--accent);text-decoration:none}a:hover{color:var(--accent-hover)}
+.wrap{max-width:960px;margin:0 auto;padding:0 20px}
+header.site{position:sticky;top:0;background:rgba(248,248,246,.92);backdrop-filter:blur(8px);border-bottom:1px solid #e5e5e2;z-index:50}
+header.site .wrap{display:flex;align-items:center;justify-content:space-between;height:56px}
+.logo{font-weight:800;font-size:1.15rem;color:var(--text);letter-spacing:-.02em}.logo em{color:var(--accent);font-style:normal}
+nav.top a{color:var(--text-dim);margin-left:18px;font-size:.92rem;font-weight:500}
+.btn{display:inline-block;background:var(--accent);color:#fff !important;font-weight:600;padding:12px 24px;border-radius:10px;font-size:1rem}
+.btn:hover{background:var(--accent-hover)}
+.btn-sm{padding:7px 14px;font-size:.88rem;border-radius:8px}
+.btn-dark{background:var(--text)}.btn-dark:hover{background:#000}
+.hero{text-align:center;padding:72px 0 56px}
+.hero h1{font-size:2.9rem;line-height:1.1;letter-spacing:-.03em;max-width:700px;margin:0 auto 16px}
+.hero h1 em{color:var(--accent);font-style:normal}
+.hero p{font-size:1.2rem;color:var(--text-dim);max-width:560px;margin:0 auto 28px}
+.voice-demo{display:inline-block;background:var(--text);color:#fff;border-radius:999px;padding:12px 22px;font-size:1rem;margin-bottom:30px}
+.voice-demo .mic{color:var(--accent);margin-right:8px}
+.hero .sub{display:block;margin-top:12px;color:var(--text-muted);font-size:.85rem}
+section{padding:46px 0}
+h2.sec{font-size:1.7rem;letter-spacing:-.02em;text-align:center;margin-bottom:8px}
+p.sec-sub{text-align:center;color:var(--text-dim);max-width:600px;margin:0 auto 30px}
+.feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.feat{background:var(--surface);border:1px solid #e7e7e4;border-radius:16px;padding:26px}
+.feat .ico{font-size:1.6rem;margin-bottom:10px;display:block}
+.feat b{font-size:1.08rem;display:block;margin-bottom:6px}
+.feat p{color:var(--text-dim);font-size:.95rem}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
+.card{background:var(--surface);border:1px solid #e7e7e4;border-radius:14px;padding:18px;display:block;color:var(--text)}
+.card:hover{border-color:var(--accent);color:var(--text)}
+.card b{display:block;margin-bottom:4px;line-height:1.3}
+.card .meta{color:var(--text-muted);font-size:.82rem}
+.card p{color:var(--text-dim);font-size:.88rem;margin-top:6px}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;counter-reset:step}
+.step{background:var(--surface2);border-radius:16px;padding:24px;position:relative}
+.step::before{counter-increment:step;content:counter(step);position:absolute;top:-14px;left:20px;background:var(--accent);color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.9rem}
+.step b{display:block;margin:6px 0 4px}
+.step p{color:var(--text-dim);font-size:.92rem}
+.cta-final{background:var(--text);color:#fff;border-radius:20px;padding:44px 28px;text-align:center;margin:20px 0 10px}
+.cta-final h2{font-size:1.8rem;letter-spacing:-.02em;margin-bottom:8px}
+.cta-final p{color:#bbb;margin-bottom:22px}
+footer.site{border-top:1px solid #e5e5e2;margin-top:40px;padding:26px 0;color:var(--text-muted);font-size:.85rem}
+footer.site .wrap{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between}
+footer.site a{color:var(--text-dim);margin-right:14px}
+@media(max-width:640px){.hero h1{font-size:2.1rem}.hero{padding:48px 0 36px}}
+</style>
+</head><body>
+<header class="site"><div class="wrap">
+<a class="logo" href="/">Two<em>Tired</em></a>
+<nav class="top"><a href="/routes/">Routes</a><a href="/support.html">Support</a><a class="btn btn-sm" href="https://apps.apple.com/us/app/twotired/id6773547851">Get the app</a></nav>
+</div></header>
+
+<main>
+<div class="wrap">
+<div class="hero">
+<h1>Ask for a ride.<br>Get <em>twisties</em>.</h1>
+<p>TwoTired is the AI route planner built for motorcyclists. Tell it what you want to ride — it builds the route, scores the curves, and keeps your whole group together.</p>
+<div class="voice-demo"><span class="mic">●</span>"Two hours of twisties, end at a diner."</div><br>
+<a class="btn" href="https://apps.apple.com/us/app/twotired/id6773547851">Download on the App Store</a>
+<span class="sub">Free · iPhone · Northeast US coverage</span>
+</div>
+
+<section>
+<h2 class="sec">Built around three things no other app does</h2>
+<p class="sec-sub">Not a car app with a motorcycle skin. Every feature exists because a rider needed it.</p>
+<div class="feats">
+<div class="feat"><span class="ico">🎙️</span><b>Voice-first, gloves-on</b><p>Plan and change routes by talking. "Add a fuel stop." "Make it twistier." No tapping at a tank bag at 60 mph.</p></div>
+<div class="feat"><span class="ico">📍</span><b>Live group ride tracking</b><p>See every rider in your crew on the map in real time. Nobody misses the turn, nobody gets dropped at the second stoplight.</p></div>
+<div class="feat"><span class="ico">🗺️</span><b>Seeded, rider-vetted routes</b><p>The app ships with curated Northeast routes locals actually ride — scored for curviness. No blank-map problem: open, pick, go.</p></div>
+</div>
+</section>
+
+<section>
+<h2 class="sec">Routes that ship with the app</h2>
+<p class="sec-sub">A taste of the seeded library — every one rideable with turn-by-turn the minute you install.</p>
+<div class="cards">
+<a class="card" href="/routes/seven-lakes-perkins-bear-mountain-loop"><b>The Seven Lakes &amp; Perkins Classic</b><span class="meta">58 mi · 1h 42m · Harriman / Bear Mountain, NY</span><p>The benchmark NYC escape: banked forest sweepers past pristine lakes, hairpins to the summit.</p></a>
+<a class="card" href="/routes/arden-valley-technical-dive"><b>The Arden Valley Technical Dive</b><span class="meta">55 mi · 1h 30m · Harriman State Park, NY</span><p>The sharpest, most technical twisty section near NYC. Corners, not cruising.</p></a>
+<a class="card" href="/routes/storm-king-river-run"><b>The Storm King River Run</b><span class="meta">66 mi · 1h 43m · Hudson Highlands, NY</span><p>NY-218, carved into a cliff face 400 feet above the Hudson. The region's best views.</p></a>
+<a class="card" href="/routes/harriman-sterling-forest-sweep"><b>Harriman &amp; Sterling Forest Sweep</b><span class="meta">95 mi · 2h 42m · Harriman to Hawk's Nest, NY</span><p>The quintessential NYC rider route, finishing on the famous Hawk's Nest switchbacks.</p></a>
+<a class="card" href="/routes/nj-high-point-ascent"><b>The New Jersey High Point Ascent</b><span class="meta">84 mi · 2h 0m · Sussex County, NJ</span><p>Empty rolling two-lane through deep woods to the highest point in New Jersey.</p></a>
+<a class="card" href="/routes/storm-king-mountain-run"><b>The Storm King &amp; Mountain Run</b><span class="meta">128 mi · 3h 22m · Hudson to the Delaware, NY</span><p>Two icon roads — Storm King Highway and Hawk's Nest — in one full-day run.</p></a>
+</div>
+</section>
+
+<section>
+<h2 class="sec">How it works</h2>
+<div class="steps">
+<div class="step"><b>Say what you want</b><p>"Take me to Bear Mountain but use 9W instead of the Palisades." Plain English, by voice or text.</p></div>
+<div class="step"><b>Get a rider's route</b><p>The AI builds it and shows you exactly which miles are highway, parkway, and twisties — before you commit.</p></div>
+<div class="step"><b>Bring the crew</b><p>Share the route, then track everyone live on the ride. Regroup without the parking-lot phone huddle.</p></div>
+</div>
+</section>
+
+<section>
+<div class="cta-final">
+<h2>Riding season doesn't wait.</h2>
+<p>Free on the App Store. Built by riders in NYC.</p>
+<a class="btn" href="https://apps.apple.com/us/app/twotired/id6773547851">Download TwoTired</a>
+</div>
+</section>
+</div>
+</main>
+
+<footer class="site"><div class="wrap">
+<div>© 2026 TwoTired — AI-powered motorcycle route planning. Built by riders in NYC.</div>
+<div><a href="/routes/">Routes</a><a href="/privacy.html">Privacy</a><a href="/support.html">Support</a><a href="https://apps.apple.com/us/app/twotired/id6773547851">App Store</a></div>
+</div></footer>
+</body></html>
