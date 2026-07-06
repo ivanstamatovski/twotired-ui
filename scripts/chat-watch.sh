@@ -32,7 +32,7 @@ while true; do
   if [ "${N:-0}" -gt 0 ]; then
     echo "🔔 NEW message(s) from ivan on the session chat:"
     printf '%s' "$ROWS" | python3 -c 'import json,sys
-for r in json.load(sys.stdin): print(f"  [{r[\"t\"]}] {r[\"body\"]}")'
+for r in json.load(sys.stdin): print("  [%s] %s" % (r["t"], r["body"]))'
     echo "→ Address these, reply in agent_chat, then re-launch scripts/chat-watch.sh to keep watching."
     exit 0
   fi
