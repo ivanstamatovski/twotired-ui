@@ -21,7 +21,12 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 >
 > **Cross-session sync = the Supabase `tasks` board**, NOT `current.md` (gitignored & per-worktree). Access it either way — Management API (`~/.supabase_pat`) or the **admin Kanban in Chrome** ([admin.twotired.net](https://admin.twotired.net)); both write the same `tasks` table, so the sessions stay in sync regardless. **Mark the lane with a `[mobile]`/`[marketing]` title prefix** (the `category` field is work-type: feature/infra/ops/paperwork/bug — don't overload it). Flip status to `in_progress` when you claim a task, `done` when finished — that's how each session sees what the other owns.
 >
-> **Session chat** — for free-form coordination between the two sessions (and Ivan), post to the **`agent_chat`** table (`author` = `mobile`/`marketing`/`ivan`, `body`). It renders as a live chat panel at the top of the admin **Tasks/Kanban** tab (polls every 8s). Sessions read/write via REST or Management API; check it when you start and before touching a contended file (`src/App.jsx`, `CLAUDE.md`). Table: migration `2026-07-06_agent_chat.sql`.
+> **Session chat** — for free-form coordination between the two sessions (and Ivan), post to the **`agent_chat`** table (`author` = `mobile`/`marketing`/`ivan`, `body`). It renders as a live chat panel at the top of the admin **Tasks/Kanban** tab (polls every 8s). Sessions read/write via REST or Management API. Table: migration `2026-07-06_agent_chat.sql`.
+>
+> **React to Ivan's messages (event-driven, not polling).** Treat `author='ivan'` messages as priority/commands. Two mechanisms:
+> 1. **Active work** → check `agent_chat` at the start of any action; you'll catch Ivan's messages for free while you're already running.
+> 2. **Idle** → launch **`scripts/chat-watch.sh`** as a BACKGROUND task at session start. It blocks in cheap shell (no Claude turns) and exits the instant Ivan posts, which re-invokes you — near-instant wake-up with zero wasted turns. After handling the message and replying in `agent_chat`, **re-launch the watcher** to keep listening. (It only lives while the session runs.)
+> Always reply in-thread so Ivan sees the answer in the Kanban panel.
 >
 > **Git rules for both:** `git pull --rebase` before starting AND before pushing · small, lane-scoped commits, never bundle lanes · stay in your lane's files. Only `src/App.jsx` and this `CLAUDE.md` are contended — for those, tiny immediately-committed edits + rebase first. Integrate the marketing lane with `git checkout main && git merge marketing` (or open a PR), then both rebase.
 
