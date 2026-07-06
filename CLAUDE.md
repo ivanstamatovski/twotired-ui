@@ -15,6 +15,14 @@ AI-powered motorcycle ride planning app. User types (or speaks) where they want 
 
 @.claude/current.md
 
+> **⚠️ Parallel sessions — worktrees + task board.** Two Claude sessions run concurrently on this project (mobile lane + marketing lane). They MUST NOT share one working tree (they'd clobber each other's git index/build). Each lane works in its own **git worktree**, sharing one `.git`:
+> - **Mobile lane** → `~/Documents/twotired-ui` on `main` (android/ios/native/publishing). Also the integration checkout.
+> - **Marketing lane** → `~/Documents/twotired-marketing` on branch `marketing` (landing/SEO/admin/marketing components).
+>
+> **Cross-session sync = the Supabase `tasks` board**, NOT `current.md` (which is gitignored & per-worktree). Tag tasks `category=mobile|marketing`; flip to `in_progress` when you claim one, `done` when finished — that's how each session sees what the other owns.
+>
+> **Git rules for both:** `git pull --rebase` before starting AND before pushing · small, lane-scoped commits, never bundle lanes · stay in your lane's files. Only `src/App.jsx` and this `CLAUDE.md` are contended — for those, tiny immediately-committed edits + rebase first. Integrate the marketing lane with `git checkout main && git merge marketing` (or open a PR), then both rebase.
+
 ---
 
 ## Tech Stack (current — v2 architecture)
