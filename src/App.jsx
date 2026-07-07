@@ -475,6 +475,7 @@ function makeMateMarkerEl(name) {
     color: '#fff', fontWeight: '700', fontSize: '14px',
     boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
     userSelect: 'none',
+    zIndex: '4',   // below the rider's own avatar (z-index 6)
   });
   el.textContent = initialsForName(name);
   return el;
@@ -913,6 +914,7 @@ function pickBestVoice() {
 function makeMotoMarkerEl() {
   const el = document.createElement('div');
   el.className = 'user-moto-marker';
+  el.style.zIndex = '6';   // always render the rider's own avatar above co-rider (mate) markers (z-index 4)
   el.innerHTML = `<svg width="44" height="44" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
     <!-- Pulse ring -->
     <circle cx="22" cy="22" r="20" fill="rgba(249,115,22,0.12)" stroke="rgba(249,115,22,0.35)" stroke-width="1.5"/>
@@ -1489,6 +1491,9 @@ export default function App() {
   const markersRef = useRef([]);
   const messagesEnd = useRef(null);
   const userMarkerRef = useRef(null);
+  // Holds the current mate-position broadcast fn so the foreground handler can
+  // force an immediate re-broadcast when the app returns from background.
+  const broadcastPositionRef = useRef(null);
   const locationWatchRef = useRef(null); // always-on position watch
   const wakeLockRef = useRef(null);
   // Stored brightness before nav started so we can restore it on stop. Null
@@ -2684,6 +2689,11 @@ export default function App() {
       try { supabase.realtime.connect();    } catch {}
       loadFriendships();
       loadMatePositions();
+      // Background suspends the 5s broadcast interval, so mates saw us go stale.
+      // Push our last-known position immediately on foreground instead of
+      // waiting for the next interval tick (which previously only landed after
+      // the rider moved) — so co-riders see us reappear right away.
+      broadcastPositionRef.current?.();
     });
     return () => { sub?.then?.(s => s.remove()); };
   }, [loadFriendships, loadMatePositions]);
@@ -2750,9 +2760,10 @@ export default function App() {
         if (upErr) console.warn('[mate_positions] upsert failed:', upErr.code, upErr.message);
       }
     };
+    broadcastPositionRef.current = tick;   // expose for the foreground re-broadcast
     tick();
     const interval = setInterval(tick, 5000);
-    return () => clearInterval(interval);
+    return () => { clearInterval(interval); broadcastPositionRef.current = null; };
   }, [session?.user, sharingFriendIds, friendships]);
 
   // Drop sharing entries (and the corresponding rows) for friendships that
