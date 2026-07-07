@@ -2507,6 +2507,8 @@ export default function App() {
       intent: route.intent,
       stops: route.stops,
       instructions: route.instructions,
+      narrative: route.narrative,
+      scenic_anchors: route.scenic_anchors,
       shared_from: shared.sharer_name || 'A rider',
     };
     setRecent(prev => {
@@ -4126,7 +4128,7 @@ export default function App() {
       if (isMobile) setSheetMode('collapsed');
 
       // Store full geometry so recent rides can be redrawn without an API call
-      const entry = { id:Date.now(), title:r.title, destination:r.destination, distance_mi:r.distance_mi, duration_str:r.duration_str, geometry:r.geometry, intent:r.intent, stops:r.stops||[], instructions:r.instructions||[] };
+      const entry = { id:Date.now(), title:r.title, destination:r.destination, distance_mi:r.distance_mi, duration_str:r.duration_str, geometry:r.geometry, intent:r.intent, stops:r.stops||[], instructions:r.instructions||[], narrative:r.narrative, scenic_anchors:r.scenic_anchors };
       const updated = [entry, ...recent.filter(x=>x.title!==entry.title)].slice(0,5);
       setRecent(updated); localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
       // Persist last active route so it survives tab switches and reloads
