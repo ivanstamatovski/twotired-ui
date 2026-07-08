@@ -1,5 +1,7 @@
 User-agent: *
 Allow: /
 Disallow: /app
+Disallow: /media-library
+Disallow: /brand/
 
 Sitemap: https://www.twotired.net/sitemap.xml
