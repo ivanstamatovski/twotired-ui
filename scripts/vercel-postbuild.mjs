@@ -8,7 +8,7 @@
  *   dist/index.html (app)  -> dist/app.html
  *   dist/home.html (landing) -> dist/index.html
  */
-import { renameSync, copyFileSync, existsSync } from "node:fs";
+import { renameSync, copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 
 if (!process.env.VERCEL) {
   console.log("Not on Vercel — skipping entry swap (Capacitor build keeps app at index.html).");
@@ -20,3 +20,16 @@ if (!existsSync("dist/index.html") || !existsSync("dist/home.html")) {
 renameSync("dist/index.html", "dist/app.html");
 copyFileSync("dist/home.html", "dist/index.html");
 console.log("Vercel entry swap done: / = landing, /app = app.");
+
+// Web-only media (promo videos etc.): lives in site-assets/media (NOT public/),
+// so it never ships inside the Capacitor app bundle. Served at /media/<file>.
+if (existsSync("site-assets/media")) {
+  mkdirSync("dist/media", { recursive: true });
+  let n = 0;
+  for (const f of readdirSync("site-assets/media")) {
+    if (f.startsWith(".")) continue;
+    copyFileSync(`site-assets/media/${f}`, `dist/media/${f}`);
+    n++;
+  }
+  console.log(`Copied ${n} web-only media file(s) to dist/media.`);
+}

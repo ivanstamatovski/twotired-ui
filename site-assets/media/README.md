@@ -1,0 +1,1 @@
+Web-only media served at twotired.net/media/ — copied into dist by scripts/vercel-postbuild.mjs on Vercel builds only (never ships in the iOS/Android app bundle). Drop promo videos here, commit, push.
