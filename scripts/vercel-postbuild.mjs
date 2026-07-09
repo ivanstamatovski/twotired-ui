@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 /**
- * Runs ONLY on Vercel (via the `vercel-build` script).
+ * Runs ONLY on Vercel (via `vercel-build`).
  * 1) Entry swap: landing owns "/", app -> /app.
- * 2) Copies web-only asset folders: site-assets/media -> dist/media, site-assets/brand -> dist/brand.
- * 3) Reads site-assets/publish-log.json (category final|test|hidden, bestOf, titles, platforms+dates).
- * 4) Generates dist/media-library.html (internal, classified) and dist/gallery.html (public best-of).
+ * 2) Copies site-assets/media -> dist/media, site-assets/brand -> dist/brand.
+ * 3) Reads site-assets/publish-log.json (category final|test|pending|hidden, bestOf, platforms).
+ * 4) Generates dist/media-library.html (internal: PENDING APPROVAL on top, then finals/tests/brand)
+ *    and dist/gallery.html (public best-of). Approve/Reject buttons open prefilled GitHub issues
+ *    (title "APPROVE: <file>" / "REJECT: <file>") which the pipeline reads via the GitHub connector.
  */
 import { renameSync, copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync } from "node:fs";
 
 if (!process.env.VERCEL) {
-  console.log("Not on Vercel — skipping (Capacitor build keeps app at index.html).");
+  console.log("Not on Vercel — skipping.");
   process.exit(0);
 }
 if (!existsSync("dist/index.html") || !existsSync("dist/home.html")) {
@@ -19,9 +21,10 @@ renameSync("dist/index.html", "dist/app.html");
 copyFileSync("dist/home.html", "dist/index.html");
 console.log("Entry swap done.");
 
+const REPO = "ivanstamatovski/twotired-ui";
 const log = existsSync("site-assets/publish-log.json") ? JSON.parse(readFileSync("site-assets/publish-log.json", "utf8")) : {};
 const human = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.round(b / 1e3) + " KB";
-const PLABEL = { instagram: "IG", facebook: "FB", youtube: "YT" };
+const PLABEL = { instagram: "IG", facebook: "FB", youtube: "YT", tiktok: "TT" };
 
 function preview(url, ext, cls = "") {
   if (["mp4", "mov", "webm"].includes(ext)) return `<video class="${cls}" src="${url}" controls preload="metadata"></video>`;
@@ -30,7 +33,7 @@ function preview(url, ext, cls = "") {
   return `<div class="noprev">${ext}</div>`;
 }
 
-const buckets = { final: [], test: [], brand: [] };
+const buckets = { pending: [], final: [], test: [], brand: [] };
 
 for (const [src, out, defCat] of [["site-assets/media", "media", "test"], ["site-assets/brand", "brand", "brand"]]) {
   if (!existsSync(src)) continue;
@@ -46,11 +49,13 @@ for (const [src, out, defCat] of [["site-assets/media", "media", "test"], ["site
     const badges = Object.entries(meta.platforms || {}).map(([p, v]) =>
       `<a class="badge" href="${v.url || "#"}" target="_blank">${PLABEL[p] || p}${v.date ? " · " + v.date.slice(5) : ""}</a>`).join("");
     const size = statSync(`${src}/${f}`).size;
-    buckets[cat]?.push(`<div class="card">${preview(url, ext)}<div class="meta">${meta.title ? `<span class=\"title\">${meta.title}</span>` : ""}<span class="name">${f}</span><span class="size">${human(size)}</span>${badges ? `<div class=\"badges\">${badges}</div>` : `<span class=\"size\">${cat === "final" ? "not published yet" : ""}</span>`}<button onclick="navigator.clipboard.writeText(location.origin+'${url}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy URL',1500)">Copy URL</button></div></div>`);
+    const approveBtns = cat === "pending" ? `<div class="appr"><a class="ok" href="https://github.com/${REPO}/issues/new?title=${encodeURIComponent("APPROVE: " + f)}&body=${encodeURIComponent("Approved from the media library. The pipeline may publish this asset.")}" target="_blank">✓ Approve</a><a class="no" href="https://github.com/${REPO}/issues/new?title=${encodeURIComponent("REJECT: " + f)}&body=${encodeURIComponent("Rejected from the media library. Do not publish; regenerate.")}" target="_blank">✕ Reject</a></div><p class="apphint">Tap → GitHub opens prefilled → Submit new issue. That's the approval.</p>` : "";
+    buckets[cat]?.push(`<div class="card${cat === "pending" ? " pend" : ""}">${preview(url, ext)}<div class="meta">${meta.title ? `<span class=\"title\">${meta.title}</span>` : ""}<span class="name">${f}</span><span class="size">${human(size)}</span>${badges ? `<div class=\"badges\">${badges}</div>` : ""}${approveBtns}<button onclick="navigator.clipboard.writeText(location.origin+'${url}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy URL',1500)">Copy URL</button></div></div>`);
   }
 }
 
 const SEC = [
+  ["⏳ PENDING YOUR APPROVAL", buckets.pending],
   ["Finals — submitted / ready for social", buckets.final],
   ["Tests & variations", buckets.test],
   ["Brand assets", buckets.brand],
@@ -61,6 +66,7 @@ h1{font-size:1.6rem}h1 em{color:#f97316;font-style:normal}
 h2{font-size:1.1rem;margin:28px 0 12px;color:#ddd}h2 small{color:#888;font-weight:400}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
 .card{background:#1e1e1e;border:1px solid #333;border-radius:12px;overflow:hidden}
+.card.pend{border:2px solid #f59e0b}
 .card img,.card video{width:100%;height:250px;object-fit:contain;background:#000;display:block}
 .card audio{width:100%;margin:14px 0}
 .noprev{height:250px;display:flex;align-items:center;justify-content:center;color:#777;text-transform:uppercase}
@@ -70,6 +76,10 @@ h2{font-size:1.1rem;margin:28px 0 12px;color:#ddd}h2 small{color:#888;font-weigh
 .size{font-size:.7rem;color:#777}
 .badges{display:flex;gap:6px;flex-wrap:wrap}
 .badge{background:#2c2c2c;border:1px solid #444;color:#f97316;font-size:.7rem;font-weight:700;padding:3px 8px;border-radius:6px;text-decoration:none}
+.appr{display:flex;gap:8px}
+.appr a{flex:1;text-align:center;padding:10px 0;border-radius:8px;font-weight:800;text-decoration:none;font-size:.9rem}
+.appr .ok{background:#16a34a;color:#fff}.appr .no{background:#3a3a3a;color:#f87171}
+.apphint{font-size:.66rem;color:#888;margin:0}
 button{background:#f97316;border:0;color:#fff;padding:7px 10px;border-radius:8px;font-weight:600;cursor:pointer;font-size:.8rem}
 button:hover{background:#ea6c0a}
 </style></head><body><h1>Two<em>Tired</em> media library</h1>
@@ -82,10 +92,11 @@ console.log("media-library.html generated");
 // ---------- public best-of gallery ----------
 const SOCIAL = [
   ["Instagram", "https://www.instagram.com/ridetwotired/"],
+  ["TikTok", "https://www.tiktok.com/@ridetwotired"],
   ["Facebook", "https://www.facebook.com/61591906523319"],
   ["YouTube", "https://www.youtube.com/channel/UCrg9QZIgXf6Ieuo666-3ZcQ"],
 ];
-const best = Object.entries(log).filter(([, m]) => m.bestOf).map(([f, m]) => {
+const best = Object.entries(log).filter(([, m]) => m.bestOf && m.category === "final").map(([f, m]) => {
   const ext = f.split(".").pop().toLowerCase();
   const links = Object.entries(m.platforms || {}).filter(([, v]) => v.url).map(([p, v]) => `<a href="${v.url}" target="_blank">${p[0].toUpperCase() + p.slice(1)}</a>`).join(" · ");
   return `<div class="gcard">${preview("/media/" + f, ext, "gmedia")}<div class="gmeta"><b>${m.title || f}</b><p>${m.caption || ""}</p>${links ? `<span class=\"glinks\">Watch on ${links}</span>` : ""}</div></div>`;
