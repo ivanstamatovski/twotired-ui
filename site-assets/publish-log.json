@@ -1,10 +1,10 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
   "2026-07-08-diner-oldtimer-final-916.mp4": {
-    "category": "pending",
+    "category": "test",
     "bestOf": false,
-    "title": "Forty Years, One Download",
-    "caption": "\"This app already knew Storm King... even knew this diner. Took me four decades. Took the kid one download.\"",
+    "title": "Forty Years, One Download — v1, REJECTED",
+    "caption": "Rejected by Ivan 2026-07-08: bike morphs between camera pans; keep shot static and bike consistent. Replacement queued.",
     "platforms": {}
   },
   "2026-07-06-gas-station-skeptic-final-916.mp4": {
