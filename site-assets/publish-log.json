@@ -1,5 +1,17 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
+  "2026-07-10-manhattan-rush-hour-final-916.mp4": {
+    "category": "final",
+    "bestOf": true,
+    "title": "No Thanks, Midtown",
+    "caption": "\"Every app I've tried drags me through Midtown at rush hour. TwoTired took one look and said no thanks.\"",
+    "platforms": {
+      "instagram": { "id": "18111609997944574", "url": "https://www.instagram.com/ridetwotired/", "date": "2026-07-10" },
+      "facebook": { "id": "2066957757582189", "url": "https://www.facebook.com/61591906523319", "date": "2026-07-10" },
+      "youtube": { "id": null, "url": "https://www.youtube.com/channel/UCrg9QZIgXf6Ieuo666-3ZcQ", "date": null },
+      "tiktok": { "id": "7661043811623177503", "url": "https://www.tiktok.com/@ridetwotired/video/7661043811623177503", "date": "2026-07-10" }
+    }
+  },
   "2026-07-09-nyack-live-tracking-final-916.mp4": {
     "category": "final",
     "bestOf": true,
