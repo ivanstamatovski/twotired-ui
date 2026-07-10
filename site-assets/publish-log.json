@@ -1,5 +1,17 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
+  "2026-07-09-nyack-live-tracking-final-916.mp4": {
+    "category": "final",
+    "bestOf": true,
+    "title": "Order Another Coffee",
+    "caption": "\"Bear Mountain run. Two of 'em are still crossing the Tappan Zee — I can watch 'em crawl. Order another coffee.\"",
+    "platforms": {
+      "instagram": { "id": "17964154407140119", "url": "https://www.instagram.com/reel/DamCZvBleWd/", "date": "2026-07-09" },
+      "facebook": { "id": "1523621285922438", "url": "https://www.facebook.com/61591906523319", "date": "2026-07-09" },
+      "youtube": { "id": "RGj_T15cBQw", "url": "https://www.youtube.com/watch?v=RGj_T15cBQw", "date": "2026-07-09" },
+      "tiktok": { "id": null, "url": "https://www.tiktok.com/@ridetwotired", "date": "2026-07-09" }
+    }
+  },
   "2026-07-09-diner-oldtimer-v2-final-916.mp4": {
     "category": "final",
     "bestOf": true,
