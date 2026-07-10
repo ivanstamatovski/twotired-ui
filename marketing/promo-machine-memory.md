@@ -1,4 +1,4 @@
-# TwoTired Promo Machine — Session Memory (checkpoint 2026-07-09)
+# TwoTired Promo Machine — Session Memory (checkpoint 2026-07-10)
 
 **Read this first in any new marketing/promo session.** The full operating manual is
 `TwoTired-Promo-Playbook.md` (canonical persistent copy sits NEXT TO this file in `marketing/`;
@@ -45,7 +45,8 @@ consider checking tiktokstudio/content for a stray draft before just re-waiting;
 up there either, re-upload fresh rather than waiting indefinitely on the same attempt. Once the
 form appears: Description via triple_click+cmd+a+type (3-5 hashtags incl #motorcycletok) → checks
 pass → Post. First post on new account shows "Content under review" + "Only me" briefly, flips
-public automatically.
+public automatically. **2026-07-10: worked cleanly, fast (~10s to form, no stray-draft issue) —
+the earlier slow/broken runs seem to have been transient, not the norm.**
 
 ## State as of 2026-07-09 (end of day)
 - "Order Another Coffee" (Nyack live-tracking, differentiator = group ride tracking) — this was
@@ -71,7 +72,30 @@ public automatically.
   the daily task should open labs.google/fx/tools/flow (project list) and pick the card dated
   TODAY, not assume the last session's project id is still current.
 
+## State as of 2026-07-10
+- "No Thanks, Midtown" — new content angle Ivan requested directly in chat: local-routing-awareness
+  ("other apps apply generic rules and take you through Manhattan at rush hour — TwoTired knows
+  that's a deadly sin"). Jersey City commuter archetype (new — rotates away from
+  diner-oldtimer/gas-station-skeptic/hawks-nest-dad/nyack-woman), rooftop garage w/ Manhattan
+  skyline setting (new). Full pipeline run start-to-finish in one session at Ivan's request
+  ("run today's video now, try to do it all automatically, just show me the video for approval"):
+  script → Flow (new project, ~30s render this time, no queue delay) → download (zip gotcha
+  again) → ffmpeg+outro → presented via present_files → Ivan approved ("Looks great") → committed
+  `site-assets/media/2026-07-10-manhattan-rush-hour-final-916.mp4` (commit f7bbd32) → published.
+  IG 18111609997944574, FB 2066957757582189, TikTok 7661043811623177503 (fast this run, form
+  appeared in ~10s, no stray-draft issue). **YouTube upload_video FAILED 5x in a row** with a
+  Zapier-side error (`AI_NoObjectGeneratedError: response did not match schema` — the params-
+  resolver step itself errored, not the YouTube API call; varied title/description/tags across
+  attempts, same failure every time → looks like a Zapier outage on that specific action, not
+  fixable by changing params). Did NOT block the rest of the pipeline — published everywhere else
+  and logged YouTube as pending (`id: null, date: null`) rather than stalling. publish-log.json
+  HEAD commit 619faec. **Action item: retry YouTube upload for this video next session** (check
+  `find_video` on channel UCrg9QZIgXf6Ieuo666-3ZcQ first in case it silently succeeded despite the
+  error, before re-uploading and risking a dupe).
+
 ## Open items
+- **Retry YouTube upload for 2026-07-10-manhattan-rush-hour-final-916.mp4** (see above — Zapier
+  outage, not a content/param issue).
 - Record TikTok permalink for diner v2 in publish-log (id still null).
 - Ivan: FB username @ridetwotired retry (Meta new-page gate) · Reddit account warm-up (~2 wks) ·
   post Calimoto PNG to FB groups · Play Store link when live (set `playStoreUrl` in
