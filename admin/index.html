@@ -978,6 +978,10 @@ tr:hover td{background:rgba(255,255,255,.02)}
             <button class="task-chip" data-roadstate="MA" onclick="setRoadsState('MA')">MA</button>
             <button class="task-chip" data-roadstate="PA" onclick="setRoadsState('PA')">PA</button>
           </div>
+          <div class="tasks-filter-group" id="roads-batch-filter" style="display:none">
+            <span class="tasks-filter-label">Batch</span>
+            <!-- chips injected by renderBatchFilter() -->
+          </div>
         </div>
         <div id="roads-list"><div class="loading-row"><span class="spinner"></span>Loading…</div></div>
         <div id="roads-map" style="display:none;height:70vh;min-height:480px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"></div>
@@ -3368,6 +3372,44 @@ async function deleteAnnouncement(id) {
 let _knownRoads      = [];
 let _roadsFilter     = 'pending';     // pending | approved | rejected | all
 let _roadsStateFilter = '';            // '' | NY | NJ | CT | MA | PA
+let _roadsBatchFilter = '';            // '' | <seed_batch value>
+
+// Seeding batches get a distinct color + friendly label so a batch (e.g. the
+// NYC<->Philadelphia corridor seed) stands out while reviewing. Unknown batches
+// fall back to a deterministic color so future seeds are still distinguishable.
+const BATCH_META = {
+  'nyc-philly-2026-07': { label: 'NYC–Philly', color: '#a855f7' },
+};
+const _BATCH_FALLBACK = ['#a855f7','#06b6d4','#f43f5e','#eab308','#14b8a6','#f97316'];
+function batchColor(b) {
+  if (!b) return null;
+  if (BATCH_META[b]) return BATCH_META[b].color;
+  let h = 0; for (const c of b) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return _BATCH_FALLBACK[h % _BATCH_FALLBACK.length];
+}
+function batchLabel(b) { return (BATCH_META[b] && BATCH_META[b].label) || b; }
+
+function setRoadsBatch(b) {
+  _roadsBatchFilter = b;
+  document.querySelectorAll('[data-roadbatch]').forEach(el =>
+    el.classList.toggle('task-chip--active', el.dataset.roadbatch === b));
+  renderKnownRoads();
+}
+
+function renderBatchFilter() {
+  const group = document.getElementById('roads-batch-filter');
+  if (!group) return;
+  const batches = [...new Set(_knownRoads.map(r => r.seed_batch).filter(Boolean))].sort();
+  if (batches.length === 0) { group.style.display = 'none'; return; }
+  group.style.display = '';
+  const chip = (val, label, color) =>
+    `<button class="task-chip${_roadsBatchFilter === val ? ' task-chip--active' : ''}" data-roadbatch="${escHtml(val)}" onclick="setRoadsBatch('${escHtml(val)}')">`
+    + (color ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>` : '')
+    + `${escHtml(label)}</button>`;
+  group.innerHTML = '<span class="tasks-filter-label">Batch</span>'
+    + chip('', 'All', null)
+    + batches.map(b => chip(b, batchLabel(b), batchColor(b))).join('');
+}
 let _editingRoadId   = null;           // uuid of row whose coords are being edited
 let _roadsViewMode   = 'list';         // 'list' | 'map'
 let _roadsMapInstance = null;          // active L.Map when in map mode
@@ -3384,6 +3426,7 @@ async function loadKnownRoads() {
     return;
   }
   renderKnownRoadsStats();
+  renderBatchFilter();
   renderKnownRoads();
 }
 
@@ -3421,6 +3464,7 @@ function filteredRoads() {
   if (_roadsFilter === 'approved') rows = rows.filter(r => r.approved === true);
   if (_roadsFilter === 'rejected') rows = rows.filter(r => r.approved === false);
   if (_roadsStateFilter) rows = rows.filter(r => r.state === _roadsStateFilter);
+  if (_roadsBatchFilter) rows = rows.filter(r => r.seed_batch === _roadsBatchFilter);
   return rows;
 }
 
@@ -3527,6 +3571,11 @@ function renderKnownRoadsMap() {
     const opacity = status === 'rejected' ? 0.4 : 0.85;
     const dash = r.needs_coord_review ? '6 4' : null;
 
+    // Batch halo — a wider translucent underlay in the batch color so rows from
+    // a seeding batch pop on the map while the line itself keeps its status color.
+    const bc = batchColor(r.seed_batch);
+    if (bc) L.polyline(lls, { color: bc, weight: weight + 6, opacity: 0.35 }).addTo(map);
+
     const line = L.polyline(lls, { color, weight, opacity, dashArray: dash }).addTo(map);
     // Endpoint dots — still drawn from the stored endpoints so the click target
     // is obvious even on short segments
@@ -3549,6 +3598,7 @@ function renderKnownRoadsMap() {
         <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
           ${r.route_number ? escHtml(r.route_number) + ' · ' : ''}${escHtml(r.state)}${lengthMi ? ' · ' + lengthMi + ' mi' : ''}
           · <span style="color:${color};font-weight:600">${status}</span>
+          ${r.seed_batch ? ` · <span style="color:${bc};font-weight:600">${escHtml(batchLabel(r.seed_batch))}</span>` : ''}
         </div>
         ${tags ? `<div style="margin-bottom:6px">${tags}</div>` : ''}
         ${r.must_see ? `<div style="font-size:11px;font-style:italic;margin-bottom:4px">${escHtml(r.must_see)}</div>` : ''}
@@ -3594,6 +3644,10 @@ function renderKnownRoads() {
       : r.approved === false
         ? '<span class="badge badge-red">✗ rejected</span>'
         : '<span class="badge badge-amber">pending</span>';
+    const bc = batchColor(r.seed_batch);
+    const batchBadge = r.seed_batch
+      ? `<span class="badge" style="background:${bc}22;color:${bc};border:1px solid ${bc}66">${escHtml(batchLabel(r.seed_batch))}</span>`
+      : '';
     const reviewBadge = r.needs_coord_review
       ? `<span class="badge badge-red" title="${escHtml(r.coord_review_reason || '')}">⚠ needs coord review</span>`
       : '';
@@ -3609,7 +3663,7 @@ function renderKnownRoads() {
         <strong>Review needed:</strong> ${escHtml(r.coord_review_reason)}
       </div>` : '';
     return `
-      <div class="rulebook-card" data-road-id="${r.id}" style="margin-bottom:14px;padding:16px${r.needs_coord_review ? ';border-left:3px solid #f87171' : ''}">
+      <div class="rulebook-card" data-road-id="${r.id}" style="margin-bottom:14px;padding:16px${r.needs_coord_review ? ';border-left:3px solid #f87171' : (bc ? ';border-left:3px solid ' + bc : '')}">
         <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
           <div style="flex:1;min-width:240px">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
@@ -3618,6 +3672,7 @@ function renderKnownRoads() {
               <span class="badge badge-gray">${escHtml(r.state)}</span>
               ${r.region ? `<span class="badge badge-gray">${escHtml(r.region)}</span>` : ''}
               ${statusBadge}
+              ${batchBadge}
               ${reviewBadge}
             </div>
             ${isEditing ? `
