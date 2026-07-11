@@ -116,7 +116,7 @@ function sampleVias(poly: number[][], spacingM: number): number[][] {
 }
 
 // ── Overpass: fetch ways matching the name/ref in the bbox ───────────────
-interface Way { name: string | null; ref: string | null; nodes: number[]; coords: number[][]; } // coords [[lat,lng]]
+interface Way { name: string | null; ref: string | null; nodes: number[]; coords: number[][]; pref: boolean; } // pref = a resolved/named scenic road
 async function overpass(q: string): Promise<any | null> {
   for (const url of [...OVERPASS_MIRRORS, OVERPASS_MIRRORS[0]]) {
     try {
@@ -137,83 +137,109 @@ function refMatches(ref: string, nums: string[]): boolean {
   for (const num of nums) if (new RegExp(`(^|[^0-9])${num}($|[^0-9])`).test(r)) return true;
   return false;
 }
-async function fetchNamedWays(s: number, w: number, n: number, e: number, terms: Terms): Promise<Way[] | null> {
+function isPreferred(name: string | null, ref: string | null, terms: Terms): boolean {
+  const nmTokens = new Set(name ? normalize(name).split(' ').filter(Boolean) : []);
+  if (terms.partTokenSets.some((toks) => toks.every((t) => nmTokens.has(t)))) return true;
+  if (ref && refMatches(ref, terms.nums)) return true;
+  return false;
+}
+const NONPUBLIC_HW = new Set(['service', 'track', 'path', 'footway', 'cycleway', 'pedestrian', 'steps', 'bridleway', 'construction', 'proposed', 'raceway', 'busway', 'corridor']);
+// Fetch ALL public roads in the bbox, MARKING the ones that match the resolver's
+// roads as preferred. We route over everything but strongly prefer the scenic
+// roads — so short unnamed connectors can bridge them into one connected ride.
+async function fetchRoads(s: number, w: number, n: number, e: number, terms: Terms): Promise<{ ways: Way[]; prefCount: number } | null> {
   const bbox = `${s},${w},${n},${e}`;
-  const clauses: string[] = [];
-  // Server-side: broad substring on the distinctive word + ref-number contains.
-  for (const wd of terms.searchWords) clauses.push(`way["highway"]["name"~"${regexEscape(wd)}",i](${bbox});`);
-  for (const num of terms.nums)       clauses.push(`way["highway"]["ref"~"(^|[^0-9])${regexEscape(num)}($|[^0-9])",i](${bbox});`);
-  if (clauses.length === 0) return [];
-  const q = `[out:json][timeout:50];(${clauses.join('')});out geom;`;
+  const q = `[out:json][timeout:50];way["highway"](${bbox});out geom;`;
   const d = await overpass(q);
   if (!d) return null;
-  const cand: Way[] = [];
+  const ways: Way[] = [];
+  let prefCount = 0;
   for (const el of d.elements || []) {
     if (el.type !== 'way' || !Array.isArray(el.geometry) || !Array.isArray(el.nodes)) continue;
-    cand.push({ name: el.tags?.name || null, ref: el.tags?.ref || null, nodes: el.nodes, coords: el.geometry.map((g: any) => [g.lat, g.lon]) });
+    const hw = el.tags?.highway;
+    if (!hw || NONPUBLIC_HW.has(hw) || ['private', 'no'].includes(el.tags?.access)) continue;
+    const name = el.tags?.name || null, ref = el.tags?.ref || null;
+    const pref = isPreferred(name, ref, terms);
+    if (pref) prefCount++;
+    ways.push({ name, ref, nodes: el.nodes, coords: el.geometry.map((g: any) => [g.lat, g.lon]), pref });
   }
-  // Client-side confirm (apostrophe-insensitive): a way keeps if its normalized
-  // name contains ALL distinctive tokens of some catalog name part, OR its ref
-  // carries one of the route numbers.
-  const keep: Way[] = [];
-  for (const wy of cand) {
-    const nmTokens = new Set(wy.name ? normalize(wy.name).split(' ').filter(Boolean) : []);
-    let ok = terms.partTokenSets.some((toks) => toks.every((t) => nmTokens.has(t)));
-    if (!ok && wy.ref) ok = refMatches(wy.ref, terms.nums);
-    if (ok) keep.push(wy);
-  }
-  return keep;
+  return { ways, prefCount };
 }
 
-// ── Assemble ways (shared endpoint nodes) into the longest connected chain ─
-function assemble(ways: Way[]): number[][] {
-  if (ways.length === 0) return [];
-  if (ways.length === 1) return ways[0].coords;
-  // endpoint node → way indices
-  const endMap = new Map<number, number[]>();
-  ways.forEach((wy, i) => {
-    for (const nd of [wy.nodes[0], wy.nodes[wy.nodes.length - 1]]) {
-      const a = endMap.get(nd) || []; a.push(i); endMap.set(nd, a);
+// Trace the actual CONNECTED route through the matched (resolved) roads between
+// the two rough endpoints — a shortest path over the road graph. This is robust
+// to the original coords being on a DIFFERENT road (they're just rough bounds):
+// we snap each to the nearest node of the resolved roads and route between them
+// ALONG those roads. Fixes the naive-projection failure (0km / 20km-off traces).
+// Binary min-heap for Dijkstra (the all-roads graph can be large).
+class Heap {
+  a: [number, number][] = [];
+  push(x: [number, number]) { const a = this.a; a.push(x); let i = a.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (a[p][0] <= a[i][0]) break; [a[p], a[i]] = [a[i], a[p]]; i = p; } }
+  pop(): [number, number] | undefined { const a = this.a; if (!a.length) return undefined; const top = a[0], last = a.pop()!; if (a.length) { a[0] = last; let i = 0; for (;;) { const l = 2*i+1, r = 2*i+2; let m = i; if (l < a.length && a[l][0] < a[m][0]) m = l; if (r < a.length && a[r][0] < a[m][0]) m = r; if (m === i) break; [a[m], a[i]] = [a[i], a[m]]; i = m; } } return top; }
+  get size() { return this.a.length; }
+}
+const PREF_W = 0.15, OTHER_W = 1.4;   // scenic roads are 9x cheaper than connectors
+function tracePath(ways: Way[], start: [number, number], end: [number, number]):
+  { path: number[][]; startProjM: number; endProjM: number; connected: boolean; prefFrac: number } | null {
+  // Spatial filter so long spans (dense metro) stay tractable: keep preferred
+  // (scenic) roads always, but non-preferred roads only near a scenic road — so
+  // the graph is the scenic corridor + immediate connectors, not the whole city.
+  const CELL = 0.0035;   // ~390m grid
+  const cellKey = (lat: number, lng: number) => `${Math.round(lat / CELL)},${Math.round(lng / CELL)}`;
+  const prefCells = new Set<string>();
+  for (const wy of ways) if (wy.pref) for (const [la, ln] of wy.coords) {
+    const gx = Math.round(la / CELL), gy = Math.round(ln / CELL);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) prefCells.add(`${gx+dx},${gy+dy}`);
+  }
+  const nearPref = (wy: Way) => wy.pref || wy.coords.some(([la, ln]) => prefCells.has(cellKey(la, ln)));
+
+  const pos = new Map<number, [number, number]>();
+  const adj = new Map<number, { to: number; w: number; len: number; pref: boolean }[]>();
+  const addEdge = (a: number, b: number, len: number, pref: boolean) => { if (!adj.has(a)) adj.set(a, []); adj.get(a)!.push({ to: b, w: len * (pref ? PREF_W : OTHER_W), len, pref }); };
+  const prefNodes = new Set<number>();
+  for (const wy of ways) {
+    if (wy.nodes.length !== wy.coords.length || !nearPref(wy)) continue;
+    for (let i = 0; i < wy.nodes.length; i++) { pos.set(wy.nodes[i], [wy.coords[i][0], wy.coords[i][1]]); if (wy.pref) prefNodes.add(wy.nodes[i]); }
+    for (let i = 1; i < wy.nodes.length; i++) {
+      const len = haversineM(wy.coords[i-1][0], wy.coords[i-1][1], wy.coords[i][0], wy.coords[i][1]);
+      addEdge(wy.nodes[i-1], wy.nodes[i], len, wy.pref); addEdge(wy.nodes[i], wy.nodes[i-1], len, wy.pref);
     }
-  });
-  const used = new Set<number>();
-  // pick a starting way: prefer one with a degree-1 endpoint (a terminus)
-  let startIdx = 0;
-  for (let i = 0; i < ways.length; i++) {
-    const f = ways[i].nodes[0], l = ways[i].nodes[ways[i].nodes.length - 1];
-    if ((endMap.get(f)?.length || 0) === 1 || (endMap.get(l)?.length || 0) === 1) { startIdx = i; break; }
   }
-  // orient the start way so its terminus (or first node) leads
-  let cur = ways[startIdx];
-  used.add(startIdx);
-  let chain = cur.coords.slice();
-  let headNode = cur.nodes[0], tailNode = cur.nodes[cur.nodes.length - 1];
-  if ((endMap.get(headNode)?.length || 0) === 1 && (endMap.get(tailNode)?.length || 0) !== 1) {
-    // head is terminus → already leading; walk from tail
-  } else if ((endMap.get(tailNode)?.length || 0) === 1) {
-    chain = chain.slice().reverse(); [headNode, tailNode] = [tailNode, headNode];
+  if (pos.size === 0 || pos.size > 25000) return null;
+  // Anchor A/B on the nearest PREFERRED (scenic) nodes — so the traced stretch
+  // is the scenic road itself, with the rough coords as its bounds.
+  let A = -1, B = -1, dA = Infinity, dB = Infinity;
+  for (const id of prefNodes) {
+    const [nl, nn] = pos.get(id)!;
+    const da = haversineM(start[0], start[1], nl, nn); if (da < dA) { dA = da; A = id; }
+    const db = haversineM(end[0], end[1], nl, nn);   if (db < dB) { dB = db; B = id; }
   }
-  // walk forward from tailNode
-  let node = tailNode;
-  for (let guard = 0; guard < ways.length + 2; guard++) {
-    const cands = (endMap.get(node) || []).filter((i) => !used.has(i));
-    if (cands.length === 0) break;
-    const ni = cands[0]; const nw = ways[ni]; used.add(ni);
-    let seg = nw.coords;
-    if (nw.nodes[0] !== node) { seg = seg.slice().reverse(); node = nw.nodes[0]; }
-    else { node = nw.nodes[nw.nodes.length - 1]; }
-    chain = chain.concat(seg.slice(1)); // drop shared vertex
+  if (A < 0 || B < 0) return null;
+  if (A === B) return { path: [pos.get(A)!], startProjM: dA, endProjM: dB, connected: true, prefFrac: 1 };
+  // Dijkstra A→B on the weighted graph.
+  const dist = new Map<number, number>([[A, 0]]); const prev = new Map<number, number>();
+  const heap = new Heap(); heap.push([0, A]);
+  while (heap.size) {
+    const [d, u] = heap.pop()!;
+    if (u === B) break;
+    if (d > (dist.get(u) ?? Infinity)) continue;
+    for (const { to, w } of adj.get(u) || []) {
+      const nd = d + w;
+      if (nd < (dist.get(to) ?? Infinity)) { dist.set(to, nd); prev.set(to, u); heap.push([nd, to]); }
+    }
   }
-  return chain;
-}
-
-function nearestIdx(lat: number, lng: number, poly: number[][]): { idx: number; distM: number } {
-  let best = Infinity, bi = 0;
-  for (let i = 0; i < poly.length; i++) {
-    const d = haversineM(lat, lng, poly[i][0], poly[i][1]);
-    if (d < best) { best = d; bi = i; }
+  if (!dist.has(B)) return { path: [], startProjM: dA, endProjM: dB, connected: false, prefFrac: 0 };
+  // reconstruct + measure how much of the path is on preferred roads
+  const nodePath: number[] = []; let cur: number | undefined = B;
+  while (cur !== undefined) { nodePath.push(cur); cur = prev.get(cur); }
+  nodePath.reverse();
+  const path = nodePath.map((id) => pos.get(id)!);
+  let total = 0, prefLen = 0;
+  for (let i = 1; i < nodePath.length; i++) {
+    const edge = (adj.get(nodePath[i-1]) || []).find((x) => x.to === nodePath[i]);
+    if (edge) { total += edge.len; if (edge.pref) prefLen += edge.len; }
   }
-  return { idx: bi, distM: best };
+  return { path, startProjM: dA, endProjM: dB, connected: true, prefFrac: total ? prefLen / total : 0 };
 }
 
 function json(payload: unknown, status = 200): Response {
@@ -237,9 +263,13 @@ Deno.serve(async (req) => {
   const roadIds = Array.isArray(body.road_ids) ? body.road_ids : null;
   const sample  = Number.isInteger(body.sample) && body.sample > 0 ? body.sample : null;
 
-  let filter = 'approved=is.null';
-  if (roadIds) filter += `&id=in.(${roadIds.map((x: string) => `"${x}"`).join(',')})`;
-  else if (batch) filter += `&seed_batch=eq.${encodeURIComponent(batch)}`;
+  // Explicit road_ids target those exact rows (any approval state — the caller
+  // chose them; also lets us re-trace rejected rows). Batch/default only touch
+  // pending rows.
+  let filter: string;
+  if (roadIds) filter = `id=in.(${roadIds.map((x: string) => `"${x}"`).join(',')})`;
+  else if (batch) filter = `approved=is.null&seed_batch=eq.${encodeURIComponent(batch)}`;
+  else filter = 'approved=is.null';
   let rows: any[] = [];
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/known_roads?select=id,name,route_number,state,start_lat,start_lng,end_lat,end_lng,resolved_roads&${filter}&order=name.asc`, {
@@ -269,42 +299,49 @@ Deno.serve(async (req) => {
     const maxLat = Math.max(row.start_lat, row.end_lat) + BBOX_PAD_DEG;
     const minLng = Math.min(row.start_lng, row.end_lng) - BBOX_PAD_DEG;
     const maxLng = Math.max(row.start_lng, row.end_lng) + BBOX_PAD_DEG;
-    const ways = await fetchNamedWays(minLat, minLng, maxLat, maxLng, terms);
-    if (ways === null) { res.status = 'overpass-failed'; res.note = 'Overpass unavailable'; results.push(res); continue; }
-    if (ways.length === 0) {
+    const fetched = await fetchRoads(minLat, minLng, maxLat, maxLng, terms);
+    if (fetched === null) { res.status = 'overpass-failed'; res.note = 'Overpass unavailable'; results.push(res); continue; }
+    const ways = fetched.ways;
+    if (fetched.prefCount === 0) {
       res.status = 'not-found';
       res.note = `no OSM way named/ref'd like "${row.name}" within ~2.5km of the endpoints — likely wrong road, reject`;
       notFound++; results.push(res); continue;
     }
 
-    const chain = assemble(ways);
-    if (chain.length < 2) { res.status = 'assemble-failed'; res.note = 'matched ways but could not assemble a path'; results.push(res); continue; }
-
-    // Project the catalog endpoints onto the traced road; the stretch between
-    // them is the scenic chunk. If a projection is far from the road, that end
-    // was off the named road.
-    const ps = nearestIdx(row.start_lat, row.start_lng, chain);
-    const pe = nearestIdx(row.end_lat, row.end_lng, chain);
-    const iLo = Math.min(ps.idx, pe.idx), iHi = Math.max(ps.idx, pe.idx);
-    const stretch = chain.slice(iLo, iHi + 1);
-    let lenM = 0; for (let i = 1; i < stretch.length; i++) lenM += haversineM(stretch[i-1][0], stretch[i-1][1], stretch[i][0], stretch[i][1]);
-    // orient start→end to match the catalog's intended direction
-    const oriented = (ps.idx <= pe.idx) ? stretch : stretch.slice().reverse();
+    // Route through the resolved roads between the rough endpoints (connected
+    // path), instead of naively projecting the — possibly wrong-road — coords.
+    const tp = tracePath(ways, [row.start_lat, row.start_lng], [row.end_lat, row.end_lng]);
+    if (!tp) { res.status = 'assemble-failed'; res.note = 'matched ways but could not build a graph'; results.push(res); continue; }
+    if (!tp.connected || tp.path.length < 2) {
+      res.status = 'disconnected';
+      res.matched_names = [...new Set(ways.filter((w) => w.pref).map((w) => w.name).filter(Boolean))].slice(0, 4);
+      res.note = `matched ${res.matched_names.join(', ')} but no public route connects them between the endpoints — needs review`;
+      results.push(res); continue;
+    }
+    const oriented = tp.path;   // already start→end order
+    let lenM = 0; for (let i = 1; i < oriented.length; i++) lenM += haversineM(oriented[i-1][0], oriented[i-1][1], oriented[i][0], oriented[i][1]);
     const newStart = oriented[0], newEnd = oriented[oriented.length - 1];
 
-    res.status = 'traced';
-    res.matched_ways = ways.length;
-    res.matched_names = [...new Set(ways.map((w) => w.name).filter(Boolean))].slice(0, 4);
-    res.matched_refs  = [...new Set(ways.map((w) => w.ref).filter(Boolean))].slice(0, 4);
-    res.start_proj_m = Math.round(ps.distM);
-    res.end_proj_m   = Math.round(pe.distM);
-    // Confidence from how far the catalog endpoints sat from the real named
-    // road: close = coords were right; far = the entry was misplaced and the
-    // trace RELOCATED it onto the real road (verify before trusting).
-    const maxProj = Math.max(ps.distM, pe.distM);
-    res.confidence = maxProj < 400 ? 'high' : maxProj < 1500 ? 'medium' : 'low';
-    res.relocated = maxProj >= 1500;
+    const prefWays = ways.filter((w) => w.pref);
+    res.matched_ways = prefWays.length;
+    res.matched_names = [...new Set(prefWays.map((w) => w.name).filter(Boolean))].slice(0, 5);
+    res.matched_refs  = [...new Set(prefWays.map((w) => w.ref).filter(Boolean))].slice(0, 4);
+    res.start_proj_m = Math.round(tp.startProjM);
+    res.end_proj_m   = Math.round(tp.endProjM);
+    res.pref_frac    = +tp.prefFrac.toFixed(2);
+    const maxProj = Math.max(tp.startProjM, tp.endProjM);
     res.traced_km    = +(lenM / 1000).toFixed(2);
+    // Reject only degenerate traces: too short, or barely on the scenic roads
+    // (mostly connectors → the resolved roads don't actually form the ride).
+    // A far endpoint projection is a big RELOCATION, not a failure → low conf.
+    if (res.traced_km < 0.8 || tp.prefFrac < 0.45) {
+      res.status = 'poor-trace';
+      res.note = `trace weak (${res.traced_km}km, ${Math.round(tp.prefFrac*100)}% on scenic roads) — flag, don't trust`;
+      results.push(res); continue;
+    }
+    res.status = 'traced';
+    res.confidence = maxProj < 400 && tp.prefFrac > 0.9 ? 'high' : maxProj < 1500 ? 'medium' : 'low';
+    res.relocated = maxProj >= 1500;
     res.new_start = [newStart[0], newStart[1]];
     res.new_end   = [newEnd[0], newEnd[1]];
     // The deliverable: ordered points on the correct road that GH threads.
