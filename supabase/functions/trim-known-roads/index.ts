@@ -43,16 +43,22 @@ const CORS = {
 
 // ── Tuning ───────────────────────────────────────────────────────────────
 const STEP_M         = 200;      // walk step along the spine
-const MAX_TRIM_FRAC  = 0.45;     // search bound: don't look past this fraction of the road
-const MAX_TRIM_M     = 9000;     // ...or this many meters, whichever is smaller
-// AUTO-APPLY only small trims — an endpoint just needs to reach the nearest
-// clean junction to be a good anchor connection point. A big trim means a long
-// developed strip or (more likely) GH's spine is on the wrong road, so we FLAG
-// it for review instead of silently eating into the scenic chunk.
-const SMALL_TRIM_M   = 800;
-const BBOX_PAD_DEG   = 0.02;     // pad the spine bbox for the Overpass fetch (~1.5km)
+const MAX_TRIM_FRAC  = 0.5;      // search bound: don't look past this fraction of the road
+const MAX_TRIM_M     = 12000;    // ...or this many meters, whichever is smaller
+// We trim THROUGH the built-up part (never scenic) until the endpoint is rural.
+// Auto-apply up to this — enough to exit virtually any town. A trim BIGGER than
+// this is suspicious (wrong-road spine, or it'd eat real scenic road), so we
+// FLAG it for review / resolve→trace instead of auto-reshaping the chunk.
+const LARGE_TRIM_M   = 2000;
+const BBOX_PAD_DEG   = 0.025;    // pad the spine bbox for the Overpass fetch (~2km)
 const NEAR_WAY_M     = 35;       // pre-snap gate: nearest highway within this
 const NEAR_WAY_SNAP_M = 15;      // post-snap: point must actually BE on the through-road
+// Built-up (town) detection — the real signal, since landuse=residential is
+// patchy. Rural through-road points have ~0–2 buildings within 120m; town
+// endpoints have 14–71. A place node nearby corroborates.
+const BUILD_RADIUS_M = 120;
+const BUILD_MAX      = 8;        // > this many buildings within radius = built-up
+const PLACE_RADIUS_M = 300;      // a town/village node this close (+ some buildings) = in town
 const URBAN          = new Set(['residential', 'commercial', 'retail', 'industrial']);
 // Through-road classes we're happy to END on (rural local roads + connectors).
 // Everything else (residential, living_street, service, track, path, motorway,
@@ -96,8 +102,81 @@ function pointInRing(pLat: number, pLng: number, ring: number[][]): boolean {
   return inside;
 }
 
-interface Highway { cls: string; name: string | null; ref: string | null; pts: number[][]; } // pts: [[lat,lng], ...]
-interface OSM { highways: Highway[]; urbanPolys: number[][][]; }
+interface Highway { cls: string; name: string | null; ref: string | null; nodes: number[]; pts: number[][]; public: boolean; } // pts: [[lat,lng], ...]
+// Public-road graph (service/track/driveway/private ways EXCLUDED) — used to
+// verify an endpoint reaches a real intersection on both sides (not a dead-end).
+interface RoadGraph { adj: Map<number, Set<number>>; pos: Map<number, [number, number]>; }
+interface OSM { highways: Highway[]; urbanPolys: number[][][]; buildings: number[][]; places: number[][]; graph: RoadGraph; }
+
+// Public road = part of the routable public network (excludes driveways, tracks,
+// footways, and anything access-restricted). residential/living_street count —
+// they connect the network — but they're not valid ENDPOINTS (that's the
+// THROUGH check); here we only care about connectivity.
+const NONPUBLIC_HW = new Set(['service', 'track', 'path', 'footway', 'cycleway', 'pedestrian', 'steps', 'bridleway', 'construction', 'proposed', 'raceway', 'busway', 'corridor']);
+const NONPUBLIC_ACCESS = new Set(['private', 'no', 'permit', 'customers', 'military', 'delivery', 'agricultural', 'forestry']);
+function isPublicWay(hw: string | undefined, service: string | undefined, access: string | undefined): boolean {
+  if (!hw || NONPUBLIC_HW.has(hw)) return false;
+  if (access && NONPUBLIC_ACCESS.has(access)) return false;
+  return true;
+}
+
+// Does the endpoint reach a genuine intersection on BOTH sides via PUBLIC roads?
+// Find the nearest public-graph node; if the point isn't on a public road at all
+// (a driveway) → false. If the node is an intersection (deg≥3) → true. If it's a
+// mid-road node (deg 2), walk each direction until it hits a node of degree ≠ 2
+// within MAX_M: reaching deg-1 = a dead-end tip on that side → NOT an outlet.
+const ON_ROAD_M    = 22;    // endpoint must be this close to a PUBLIC road segment
+const OUTLET_WALK_M = 600;  // how far to walk before giving a side the benefit of the doubt
+function graphOutlet(lat: number, lng: number, osm: OSM): boolean {
+  const g = osm.graph;
+  // Nearest public SEGMENT (for the on-road test) + nearest public VERTEX (the
+  // graph node to start traversal from — vertices can be sparse on rural roads).
+  let segD = Infinity, bestN = -1, nodeD = Infinity;
+  for (const hw of osm.highways) {
+    if (!hw.public || hw.nodes.length !== hw.pts.length) continue;
+    for (let i = 0; i < hw.pts.length; i++) {
+      const dv = haversineM(lat, lng, hw.pts[i][0], hw.pts[i][1]);
+      if (dv < nodeD) { nodeD = dv; bestN = hw.nodes[i]; }
+      if (i > 0) { const ds = distPtSegM(lat, lng, hw.pts[i-1][0], hw.pts[i-1][1], hw.pts[i][0], hw.pts[i][1]); if (ds < segD) segD = ds; }
+    }
+  }
+  if (bestN < 0 || segD > ON_ROAD_M) return false;   // not on a public road → driveway/spur
+  const deg = (n: number) => (g.adj.get(n)?.size || 0);
+  if (deg(bestN) >= 3) return true;                        // it's an intersection
+  if (deg(bestN) <= 1) return false;                       // dead-end tip
+  // deg == 2: walk each of the two directions to the next non-deg-2 node.
+  const walkSide = (start: number, firstStep: number): 'intersection' | 'deadend' | 'open' => {
+    let prev = start, cur = firstStep, dist = haversineM(...g.pos.get(start)!, ...g.pos.get(firstStep)!);
+    for (let i = 0; i < 5000; i++) {
+      const d = deg(cur);
+      if (d >= 3) return 'intersection';
+      if (d <= 1) return 'deadend';
+      if (dist > OUTLET_WALK_M) return 'open';            // long road, assume it goes somewhere
+      const nexts = [...(g.adj.get(cur) || [])].filter((x) => x !== prev);
+      if (nexts.length === 0) return 'deadend';
+      const nx = nexts[0];
+      dist += haversineM(...g.pos.get(cur)!, ...g.pos.get(nx)!);
+      prev = cur; cur = nx;
+    }
+    return 'open';
+  };
+  const [a, b] = [...(g.adj.get(bestN) || [])];
+  const sa = walkSide(bestN, a), sb = walkSide(bestN, b);
+  // A dead-end on EITHER side means you can arrive and not get out that way.
+  return sa !== 'deadend' && sb !== 'deadend';
+}
+
+// Is the point in a built-up area (a town)? Building density is the reliable
+// signal — landuse=residential is patchy. A place=town/village node nearby
+// corroborates when there are at least a few buildings (avoids flagging a bare
+// rural crossroads that happens to share a hamlet name).
+function builtUp(lat: number, lng: number, osm: OSM): { built: boolean; buildings: number } {
+  let n = 0;
+  for (const [bl, bn] of osm.buildings) if (haversineM(lat, lng, bl, bn) <= BUILD_RADIUS_M) n++;
+  if (n > BUILD_MAX) return { built: true, buildings: n };
+  if (n >= 3) for (const [pl, pn] of osm.places) if (haversineM(lat, lng, pl, pn) <= PLACE_RADIUS_M) return { built: true, buildings: n };
+  return { built: false, buildings: n };
+}
 
 // ── Road-name matching (wrong-road detector) ─────────────────────────────
 // Distinctive tokens only: drop road-type words, directions, connectors, and
@@ -267,10 +346,14 @@ const OVERPASS_MIRRORS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 async function overpassBbox(s: number, w: number, n: number, e: number): Promise<OSM | null> {
+  const b = `${s},${w},${n},${e}`;
+  // roads + landuse with full geometry; buildings + places as centroids/points
+  // (lighter — we only need their location for density).
   const q = `[out:json][timeout:50];`
-    + `(way[highway](${s},${w},${n},${e});`
-    + `way[landuse~"^(residential|commercial|retail|industrial)$"](${s},${w},${n},${e}););`
-    + `out geom;`;
+    + `(way[highway](${b});way[landuse~"^(residential|commercial|retail|industrial)$"](${b});)->.rd;`
+    + `.rd out geom;`
+    + `way[building](${b});out center;`
+    + `node[place~"^(city|town|village|hamlet|suburb)$"](${b});out;`;
   const attempts = [...OVERPASS_MIRRORS, OVERPASS_MIRRORS[0]]; // last = one retry of the primary
   for (const url of attempts) {
     try {
@@ -284,28 +367,47 @@ async function overpassBbox(s: number, w: number, n: number, e: number): Promise
       const d = await r.json();
       const highways: Highway[] = [];
       const urbanPolys: number[][][] = [];
+      const buildings: number[][] = [];
+      const places: number[][] = [];
+      const graph: RoadGraph = { adj: new Map(), pos: new Map() };
       for (const el of d.elements || []) {
-        if (el.type !== 'way' || !Array.isArray(el.geometry)) continue;
-        const pts = el.geometry.map((g: any) => [g.lat, g.lon]);
         const t = el.tags || {};
-        if (t.highway) highways.push({ cls: t.highway, name: t.name || null, ref: t.ref || null, pts });
-        else if (t.landuse && URBAN.has(t.landuse)) urbanPolys.push(pts);
+        if (el.type === 'way' && Array.isArray(el.geometry)) {
+          const pts = el.geometry.map((g: any) => [g.lat, g.lon]);
+          if (t.highway) {
+            const pub = isPublicWay(t.highway, t.service, t.access);
+            const nodes = Array.isArray(el.nodes) ? el.nodes : [];
+            highways.push({ cls: t.highway, name: t.name || null, ref: t.ref || null, nodes, pts, public: pub });
+            // build the public-road graph (node adjacency) for the outlet check
+            if (pub && nodes.length === pts.length) {
+              for (let i = 0; i < nodes.length; i++) {
+                graph.pos.set(nodes[i], [pts[i][0], pts[i][1]]);
+                if (!graph.adj.has(nodes[i])) graph.adj.set(nodes[i], new Set());
+                if (i > 0) { graph.adj.get(nodes[i])!.add(nodes[i-1]); graph.adj.get(nodes[i-1])!.add(nodes[i]); }
+              }
+            }
+          } else if (t.landuse && URBAN.has(t.landuse)) urbanPolys.push(pts);
+        } else if (el.type === 'way' && t.building && el.center) {
+          buildings.push([el.center.lat, el.center.lon]);
+        } else if (el.type === 'node' && t.place && el.lat != null) {
+          places.push([el.lat, el.lon]);
+        }
       }
-      if (highways.length > 0) return { highways, urbanPolys };
+      if (highways.length > 0) return { highways, urbanPolys, buildings, places, graph };
       // empty highways = suspect response; try the next mirror
     } catch { /* try next mirror */ }
   }
   return null;
 }
 
-// Accept a point only if its FINAL (snapped) position is non-urban, on a
-// through-road class, and has an outlet (not a dead-end/spur). Returns the
-// snapped point + its snap distance, or null.
+// Accept a point only if its FINAL (snapped) position is RURAL (not built-up,
+// not urban landuse), on a through-road class, and has an outlet (not a
+// dead-end/spur). Returns the snapped point + its snap distance, or null.
 async function acceptCandidate(lat: number, lng: number, osm: OSM, snapFn: typeof ghNearest):
   Promise<{ pt: [number, number]; snapM: number; cls: string } | null> {
   // Cheap pre-filter on the raw point so we don't snap every step.
   const pre = classifyPoint(lat, lng, osm);
-  if (pre.urban || !pre.cls || !THROUGH.has(pre.cls)) return null;
+  if (pre.urban || !pre.cls || !THROUGH.has(pre.cls) || builtUp(lat, lng, osm).built) return null;
   // Snap to the GH edge, then RE-classify the snapped point with a TIGHT
   // tolerance — the snap can pull it onto a driveway/spur ~35m off the real
   // through-road; requiring the point to be within ~15m of a through-road
@@ -314,7 +416,10 @@ async function acceptCandidate(lat: number, lng: number, osm: OSM, snapFn: typeo
   const p: [number, number] = s ? [s.lat, s.lng] : [lat, lng];
   const post = classifyPoint(p[0], p[1], osm, NEAR_WAY_SNAP_M);
   if (post.urban || !post.cls || !THROUGH.has(post.cls)) return null;
-  if (!hasOutlet(p[0], p[1], osm)) return null;
+  if (builtUp(p[0], p[1], osm).built) return null;   // still in town → keep walking
+  // Must reach a real intersection on BOTH sides via public roads — rejects
+  // dead-end tips (Range Rd), spurs, and driveways (not on a public road).
+  if (!graphOutlet(p[0], p[1], osm)) return null;
   return { pt: p, snapM: s?.distM ?? 0, cls: post.cls };
 }
 
@@ -344,9 +449,12 @@ async function trimEnd(spine: number[][], dir: 1 | -1, roadLenM: number, osm: OS
     if (sinceEval < STEP_M) continue;   // only evaluate ~every STEP_M
     sinceEval = 0;
     const acc = await acceptCandidate(cur[0], cur[1], osm, snapFn);
-    if (acc) return { pt: acc.pt, trimM: walked, snapM: acc.snapM, reason: `trimmed to ${acc.cls}, outside town, has outlet` };
+    if (acc) return { pt: acc.pt, trimM: walked, snapM: acc.snapM, reason: `trimmed to ${acc.cls}, rural, has outlet` };
+    const bu = builtUp(cur[0], cur[1], osm);
     const c = classifyPoint(cur[0], cur[1], osm);
-    lastReason = c.urban ? 'still in urban landuse' : (c.cls ? `on ${c.cls} (not a clean through-road / dead-end)` : 'no road nearby');
+    lastReason = bu.built ? `still built-up (${bu.buildings} buildings/120m)`
+      : c.urban ? 'still in urban landuse'
+      : (c.cls ? `on ${c.cls} (not a clean through-road / dead-end)` : 'no road nearby');
   }
   return { pt: null, trimM: 0, snapM: 0, reason: lastReason };
 }
@@ -436,17 +544,25 @@ Deno.serve(async (req) => {
     const startTrim = suspectWrong ? empty : await trimEnd(spine, 1, roadLenM, osm, ghNearest);
     const endTrim   = suspectWrong ? empty : await trimEnd(spine, -1, roadLenM, osm, ghNearest);
 
-    // Categorize each end: good = already fine (no trim); small = apply;
-    // large = trim too big, flag don't apply; unfixable = no clean point found.
+    // Categorize each end: good = already rural (no trim); trim = apply (≤2km,
+    // exits town); large = trim too big to auto-apply → flag; unfixable = no
+    // rural point found → flag.
     const cat = (t: typeof startTrim) =>
       t.pt !== null && t.trimM === 0 ? 'good'
-      : t.pt !== null && t.trimM <= SMALL_TRIM_M ? 'small'
+      : t.pt !== null && t.trimM <= LARGE_TRIM_M ? 'trim'
       : t.pt !== null ? 'large'
       : 'unfixable';
     const catS = suspectWrong ? 'skip' : cat(startTrim);
     const catE = suspectWrong ? 'skip' : cat(endTrim);
 
-    const applyStart = catS === 'small', applyEnd = catE === 'small';
+    // Apply a trim, OR snap-clean an "already good" endpoint: we validate the
+    // SNAPPED point (on the through-road) but the original coord can sit on a
+    // driveway mouth right where it meets the road. Always store the validated
+    // snapped point when it moved off the original at all (>1.5m).
+    const snapCleanS = catS === 'good' && startTrim.snapM > 1.5;
+    const snapCleanE = catE === 'good' && endTrim.snapM > 1.5;
+    const applyStart = catS === 'trim' || snapCleanS;
+    const applyEnd   = catE === 'trim' || snapCleanE;
     const newStart = applyStart ? startTrim.pt : null;
     const newEnd   = applyEnd   ? endTrim.pt   : null;
     const needsReview = suspectWrong
@@ -469,23 +585,31 @@ Deno.serve(async (req) => {
 
     const reasons: string[] = [];
     if (suspectWrong)         reasons.push(`possible wrong road — route runs on ${wr.spineRoads.join(', ') || 'an unnamed road'}, catalog says "${row.name}"`);
-    if (catS === 'large')     reasons.push(`start needs a large ${Math.round(startTrim.trimM)}m trim (check wrong-road / far-off endpoint)`);
-    if (catE === 'large')     reasons.push(`end needs a large ${Math.round(endTrim.trimM)}m trim`);
-    if (catS === 'unfixable') reasons.push(`start can't reach a clean through-road (${startTrim.reason})`);
-    if (catE === 'unfixable') reasons.push(`end can't reach a clean through-road (${endTrim.reason})`);
+    if (catS === 'large')     reasons.push(`start needs a large ${Math.round(startTrim.trimM)}m trim to exit built-up area — flagged, not auto-applied (wrong-road? use resolve→trace)`);
+    if (catE === 'large')     reasons.push(`end needs a large ${Math.round(endTrim.trimM)}m trim to exit built-up area — flagged, not auto-applied`);
+    if (catS === 'unfixable') reasons.push(`start can't reach a rural through-road (${startTrim.reason})`);
+    if (catE === 'unfixable') reasons.push(`end can't reach a rural through-road (${endTrim.reason})`);
+    const trimTxt = (apply: boolean, snapClean: boolean, mm: number) =>
+      apply ? (snapClean ? ` (snapped ${mm}m onto road)` : ' ' + mm + 'm') : '';
     res.note = (needsReview ? '⚠ VERIFY — ' + reasons.join('; ') + '. ' : '')
-      + (res.changed ? `trimmed${applyStart ? ' start ' + res.start.trim_m + 'm' : ''}${applyEnd ? ' end ' + res.end.trim_m + 'm' : ''}` : 'no change');
+      + (res.changed
+        ? `updated${applyStart ? ' start' + trimTxt(applyStart, snapCleanS, snapCleanS ? Math.round(startTrim.snapM) : res.start.trim_m) : ''}${applyEnd ? ' end' + trimTxt(applyEnd, snapCleanE, snapCleanE ? Math.round(endTrim.snapM) : res.end.trim_m) : ''}`
+        : 'no change');
 
     if (res.changed) changed++;
 
-    if (!dryRun && (res.changed || needsReview)) {
+    // Always write on a real run: persist coords when changed, AND always set
+    // needs_coord_review (true when flagged, FALSE when clean) so stale flags
+    // from earlier passes get cleared.
+    if (!dryRun) {
       const patch: any = {};
       if (applyStart) { patch.start_lat = fS[0]; patch.start_lng = fS[1]; patch.snap_distance_m_start = startTrim.snapM; }
       if (applyEnd)   { patch.end_lat   = fE[0]; patch.end_lng   = fE[1]; patch.snap_distance_m_end   = endTrim.snapM; }
       const notes: string[] = [];
-      if (res.changed) notes.push(`auto-trimmed ${new Date().toISOString().slice(0, 10)}:${applyStart ? ' start ' + res.start.trim_m + 'm' : ''}${applyEnd ? ' end ' + res.end.trim_m + 'm' : ''}`);
+      if (res.changed) notes.push(`auto-trimmed ${new Date().toISOString().slice(0, 10)}:${applyStart ? ' start ' + (snapCleanS ? 'snap' : res.start.trim_m + 'm') : ''}${applyEnd ? ' end ' + (snapCleanE ? 'snap' : res.end.trim_m + 'm') : ''}`);
       if (needsReview) { const rv = '⚠ verify: ' + reasons.join('; '); notes.push(rv); patch.needs_coord_review = true; patch.coord_review_reason = rv; }
-      patch.admin_notes = notes.join(' | ');
+      else { patch.needs_coord_review = false; patch.coord_review_reason = null; }
+      if (notes.length) patch.admin_notes = notes.join(' | ');
       try {
         await fetch(`${SUPABASE_URL}/rest/v1/known_roads?id=eq.${row.id}`, {
           method: 'PATCH',
