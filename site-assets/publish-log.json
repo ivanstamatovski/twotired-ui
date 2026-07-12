@@ -1,17 +1,39 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
   "2026-07-12-litchfield-bmw-v2-final-916.mp4": {
-    "category": "pending",
-    "bestOf": false,
+    "category": "final",
+    "bestOf": true,
     "title": "My Kind of App (v2)",
     "caption": "\"Told it: Litchfield Hills, fuel stop halfway. Route came back eighty-two percent twisty. Didn't even round. My kind of app.\"",
-    "platforms": {}
+    "platforms": {
+      "instagram": {
+        "id": "18370297297228956",
+        "url": "https://www.instagram.com/ridetwotired/",
+        "date": "2026-07-12"
+      },
+      "facebook": {
+        "id": "2943981095939218",
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-12"
+      },
+      "youtube": {
+        "id": "Dul1WTNIHP4",
+        "url": "https://youtube.com/shorts/Dul1WTNIHP4",
+        "date": "2026-07-12"
+      },
+      "tiktok": {
+        "id": null,
+        "url": "https://www.tiktok.com/@ridetwotired",
+        "date": null,
+        "note": "TikTok Studio web upload stalled client-side on 2026-07-12 after multiple attempts (one attempt uploaded to TikTok's CDN successfully but the UI never advanced past the processing spinner; other attempts didn't even fire the upload). Needs a manual retry."
+      }
+    }
   },
   "2026-07-12-litchfield-navapp-final-916.mp4": {
-    "category": "pending",
+    "category": "test",
     "bestOf": false,
-    "title": "My Kind of App",
-    "caption": "\"Told it: Litchfield Hills, fuel stop halfway. Route came back eighty-two percent twisty. Didn't even round. My kind of app.\"",
+    "title": "My Kind of App — duplicate take, superseded by v2",
+    "caption": "Duplicate render from the same Flow script as the v2 take. Never submitted for approval separately — Ivan approved litchfield-bmw-v2 (via GitHub issue #4) which was published instead. Kept as a test asset, not published.",
     "platforms": {}
   },
   "2026-07-12-litchfield-bmw-final-916.mp4": {
@@ -27,10 +49,26 @@
     "title": "No Thanks, Midtown",
     "caption": "\"Every app I've tried drags me through Midtown at rush hour. TwoTired took one look and said no thanks.\"",
     "platforms": {
-      "instagram": { "id": "18111609997944574", "url": "https://www.instagram.com/ridetwotired/", "date": "2026-07-10" },
-      "facebook": { "id": "2066957757582189", "url": "https://www.facebook.com/61591906523319", "date": "2026-07-10" },
-      "youtube": { "id": "Ue3YMiFWub0", "url": "https://youtube.com/shorts/Ue3YMiFWub0", "date": "2026-07-12" },
-      "tiktok": { "id": "7661043811623177503", "url": "https://www.tiktok.com/@ridetwotired/video/7661043811623177503", "date": "2026-07-10" }
+      "instagram": {
+        "id": "18111609997944574",
+        "url": "https://www.instagram.com/ridetwotired/",
+        "date": "2026-07-10"
+      },
+      "facebook": {
+        "id": "2066957757582189",
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-10"
+      },
+      "youtube": {
+        "id": "Ue3YMiFWub0",
+        "url": "https://youtube.com/shorts/Ue3YMiFWub0",
+        "date": "2026-07-12"
+      },
+      "tiktok": {
+        "id": "7661043811623177503",
+        "url": "https://www.tiktok.com/@ridetwotired/video/7661043811623177503",
+        "date": "2026-07-10"
+      }
     }
   },
   "2026-07-09-nyack-live-tracking-final-916.mp4": {
@@ -39,10 +77,26 @@
     "title": "Order Another Coffee",
     "caption": "\"Bear Mountain run. Two of 'em are still crossing the Tappan Zee — I can watch 'em crawl. Order another coffee.\"",
     "platforms": {
-      "instagram": { "id": "17964154407140119", "url": "https://www.instagram.com/reel/DamCZvBleWd/", "date": "2026-07-09" },
-      "facebook": { "id": "1523621285922438", "url": "https://www.facebook.com/61591906523319", "date": "2026-07-09" },
-      "youtube": { "id": "RGj_T15cBQw", "url": "https://www.youtube.com/watch?v=RGj_T15cBQw", "date": "2026-07-09" },
-      "tiktok": { "id": "7660711672469916958", "url": "https://www.tiktok.com/@ridetwotired/video/7660711672469916958", "date": "2026-07-09" }
+      "instagram": {
+        "id": "17964154407140119",
+        "url": "https://www.instagram.com/reel/DamCZvBleWd/",
+        "date": "2026-07-09"
+      },
+      "facebook": {
+        "id": "1523621285922438",
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-09"
+      },
+      "youtube": {
+        "id": "RGj_T15cBQw",
+        "url": "https://www.youtube.com/watch?v=RGj_T15cBQw",
+        "date": "2026-07-09"
+      },
+      "tiktok": {
+        "id": "7660711672469916958",
+        "url": "https://www.tiktok.com/@ridetwotired/video/7660711672469916958",
+        "date": "2026-07-09"
+      }
     }
   },
   "2026-07-09-diner-oldtimer-v2-final-916.mp4": {
@@ -51,10 +105,26 @@
     "title": "Forty Years, One Download",
     "caption": "\"This app already knew Storm King... even knew this diner. Took me four decades. Took the kid one download.\"",
     "platforms": {
-      "instagram": { "id": "18228892330318147", "url": "https://www.instagram.com/reel/DakmDsdCSxt/", "date": "2026-07-09" },
-      "facebook": { "id": "1009717841969427", "url": "https://www.facebook.com/61591906523319", "date": "2026-07-09" },
-      "youtube": { "id": "0Ywzmr45vxo", "url": "https://www.youtube.com/shorts/0Ywzmr45vxo", "date": "2026-07-09" },
-      "tiktok": { "id": null, "url": "https://www.tiktok.com/@ridetwotired", "date": "2026-07-09" }
+      "instagram": {
+        "id": "18228892330318147",
+        "url": "https://www.instagram.com/reel/DakmDsdCSxt/",
+        "date": "2026-07-09"
+      },
+      "facebook": {
+        "id": "1009717841969427",
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-09"
+      },
+      "youtube": {
+        "id": "0Ywzmr45vxo",
+        "url": "https://www.youtube.com/shorts/0Ywzmr45vxo",
+        "date": "2026-07-09"
+      },
+      "tiktok": {
+        "id": null,
+        "url": "https://www.tiktok.com/@ridetwotired",
+        "date": "2026-07-09"
+      }
     }
   },
   "2026-07-08-diner-oldtimer-final-916.mp4": {
@@ -70,9 +140,21 @@
     "title": "The Gas Station Skeptic",
     "caption": "\"He literally TALKED to his route app. Two more hours of twisties, end at a diner. And it just... did it.\"",
     "platforms": {
-      "instagram": { "id": "18120357988696933", "url": "https://www.instagram.com/reel/Dag6Xs6FdCG/", "date": "2026-07-07" },
-      "facebook": { "id": "1269627876223169_18120357988696933", "url": "https://www.facebook.com/61591906523319", "date": "2026-07-07" },
-      "youtube": { "id": "osqyBZ_MGEA", "url": "https://www.youtube.com/shorts/osqyBZ_MGEA", "date": "2026-07-07" }
+      "instagram": {
+        "id": "18120357988696933",
+        "url": "https://www.instagram.com/reel/Dag6Xs6FdCG/",
+        "date": "2026-07-07"
+      },
+      "facebook": {
+        "id": "1269627876223169_18120357988696933",
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-07"
+      },
+      "youtube": {
+        "id": "osqyBZ_MGEA",
+        "url": "https://www.youtube.com/shorts/osqyBZ_MGEA",
+        "date": "2026-07-07"
+      }
     }
   },
   "2026-07-07-hawks-nest-dad-final-916.mp4": {
@@ -81,9 +163,21 @@
     "title": "Hawk's Nest, Find Barbecue on the Way",
     "caption": "\"Route. Ribs. Done. My kids think I'm cool again.\"",
     "platforms": {
-      "instagram": { "id": "18102844612967743", "url": "https://www.instagram.com/reel/DahBhqKFcun/", "date": "2026-07-07" },
-      "facebook": { "id": "1049133157693760", "url": "https://www.facebook.com/61591906523319", "date": "2026-07-07" },
-      "youtube": { "id": "J1G8n57YpzU", "url": "https://www.youtube.com/shorts/J1G8n57YpzU", "date": "2026-07-07" }
+      "instagram": {
+        "id": "18102844612967743",
+        "url": "https://www.instagram.com/reel/DahBhqKFcun/",
+        "date": "2026-07-07"
+      },
+      "facebook": {
+        "id": "1049133157693760",
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-07"
+      },
+      "youtube": {
+        "id": "J1G8n57YpzU",
+        "url": "https://www.youtube.com/shorts/J1G8n57YpzU",
+        "date": "2026-07-07"
+      }
     }
   },
   "2026-07-05-ray-talks-maps-169.mp4": {
@@ -92,9 +186,21 @@
     "title": "Ray Talks About Maps",
     "caption": "\"I hate being wrong.\" — Ray tries TwoTired",
     "platforms": {
-      "instagram": { "id": null, "url": "https://www.instagram.com/ridetwotired/", "date": "2026-07-06" },
-      "facebook": { "id": null, "url": "https://www.facebook.com/61591906523319", "date": "2026-07-06" },
-      "youtube": { "id": null, "url": "https://www.youtube.com/channel/UCrg9QZIgXf6Ieuo666-3ZcQ", "date": "2026-07-06" }
+      "instagram": {
+        "id": null,
+        "url": "https://www.instagram.com/ridetwotired/",
+        "date": "2026-07-06"
+      },
+      "facebook": {
+        "id": null,
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-06"
+      },
+      "youtube": {
+        "id": null,
+        "url": "https://www.youtube.com/channel/UCrg9QZIgXf6Ieuo666-3ZcQ",
+        "date": "2026-07-06"
+      }
     }
   },
   "2026-07-06-gas-station-skeptic-916.mp4": {
@@ -108,5 +214,7 @@
     "caption": "Brooklyn to Hawk's Nest: Calimoto goes straight through Midtown. TwoTired takes the Hudson out — like any NYC rider would.",
     "platforms": {}
   },
-  "README.md": { "category": "hidden" }
+  "README.md": {
+    "category": "hidden"
+  }
 }
