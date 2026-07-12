@@ -1,6 +1,6 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
-  "2026-07-12-litchfield-bmw-final-916.mp4": {
+  "2026-07-12-litchfield-navapp-final-916.mp4": {
     "category": "pending",
     "bestOf": false,
     "title": "My Kind of App",
