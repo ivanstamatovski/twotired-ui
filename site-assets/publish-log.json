@@ -1,5 +1,12 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
+  "2026-07-12-litchfield-bmw-v2-final-916.mp4": {
+    "category": "pending",
+    "bestOf": false,
+    "title": "My Kind of App (v2)",
+    "caption": "\"Told it: Litchfield Hills, fuel stop halfway. Route came back eighty-two percent twisty. Didn't even round. My kind of app.\"",
+    "platforms": {}
+  },
   "2026-07-12-litchfield-navapp-final-916.mp4": {
     "category": "pending",
     "bestOf": false,
