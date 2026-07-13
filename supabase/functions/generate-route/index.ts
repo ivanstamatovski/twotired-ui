@@ -1,4 +1,13 @@
-// generate-route edge function — v2.98
+// generate-route edge function — v2.99
+// v2.99: phantom highway-exit fix. enrichExitNumbers tagged EVERY keep-right/left
+//        maneuver (GH sign ±7) near an OSM motorway_junction with that exit's ref,
+//        with no check the maneuver actually LEAVES the highway. A "keep right to
+//        STAY ON I-87" at an interchange is also sign ±7 and sits on the gore node
+//        → got stamped exit_ref, so nav falsely announced "Exit 10 · West 230 St"
+//        and appeared to send the rider off I-87 (Ivan's shared-route report). Now
+//        the candidate filter drops maneuvers whose text says "stay on" AND checks
+//        the route's road_class detail a few points past the maneuver — if it's
+//        still MOTORWAY/TRUNK the rider isn't exiting, so no exit_ref is tagged.
 // v2.98: picker rides now ride the WHOLE seeded road. The phased "fun" leg was
 //        routed between only the road's two endpoints, so GH picked its own path
 //        between them — a real picker loop covered just 2% of the chosen road.
@@ -2822,7 +2831,21 @@ async function enrichExitNumbers(route: any): Promise<number> {
     // maneuver's first vertex lands ~0–90 m from it, while an ON-ramp's nearest
     // junction is hundreds of metres away — so this radius isolates real exits.
     const RADIUS_M = 100;
-    const cand = insts.filter((i) => i && (i.sign === 7 || i.sign === -7));
+    const rcRows = Array.isArray((route as any)?.details?.road_class) ? (route as any).details.road_class : [];
+    const roadClassAt = (idx: number): string => {
+      for (const r of rcRows) { if (idx >= r[0] && idx < r[1]) return String(r[2] || '').toUpperCase(); }
+      return '';
+    };
+    const leavesMotorway = (ins: any): boolean => {
+      if (!rcRows.length) return true; // no detail → text guard only
+      const start = Math.min(Math.max(ins.interval?.[0] ?? 0, 0), coords.length - 1);
+      const probe = Math.min(start + 3, ins.interval?.[1] ?? (start + 3), coords.length - 1);
+      const cls = roadClassAt(probe);
+      return cls !== 'MOTORWAY' && cls !== 'TRUNK';
+    };
+    const cand = insts.filter((i) => i && (i.sign === 7 || i.sign === -7)
+      && !/\bstay on\b/i.test(String(i.text || ''))
+      && leavesMotorway(i));
     if (!cand.length) return 0;
     const pts = cand.map((ins) => {
       const idx = Math.min(Math.max(ins.interval?.[0] ?? 0, 0), coords.length - 1);
