@@ -47,10 +47,9 @@
         "date": "2026-07-12"
       },
       "tiktok": {
-        "id": null,
-        "url": "https://www.tiktok.com/@ridetwotired",
-        "date": null,
-        "note": "TikTok Studio web upload stalled client-side on 2026-07-12 after multiple attempts (one attempt uploaded to TikTok's CDN successfully but the UI never advanced past the processing spinner; other attempts didn't even fire the upload). Needs a manual retry."
+        "id": "7663554780165344543",
+        "url": "https://www.tiktok.com/@ridetwotired/video/7663554780165344543",
+        "date": "2026-07-17"
       }
     }
   },
