@@ -1,5 +1,12 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
+  "2026-07-17-jersey-squid-water-gap-final-916.mp4": {
+    "category": "pending",
+    "bestOf": false,
+    "title": "Didn't Even Need The Words Right",
+    "caption": "\"Told it 'Water Gap, food somewhere, don't care' — it still built the whole route. Didn't even need the words right.\"",
+    "platforms": {}
+  },
   "2026-07-12-route23a-kaaterskill.jpg": {
     "category": "final",
     "bestOf": false,
