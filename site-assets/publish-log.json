@@ -1,11 +1,32 @@
 {
   "_readme": "Classification DB for the media library. category: final|test|pending|hidden. bestOf: shows on public /gallery. platforms: where/when published. Pages regenerate at deploy via scripts/vercel-postbuild.mjs. Pending items show Approve/Reject buttons that open prefilled GitHub issues.",
   "2026-07-17-jersey-squid-water-gap-final-916.mp4": {
-    "category": "pending",
-    "bestOf": false,
+    "category": "final",
+    "bestOf": true,
     "title": "Didn't Even Need The Words Right",
     "caption": "\"Told it 'Water Gap, food somewhere, don't care' — it still built the whole route. Didn't even need the words right.\"",
-    "platforms": {}
+    "platforms": {
+      "instagram": {
+        "id": "18094714901104920",
+        "url": "https://www.instagram.com/reel/Da8PAilgEBL/",
+        "date": "2026-07-18"
+      },
+      "facebook": {
+        "id": "4048434992123012",
+        "url": "https://www.facebook.com/61591906523319",
+        "date": "2026-07-18"
+      },
+      "youtube": {
+        "id": "OPMOGRSKmIc",
+        "url": "https://youtube.com/shorts/OPMOGRSKmIc",
+        "date": "2026-07-18"
+      },
+      "tiktok": {
+        "id": "7663911122986093855",
+        "url": "https://www.tiktok.com/@ridetwotired/video/7663911122986093855",
+        "date": "2026-07-18"
+      }
+    }
   },
   "2026-07-17-cold-spring-9d.jpg": {
     "category": "pending",
